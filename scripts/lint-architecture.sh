@@ -35,7 +35,7 @@ BAD_ROOTS=""
 for d in domain application common infrastructure infrastructure/controller; do
     if [ ! -d "$d" ]; then
         BAD_ROOTS="$BAD_ROOTS $d/(目录缺失)"
-    elif [ -z "$(find "$d" -name '*.go' -print -quit)" ]; then
+    elif [ -z "$(find "$d" -type f -name '*.go' -print -quit)" ]; then
         BAD_ROOTS="$BAD_ROOTS $d/(无 .go 文件)"
     fi
 done
@@ -49,7 +49,7 @@ fi
 # 于是「没扫到」又会被当成「没问题」。所以扫描期 stderr 非空一律视为失败。
 # 注意 2>&1 必须先于 >/dev/null，这样捕获的是 stderr 而不是 stdout。
 SCAN_ROOTS="domain application common infrastructure"
-SCAN_ERR="$(find $SCAN_ROOTS -name '*.go' -print 2>&1 >/dev/null || true)"
+SCAN_ERR="$(find $SCAN_ROOTS -type f -name '*.go' -print 2>&1 >/dev/null || true)"
 if [ -n "$SCAN_ERR" ]; then
     echo "BLOCKER: 扫描期间出现读取错误，结果不可信（目录不可读或权限不足）:"
     printf '%s\n' "$SCAN_ERR"
@@ -64,7 +64,7 @@ fi
 READ_FAIL=0
 while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
-    if ! cat "$f" >/dev/null 2>&1; then
+    if [ ! -f "$f" ] || ! cat "$f" >/dev/null 2>&1; then
         echo "BLOCKER: .go 文件无法打开读取，扫描结果不可信: $f"
         READ_FAIL=1
     fi
@@ -76,7 +76,8 @@ echo "  ✅ scan roots present and readable"
 
 # ── 字符串字面量提取器 ─────────────────────────────────────────────────────────
 # extract_imports <dir> <skip_tests:0|1>
-#   只扫 Go 文件（--include='*.go'）：非 Go 文件里的字符串不该触发
+#   只扫普通 .go 文件（find -type f -name '*.go'）：非 Go 文件、以及命名为 *.go 的非普通
+#   文件（如 FIFO）里的字符串都不该触发，且后者绝不能 open（会阻塞）。
 #   「imports forbidden package」这种 BLOCKER。
 #   输出 file:line:path（已去引号），因此 path 一定在行尾，可用 `$` 锚定。
 #   关键点：**不要**用 `grep -v "// "` 过滤整行——那会把
@@ -84,8 +85,14 @@ echo "  ✅ scan roots present and readable"
 #   本仓库中文行尾注释是常规写法，所以改为「先摘引号内容、再对内容匹配」，
 #   行尾注释自然不再干扰匹配。
 extract_imports() {
-    local dir="$1" skip_tests="$2" raw
-    raw="$(grep -rnoE --include='*.go' '"[^"]+"' "$dir" 2>/dev/null || true)"
+    local dir="$1" skip_tests="$2" raw f
+    local files=()
+    while IFS= read -r -d '' f; do
+        [ -n "$f" ] || continue
+        files+=("$f")
+    done < <(find "$dir" -type f -name '*.go' -print0 2>/dev/null || true)
+    [ "${#files[@]}" -eq 0 ] && return 0
+    raw="$(grep -HnoE '"[^"]+"' "${files[@]}" 2>/dev/null || true)"
     [ -z "$raw" ] && return 0
     if [ "$skip_tests" = "1" ]; then
         raw="$(printf '%s\n' "$raw" | grep -v '_test\.go:' || true)"
@@ -147,7 +154,7 @@ fi
 # 输出用 NUL 分隔（-print0 + 调用处 read -d ''）：换行分隔时，一个路径含换行的文件
 # 会被拆成两条不存在的假路径，真文件永远不会被扫到，而计数照样 +1，把零文件守卫骗过去。
 find_controllers() {
-    find infrastructure/controller/http -name '*.go' -print0 2>/dev/null | sort -z || true
+    find infrastructure/controller/http -type f -name '*.go' -print0 2>/dev/null | sort -z || true
 }
 
 # 4. Controller 禁止直接返回 Entity（启发式：Controller 不应 import domain/entity）
