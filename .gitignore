@@ -35,9 +35,10 @@ Thumbs.db
 config.local.json
 config.dev.json
 config.prod.json
-server
+# 前导 / 锚定仓库根目录：只忽略根目录下的构建产物二进制；去掉 / 会匹配任意层级同名目录（如 cmd/server/）
+/server
 
-main
+/main
 
 # --- Restored rules ---------------------------------------------------------
 # The block above replaced a tracked .gitignore from the initial commit and
