@@ -59,15 +59,19 @@ HTTP Request
 FastRAG/
 ├── cmd/server/main.go
 ├── application/service/
-│   ├── knowledge/service.go
+│   ├── knowledge/
+│   │   ├── service.go
+│   │   └── service_test.go
 │   └── register.go
 ├── common/
 │   ├── dto/
 │   │   ├── knowledge.go
-│   │   └── pagination.go
+│   │   ├── pagination.go
+│   │   └── pagination_test.go
 │   ├── vo/
 │   │   ├── knowledge.go
-│   │   └── pagination.go
+│   │   ├── pagination.go
+│   │   └── pagination_test.go
 │   └── errors/
 │       ├── errors.go
 │       └── errors_test.go
@@ -96,7 +100,7 @@ FastRAG/
 │   ├── middleware/
 │   │   ├── access_log.go
 │   │   ├── rate_limit.go
-│   │   └── userctx.go
+│   │   └── middleware_test.go
 │   ├── persistence/
 │   │   ├── knowledge/knowledge_base_repo.go
 │   │   ├── knowledge/retriever_stub.go
@@ -191,8 +195,16 @@ knowledge 段
 {"code": 10101, "msg": "knowledge base not found", "data": {}}
 ```
 
-**相对模板的一处改进**：`gingext/response.go` 里 `httpStatusForCode` 的 code→HTTP 状态映射
-把裸数字换成 `common/errors` 中的具名常量引用，行为不变。
+**相对模板的两处改进**（汇总见 §8）：
+
+1. `gingext/response.go` 中 `httpStatusForCode` 的 code→HTTP 状态映射，把裸数字换成
+   `common/errors` 里的具名常量引用，行为不变。
+2. `gingext.Send` 用 `errors.As` 而非类型断言来提取 `CodeError`。模板写的是
+   `err.(errors.CodeError)`，而 Controller 的标准写法是
+   `fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err)` 包装绑定错误 ——
+   包装后动态类型是 `*fmt.wrapError`，类型断言必然失败，于是所有参数错误都会被降级成
+   `ErrCodeUnknown`(-10000)「系统错误」，与 README 宣称的 code 10001 不符。
+   改用 `errors.As` 后可沿错误链正确取到业务错误码。
 
 ## 6. knowledge 示例模块
 
@@ -302,14 +314,14 @@ cmd/server/main.go
 3. `middleware.Tracing()`
 4. `middleware.Logger()`
 5. `mw.AccessLog()` —— 本项目：method / path / status / latency_ms / client_ip
-6. `mw.UserContext()` —— 本项目：占位身份注入
-7. `mw.RateLimit()` —— 本项目：IP 级限流
-8. `gin.Recovery()`
+6. `mw.RateLimit()` —— 本项目：IP 级限流
+7. `gin.Recovery()`
 
-**关于 userctx 占位**：骨架不含 auth 模块，故 `mw.UserContext()` 从请求头 `X-User-ID`
-读取用户标识并写入 `bizctx`（`bizctx.WithKV(ctx, bizctx.UserID(v))`），使 knowledge 接口可直接用 curl 验证。
-接入真实鉴权时，只需把该中间件替换为「从 session/JWT 解析 userID 后写入 bizctx」，
-Controller 与 Service 无需改动。
+**关于用户身份（无需自定义中间件）**：go-gin-sdk 的 `middleware.Bizctx()` 会把请求头
+`X-Bizctx-UserID` 解析进 `bizctx`；Controller 通过 `bizctx.GetUserID(c.Request.Context())` 读取，
+与 micro-framework 的取值方式完全一致。骨架阶段没有鉴权模块，故由该请求头承载身份标识，
+knowledge 接口可直接用 curl 验证；接入真实鉴权后，只需在中间件链中把 session/JWT 解析出的
+userID 写入 bizctx，Controller 与 Application Service 均无需改动。
 
 ### 7.3 配置
 
@@ -342,18 +354,21 @@ Controller 与 Service 无需改动。
 | # | 偏离 | 原因 | 影响面 |
 |---|------|------|--------|
 | 1 | **Redis 可选**：`redis.addr` 为空时不报错，跳过 Redis 初始化 | 模板中 addr 为空会直接启动失败，骨架不该被 Redis 卡住 | 仅 `driver/redis/redis.go` + health 就绪检查 |
-| 2 | **`X-User-ID` 占位身份**：新增 `middleware/userctx.go` | 骨架无 auth 模块，模板靠 OAuth session 注入 userID | 新增 1 个文件，接真实鉴权时替换之 |
-| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法 | 新增 4 个 `_test.go` |
+| 2 | **`gingext.Send` 改用 `errors.As`** 提取 `CodeError` | 模板的类型断言遇到 Controller 惯用的 `fmt.Errorf("%w: %v", ...)` 包装必然失败，参数错误会被误报成 `ErrCodeUnknown`(-10000) | 仅 `driver/gingext/response.go` |
+| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法 | 新增 5 个 `_test.go` |
 
-除上述三点外，分层、命名、DI 装配方式、统一响应、错误码结构、分页工具均与 micro-framework 一致。
+除上述三点外，分层、命名、DI 装配方式、统一响应结构、错误码体系、分页工具、身份注入方式
+（`middleware.Bizctx()` + `bizctx.GetUserID`）均与 micro-framework 一致。
 
 ## 9. 测试与验证
 
 单元测试（纯逻辑，不依赖 DB / Redis）：
 
 - `common/errors/errors_test.go` —— code 判定、`Is()`、`Params()`、`Wrap()`、`AsBizError/AsSysError`
-- `common/vo/pagination_test.go` —— `NewPageResult` 边界（整除、余数、total=0、pageSize 异常）
-- `infrastructure/middleware/rate_limit_test.go` —— 放行至上限、超限拒绝、窗口过期重置
+- `common/dto/pagination_test.go` —— `PageQuery` 的 offset/limit 计算与非法值归一
+- `common/vo/pagination_test.go` —— `NewPageResult` 边界（整除、余数、total=0）
+- `infrastructure/middleware/middleware_test.go` —— 直接测试 `RateLimiter`：放行至上限、
+  超限拒绝、不同 IP 互不影响、窗口过期后重置（`RateLimit()` 中间件固定 600 req/min，不便单测）
 - `application/service/knowledge/service_test.go` —— fake repo 驱动 5 个用例（含 not found 分支）
 
 验证命令：
