@@ -61,12 +61,18 @@ fi
 # 所以这里逐个真正打开每个 .go 文件，任何一个打不开都立刻 BLOCKER。
 # 用 -print0 / read -d '' 传路径：路径含换行时不能被拆成两条——拆出来的假路径照样会让
 # 计数虚增，把「真文件没被扫描」伪装成「扫过了」。
-# 这个 cat 循环只 open 普通文件（-type f）：命名为 *.go 的命名管道（FIFO）一旦被 open 会
-# 永久阻塞，所以它由下面单独的 -type p 检查拦下，绝不进这个循环；而名为 *.go 的目录等
-# 其它非普通条目不是源文件，跳过即可（不是 BLOCKER）。
-FIFO_HIT="$(find $SCAN_ROOTS -type p -name '*.go' -print 2>/dev/null || true)"
+# 这个 cat 循环只 open 普通文件（-type f）：命名管道（FIFO）一旦被 open 会永久阻塞，
+# 所以它由下面单独的 -type p 检查拦下，绝不进这个循环；而名为 *.go 的目录等其它非普通
+# 条目不是源文件，跳过即可（不是 BLOCKER）。
+#
+# 这里**不按名字过滤**（不写 -name '*.go'）：检查的目的是「扫描根下不许有会被 open 后
+# 阻塞的条目」，而规则 5 至今仍是一个裸的 `grep -r infrastructure/controller/`，
+# 它会 open 该目录树下的**任何** FIFO，不论叫什么名字。曾经这里写成 -name '*.go'，
+# 于是一个叫 pipe 的 FIFO 绕过了守卫、又因为规则 1–4/6 都已改成只读普通文件而碰不到它，
+# 最后恰好落到规则 5 上永久挂死——守卫按名收窄，等于给规则 5 留了一条路。
+FIFO_HIT="$(find $SCAN_ROOTS -type p -print 2>/dev/null || true)"
 if [ -n "$FIFO_HIT" ]; then
-    echo "BLOCKER: 扫描根下存在命名为 *.go 的命名管道（FIFO），按名读取的扫描会永久阻塞:"
+    echo "BLOCKER: 扫描根下存在命名管道（FIFO），会被按目录读取的扫描永久阻塞:"
     printf '%s\n' "$FIFO_HIT"
     exit 1
 fi
