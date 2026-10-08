@@ -48,17 +48,11 @@ func (r *KnowledgeBaseRepo) GetByIDAndUserID(ctx context.Context, id, userID str
 }
 
 // ListByUserID 按用户查询知识库列表（创建时间倒序）
-//
-// 两条查询都必须经过 Session(&gorm.Session{})：gorm v1.25.1 的 Count 会把
-// Statement.Selects 置为 ["count(*)"]，且在返回后不清除，而 db 是这两条查询
-// 共享的同一个 *gorm.DB 实例。直接复用该链会让随后的 Find 也被编译成
-// SELECT count(*)，此时接口返回的 total 正确、列表却恒为空（已用 DryRun 探针实测确认）。
-// Session 会克隆 Statement，使两条查询互不影响。
 func (r *KnowledgeBaseRepo) ListByUserID(ctx context.Context, userID string, page, pageSize int) (total int64, list []*knowledgeentity.KnowledgeBase, err error) {
 	db := r.provider.UseDB(ctx).Table(knowledgeentity.KnowledgeBase{}.TableName()).
 		Where("user_id = ?", userID)
 
-	if err = db.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+	if err = db.Count(&total).Error; err != nil {
 		return 0, nil, err
 	}
 
@@ -67,15 +61,15 @@ func (r *KnowledgeBaseRepo) ListByUserID(ctx context.Context, userID string, pag
 		offset = 0
 	}
 
-	err = db.Session(&gorm.Session{}).Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&list).Error
+	err = db.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&list).Error
 	return total, list, err
 }
 
 // Update 更新知识库可变字段
 //
 // 必须用 Model 而非 Table：gorm 仅在 stmt.Schema 非空时才会为 autoUpdateTime
-// 字段补 updated_at，而 Table + Updates(map) 的 Schema 由 map 类型推导、不含字段，
-// 会导致 updated_at 永远不刷新（见 gorm callbacks.ConvertToAssignments）。
+// 字段补 updated_at，而 Table + Updates(map) 时 Schema 为 nil（map 解析不出结构体
+// Schema），会导致 updated_at 永远不刷新（见 gorm callbacks.ConvertToAssignments）。
 func (r *KnowledgeBaseRepo) Update(ctx context.Context, kb *knowledgeentity.KnowledgeBase) error {
 	return r.provider.UseDB(ctx).Model(&knowledgeentity.KnowledgeBase{}).
 		Where("id = ? AND user_id = ?", kb.ID, kb.UserID).
