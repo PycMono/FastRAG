@@ -14,3 +14,10 @@ require (
 	go.uber.org/fx v1.23.0
 	gorm.io/gorm v1.25.1
 )
+
+require (
+	go.uber.org/dig v1.18.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+	go.uber.org/zap v1.26.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
+)
