@@ -82,18 +82,25 @@ make clean        # 清理构建产物
 
 ## 统一响应格式
 
-所有 API 均通过 `gingext.Send` 返回：
+所有 JSON API 均通过 `gingext.Send` 返回（`/health`、`/ready` 两个探针除外：K8s 探针需要固定格式，
+因此直接用 `c.JSON`，见 `infrastructure/controller/http/health/controller.go`）：
 
 ```jsonc
 // 成功
 {"code": 0, "msg": "success", "data": {...}}
 // 参数错误（HTTP 400）
 {"code": 10001, "msg": "invalid parameter", "data": {}}
+// 未登录（HTTP 401）
+{"code": 10002, "msg": "unauthorized", "data": {}}
 // 未找到（HTTP 404）
 {"code": 10101, "msg": "knowledge base not found", "data": {}}
-// 其他业务/系统错误（HTTP 200 + 业务码）
+// 未命中下方映射表的业务/系统错误（HTTP 200 + 业务码）
 {"code": 10103, "msg": "knowledge base create failed", "data": {}}
 ```
+
+HTTP 状态码由业务码映射（`httpStatusForCode`，见 `infrastructure/driver/gingext/response.go`）：
+`10001`→`400`、`10002`→`401`、`10003`→`403`、`10004`/`10101`→`404`、`10006`→`429`；
+未列入映射表的业务码（如 `10103`、`10104`、`10105`、`10106`）落到默认分支，返回 **HTTP 200 + 业务码**。
 
 ### 错误码
 
