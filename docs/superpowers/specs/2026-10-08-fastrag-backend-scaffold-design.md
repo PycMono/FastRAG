@@ -85,6 +85,7 @@ FastRAG/
 │   └── register.go
 ├── infrastructure/
 │   ├── init.go
+│   ├── init_test.go
 │   ├── config/config.go
 │   ├── controller/
 │   │   ├── register.go
@@ -356,7 +357,7 @@ userID 写入 bizctx，Controller 与 Application Service 均无需改动。
 |---|------|------|--------|
 | 1 | **Redis 可选**：`redis.addr` 为空时不报错，跳过 Redis 初始化 | 模板中 addr 为空会直接启动失败，骨架不该被 Redis 卡住 | 仅 `driver/redis/redis.go` + health 就绪检查 |
 | 2 | **`gingext.Send` 改用 `errors.As`** 提取 `CodeError` | 模板的类型断言遇到 Controller 惯用的 `fmt.Errorf("%w: %v", ...)` 包装必然失败，参数错误会被误报成 `ErrCodeUnknown`(-10000) | 仅 `driver/gingext/response.go` |
-| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法 | 新增 6 个 `_test.go` |
+| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法。其中 `infrastructure/init_test.go` 是这个骨架唯一的运行时装配验证：`go build`/`go vet` 只能证明能编译，而 fx 的类型键（接口 vs 具体类型）、Provide 冲突、循环依赖都是运行时失败，若无人真正跑一次 `fx.New`，DI 装配错误只能等到手动启动服务时才暴露 | 新增 7 个 `_test.go` |
 | 4 | **`vo.NewPageResult` 增加 `pageSize < 1 → 10` 兜底下限** | 模板直接 `int(total) / pageSize`，而 `PageSize` 是零值即为 0 的导出字段，调用方一旦忘记先走 `PageQuery.Limit()` 就会整数除零 panic（普通请求变 500）。`common/` 是每个列表接口都会照抄的公共件，不该带这个雷 | 仅 `common/vo/pagination.go`（3 行）+ 1 个测试 |
 
 除上述四点外，分层、命名、DI 装配方式、统一响应结构、错误码体系、分页工具、身份注入方式
@@ -376,6 +377,11 @@ userID 写入 bizctx，Controller 与 Application Service 均无需改动。
   兜底码。**这是偏离 #2 的回归护栏**：把 `errors.As` 改回模板的类型断言，该测试即失败
   （已用扰动实验验证：HTTP 400→200、code 10001→-10000）
 - `application/service/knowledge/service_test.go` —— fake repo 驱动 5 个用例（含 not found 分支）
+- `infrastructure/init_test.go` —— DI 装配冒烟：用 `fx.Decorate` 把 MySQL provider 换成桩，
+  真正执行一次 `fx.New(infrastructure.Init(conf), fx.Decorate(...), fx.Invoke(...))`，
+  断言依赖图装配无错、8 条路由全部注册到位（`/health`、`/ready` 以及
+  `/api/v1/knowledge-bases` 下的 6 条）。**这是骨架唯一的运行时装配验证**——编译期
+  看不见 fx 的类型键（接口 vs 具体类型）不匹配、Provide/Decorate 冲突、循环依赖
 
 验证命令：
 

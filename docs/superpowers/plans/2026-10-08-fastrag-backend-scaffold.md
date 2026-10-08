@@ -1868,6 +1868,12 @@ type fakeRepo struct {
 	updateErr error
 	deleteErr error
 	listErr   error
+
+	// lastPage/lastPageSize 记录最后一次 ListByUserID 收到的分页参数。
+	// 断言必须落在仓储边界：返回值里的 page/pageSize 由 vo.NewPageResult 原样回显，
+	// 而它对非法值另有兜底，只看返回值发现不了 service 的归一化被删掉。
+	lastPage     int
+	lastPageSize int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -1896,6 +1902,7 @@ func (r *fakeRepo) ListByUserID(ctx context.Context, userID string, page, pageSi
 	if r.listErr != nil {
 		return 0, nil, r.listErr
 	}
+	r.lastPage, r.lastPageSize = page, pageSize
 	var all []*knowledgeentity.KnowledgeBase
 	for _, kb := range r.items {
 		if kb.UserID == userID {
@@ -1943,9 +1950,15 @@ func (r *fakeRepo) DeleteByIDAndUserID(ctx context.Context, id, userID string) e
 type fakeRetriever struct {
 	chunks []*knowledgerepo.RetrievedChunk
 	err    error
+
+	// lastQuery 记录最后一次收到的检索入参。
+	// 只断言返回的 chunks 无法发现「知识库 ID 传错」「查询词丢失」这类缺陷——
+	// 而那正是 §6.4 向量库扩展点最容易出、也最难看见的错。
+	lastQuery knowledgerepo.RetrieveQuery
 }
 
 func (f *fakeRetriever) Retrieve(ctx context.Context, q knowledgerepo.RetrieveQuery) ([]*knowledgerepo.RetrievedChunk, error) {
+	f.lastQuery = q
 	return f.chunks, f.err
 }
 
@@ -2057,18 +2070,35 @@ func TestService_List_Paginates(t *testing.T) {
 	}
 }
 
-func TestService_List_NormalizesInvalidPaging(t *testing.T) {
-	repo := newFakeRepo()
-	svc := newTestService(repo, &fakeRetriever{})
+// service 被直接调用（未经 HTTP 绑定层）时，零值与越界分页必须归一化后再落到仓储。
+//
+// 注意这不是 HTTP 路径的覆盖：`PageQuery` 上的 gte/lte 绑定标签已经在绑定层把
+// ?page=0&page_size=0 拒成 400，所以本条守的是 service 自身的归一化逻辑。
+func TestService_List_NormalizesZeroPageQueryBeforeRepo(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		in               dto.PageQuery
+		wantPage, wantPS int
+	}{
+		{"零值取默认", dto.PageQuery{Page: 0, PageSize: 0}, 1, 10},
+		{"越界取上限", dto.PageQuery{Page: 2, PageSize: 1000}, 2, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			svc := newTestService(repo, &fakeRetriever{})
 
-	got, err := svc.List(context.Background(), "u1", dto.ListKnowledgeBaseQuery{
-		PageQuery: dto.PageQuery{Page: 0, PageSize: 0},
-	})
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if got.Page != 1 || got.PageSize != 10 {
-		t.Fatalf("Page/PageSize = %d/%d, want 1/10", got.Page, got.PageSize)
+			got, err := svc.List(context.Background(), "u1", dto.ListKnowledgeBaseQuery{PageQuery: tc.in})
+			if err != nil {
+				t.Fatalf("List() error = %v", err)
+			}
+			if repo.lastPage != tc.wantPage || repo.lastPageSize != tc.wantPS {
+				t.Fatalf("repo received page/pageSize = %d/%d, want %d/%d",
+					repo.lastPage, repo.lastPageSize, tc.wantPage, tc.wantPS)
+			}
+			if got.Page != tc.wantPage || got.PageSize != tc.wantPS {
+				t.Fatalf("Page/PageSize = %d/%d, want %d/%d", got.Page, got.PageSize, tc.wantPage, tc.wantPS)
+			}
+		})
 	}
 }
 
@@ -2206,16 +2236,17 @@ func TestService_Search_RejectsUnknownKnowledgeBase(t *testing.T) {
 
 func TestService_Search_MapsChunksToVO(t *testing.T) {
 	repo := newFakeRepo()
-	svc := newTestService(repo, &fakeRetriever{
+	retriever := &fakeRetriever{
 		chunks: []*knowledgerepo.RetrievedChunk{{DocID: "d1", ChunkIndex: 2, Content: "body", Score: 0.87}},
-	})
+	}
+	svc := newTestService(repo, retriever)
 
 	created, err := svc.Create(context.Background(), "u1", dto.CreateKnowledgeBaseDTO{Name: "kb-a"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	got, err := svc.Search(context.Background(), "u1", created.ID, dto.SearchKnowledgeBaseDTO{Query: "hello"})
+	got, err := svc.Search(context.Background(), "u1", created.ID, dto.SearchKnowledgeBaseDTO{Query: "hello", TopK: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -2224,6 +2255,18 @@ func TestService_Search_MapsChunksToVO(t *testing.T) {
 	}
 	if got[0].DocID != "d1" || got[0].ChunkIndex != 2 || got[0].Content != "body" || got[0].Score != 0.87 {
 		t.Fatalf("unexpected chunk mapping: %+v", got[0])
+	}
+
+	// 检索器收到的入参必须原样来自本次调用：知识库 ID 传错、查询词丢失都不会报错，
+	// 只会在接入真实向量库后表现为「检索结果不对」。§6.4 的扩展点靠这个断言兜住。
+	if retriever.lastQuery.KnowledgeBaseID != created.ID {
+		t.Fatalf("RetrieveQuery.KnowledgeBaseID = %q, want %q", retriever.lastQuery.KnowledgeBaseID, created.ID)
+	}
+	if retriever.lastQuery.Query != "hello" {
+		t.Fatalf("RetrieveQuery.Query = %q, want %q", retriever.lastQuery.Query, "hello")
+	}
+	if retriever.lastQuery.TopK != 3 {
+		t.Fatalf("RetrieveQuery.TopK = %d, want 3", retriever.lastQuery.TopK)
 	}
 }
 ```
@@ -2785,6 +2828,7 @@ git commit -m "feat: 新增健康检查与知识库 HTTP 控制器及路由注�
 
 **Files:**
 - Create: `infrastructure/init.go`
+- Create: `infrastructure/init_test.go`
 - Create: `cmd/server/main.go`
 
 **Interfaces:**
@@ -2897,26 +2941,118 @@ func main() {
 }
 ```
 
-- [ ] **Step 3: 验证编译与依赖图（不需要数据库也能验证 DI 装配）**
+- [ ] **Step 3: 写 `infrastructure/init_test.go`（DI 装配冒烟测试）**
 
-`fx.New` 会在启动时解析整个依赖图，因此即使 MySQL 未运行，只要报错信息指向 MySQL
-连接失败（而不是 `missing type` / `cycle detected`），就说明 DI 装配正确。
+```go
+package infrastructure_test
+
+import (
+	"context"
+	"sort"
+	"testing"
+
+	"github.com/PycMono/FastRAG/infrastructure"
+	"github.com/PycMono/FastRAG/infrastructure/config"
+	"github.com/gin-gonic/gin"
+	sqlsdk "github.com/PycMono/go-mysql-sdk"
+	"go.uber.org/fx"
+	"gorm.io/gorm"
+)
+
+// stubProvider 占位 MySQL Provider。
+// 本测试验证的是依赖图能否装配、路由能否注册，不是数据库连通性。
+type stubProvider struct{}
+
+func (stubProvider) UseDB(ctx context.Context) *gorm.DB {
+	panic("stubProvider.UseDB 不应被调用：冒烟测试不执行任何数据库操作")
+}
+
+// TestInit_BuildsGraphAndRegistersRoutes 是 T11 唯一的运行时验证。
+//
+// 为什么必须有它：`go build` / `go vet` 只能证明代码能编译，而 fx 的类型键
+// （接口 vs 具体类型）、Provide/Decorate 冲突、循环依赖都是**运行时**失败，
+// 编译期一律看不出来。若不真正跑一次 fx.New，DI 装配错误只能等到有人手动启动
+// 服务时才发现——而本任务的全部价值恰恰是「依赖图装得起来、路由挂得上去」。
+func TestInit_BuildsGraphAndRegistersRoutes(t *testing.T) {
+	conf := &config.Config{
+		App:   "fastrag-test",
+		Debug: true,
+		HTTP:  config.HTTPConfig{Host: "", Port: "0"},
+		MySQL: config.MySQLConfig{Host: "127.0.0.1", Port: 3306, Database: "fastrag", User: "root", Password: "x"},
+		// Redis 故意留空：redis.NewClient 在 addr 为空时返回 (nil, nil)，
+		// fx 允许这个 nil 值进入依赖图（已实测）。
+		SnowflakeNodeID: 1,
+	}
+
+	var got []string
+	app := fx.New(
+		fx.NopLogger,
+		infrastructure.Init(conf),
+		// 用桩替换真实 MySQL provider，从而无需数据库即可装配整图
+		fx.Decorate(func() sqlsdk.Provider { return stubProvider{} }),
+		fx.Invoke(func(engine *gin.Engine) {
+			for _, r := range engine.Routes() {
+				got = append(got, r.Method+" "+r.Path)
+			}
+		}),
+	)
+
+	// fx.New 只构建依赖图并联执行 Invoke；不调用 Start，
+	// 因此不会触发 AutoMigrate，也不会监听端口。
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx 依赖图装配失败: %v", err)
+	}
+
+	want := []string{
+		"DELETE /api/v1/knowledge-bases/:id",
+		"GET /api/v1/knowledge-bases",
+		"GET /api/v1/knowledge-bases/:id",
+		"GET /health",
+		"GET /ready",
+		"POST /api/v1/knowledge-bases",
+		"POST /api/v1/knowledge-bases/:id/search",
+		"PUT /api/v1/knowledge-bases/:id",
+	}
+	sort.Strings(got)
+	if len(got) != len(want) {
+		t.Fatalf("注册路由数 = %d, want %d\n实际: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("路由集合不匹配\n实际: %v\n期望: %v", got, want)
+		}
+	}
+}
+```
+
+- [ ] **Step 4: 运行冒烟测试与构建**
+
+`go build` / `go vet` 只能证明能编译；fx 的类型键（接口 vs 具体类型）、
+Provide/Decorate 冲突、循环依赖都是运行时失败，编译期一律看不出来。所以这一步
+必须真正执行一次 `fx.New`——由 `init_test.go` 承担。
+
+不要把「报错信息是否指向 MySQL 连接失败」当作判据：`sqlsdk.NewTransProvider`
+在 DSN 不可用时会直接 `panic`（go-mysql-sdk 的 transprovider.go），
+因此 `mysql.NewProvider` 声明的 error 返回值实际永远为 nil，
+启动失败时抛出的是原始 panic 而非友好提示。这正是本步改用测试而不是
+「跑一下看报什么错」的原因。
 
 ```bash
 export PATH="/Users/allen/projects/gosdk/go1.25.8/bin:$PATH"
 export GOPATH=/tmp/gopath GOMODCACHE=/tmp/gopath/pkg/mod GOFLAGS=-mod=mod
 export GOPRIVATE="github.com/PycMono/*"
 cd /Users/allen/projects/work/github/FastRAG
-gofmt -l . && go vet ./... && go build -o /tmp/fastrag-server ./cmd/server && echo "BUILD_OK"
+gofmt -l . && go vet ./... && go test ./infrastructure/ -run TestInit_BuildsGraphAndRegistersRoutes -v && go build -o /tmp/fastrag-server ./cmd/server && echo "GRAPH_OK"
 ```
 
-Expected: `gofmt -l` 无输出；`go vet` 退出码 0；打印 `BUILD_OK`。
+Expected: `gofmt -l` 无输出；`go vet` 退出码 0；测试 PASS（打印
+`--- PASS: TestInit_BuildsGraphAndRegistersRoutes`）；打印 `GRAPH_OK`。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
-git add infrastructure/init.go cmd/
-git commit -m "feat: 新增 FX 全量装配与 cmd/server 启动入口"
+git add infrastructure/init.go infrastructure/init_test.go cmd/
+git commit -m "feat: 新增 FX 全量装配、DI 装配冒烟测试与 cmd/server 启动入口"
 ```
 
 ---
@@ -2945,10 +3081,13 @@ ERRORS=0
 
 echo "=== Architecture Linter ==="
 
-# 1. domain/ 禁止 import gin/gorm/redis/http
+# 1. domain/ 禁止 import gin/gorm/redis/http/infrastructure/application
+# 注意必须一并检查内部包全路径：只查 gin/gorm 这些短名会放过
+# `domain/ → infrastructure/...`、`domain/ → application/...` 这类跨层违规，
+# 而 README 明确宣称本检查覆盖它们（check #3 对 common/ 用的就是全路径）。
 echo "→ Checking domain/ import redlines..."
-if grep -rn "gin-gonic/gin\|gorm.io/gorm\|go-redis/v9\|net/http" domain/ 2>/dev/null | grep -v "_test.go" | grep -v "// "; then
-    echo "BLOCKER: domain/ imports forbidden package (gin/gorm/redis/http)"
+if grep -rnE 'gin-gonic/gin|gorm\.io/gorm|go-redis/v9|net/http|"github.com/PycMono/FastRAG/(infrastructure|application)/' domain/ 2>/dev/null | grep -v "_test.go" | grep -v "// "; then
+    echo "BLOCKER: domain/ imports forbidden package (gin/gorm/redis/http/infrastructure/application)"
     ERRORS=$((ERRORS + 1))
 else
     echo "  ✅ domain/ imports clean"
@@ -3083,6 +3222,15 @@ make run
 
 服务默认监听 `:8080`，首次启动会自动建表（`knowledge_bases`）。
 
+启动期两种典型报错：
+
+- `panic: dial tcp ...: connect: connection refused` —— MySQL 不可达。go-mysql-sdk 在
+  DSN 不可用时是直接 panic 而不是返回错误，所以看到的是原始 panic 而非友好提示。
+- `missing type` / `cycle detected` —— DI 装配问题，先跑 `go test ./infrastructure/` 定位。
+
+`config.json` 的 `snowflake_node_id` 是每个实例必须唯一的 0–1023 整数。该键**缺省时取值为 0**，
+而 0 是合法节点号，因此多实例共用一份「没写这个键」的配置会生成重复 ID——部署多副本时务必显式配置。
+
 ## 常用命令
 
 ```bash
@@ -3212,17 +3360,22 @@ export PATH="/Users/allen/projects/gosdk/go1.25.8/bin:$PATH"
 export GOPATH=/tmp/gopath GOMODCACHE=/tmp/gopath/pkg/mod GOFLAGS=-mod=mod
 export GOPRIVATE="github.com/PycMono/*"
 cd /Users/allen/projects/work/github/FastRAG
-go mod tidy
 gofmt -l .
+go mod tidy
 go build ./...
 go vet ./...
 go test ./...
-go mod tidy && git diff --exit-code go.mod go.sum && echo "TIDY_STABLE"
 ```
 
-Expected: `gofmt -l` 无输出；全部退出码 0；打印 `TIDY_STABLE`（说明 tidy 后无变化）。
+Expected: `gofmt -l` 无输出；全部退出码 0。
 
-- [ ] **Step 5: 端到端验证（需要 Docker；若 Docker 不可用则跳过并记录）**
+关于 `go mod tidy` 的判据：用「tidy 之后 `go build ./...` 与 `go test ./...` 仍然通过」，
+**不要**用「`go.mod`/`go.sum` 无变化」。后者只在独占工作区成立；一旦有别人正在同一
+工作区改 `go.mod`，它就必然失败，而且失败会被错误地归因到本任务，诱使执行者去
+「修」别人的依赖图。工作区不干净时直接跳过 tidy，只跑其余命令即可。
+
+- [ ] **Step 5: 端到端验证（需要 Docker；若 Docker 不可用则跳过并记录——DI 装配与路由
+  已由 Task 11 的 `init_test.go` 冒烟测试覆盖，跳过本步不损失装配验证）**
 
 ```bash
 # 起一个临时 MySQL
@@ -3341,6 +3494,6 @@ git commit -m "docs: 新增 README 与架构红线 linter"
 - [ ] `go build ./...`、`go vet ./...`、`go test -race ./...` 全部通过
 - [ ] `gofmt -l .` 无输出
 - [ ] `bash scripts/lint-architecture.sh` 输出 PASSED
-- [ ] `go mod tidy` 后 `go.mod`/`go.sum` 无变化
+- [ ] `go mod tidy` 后 `go build ./...` / `go test ./...` 仍全部通过（工作区不干净时可跳过 tidy）
 - [ ] 端到端验证全部符合预期（或 Docker 不可用时明确记录为未验证）
 - [ ] 无任何前端相关文件（`frontend/`、`page/` 控制器、模板、静态资源）
