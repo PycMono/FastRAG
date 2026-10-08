@@ -137,7 +137,12 @@ for f in infrastructure/controller/http/*/*.go; do
             echo "  ⏭️  Skipping $f (health probe needs fixed format)"
             continue
         fi
-        if grep -n 'c\.JSON(' "$f" 2>/dev/null | grep -v '//'; then
+        # 先剥掉行尾注释再匹配：本仓库中文行尾注释是常规写法，
+        # `c.JSON(200, nil) // 临时调试` 必须仍然判为违规。
+        # 这里匹配的是一个调用而不是一个路径，所以不能沿用规则 1–3 的「提取引号字面量」做法，
+        # 改为从 `//` 截断到行尾。对该规则是安全的：只有当真实调用被写在 `//` 之后才会误伤，
+        # 而那种写法不存在；`c.JSON(200, "http://…")` 截断后仍然含有 `c.JSON(`。
+        if sed 's|//.*$||' "$f" 2>/dev/null | grep -n 'c\.JSON('; then
             echo "BLOCKER: $f uses c.JSON() instead of gingext.Send()"
             ERRORS=$((ERRORS + 1))
             FMT_BAD=$((FMT_BAD + 1))
