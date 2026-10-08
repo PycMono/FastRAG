@@ -42,8 +42,9 @@ common
 
 用 `make lint` 检查。
 
-表中的 `...` 包含该层根包本身（例如 `infrastructure`、`infrastructure/controller` 这两个包
-也在 `application/` 的红线内）。另外，`domain/`、`application/`、`common/` 三条 import 检查
+表中的 `...` 包含该层根包本身：例如 `application/` 的红线既匹配 `infrastructure/driver`、
+`infrastructure/controller` 这两个层根包，也匹配它们的子包；`domain/`、`common/` 的红线同样
+匹配 `infrastructure`、`application` 这些不带子路径的层根包。另外，`domain/`、`application/`、`common/` 三条 import 检查
 会跳过 `_test.go` 文件——领域层的测试可能需要 import 驱动来搭夹具；Controller 的两条检查
 （`domain/entity` 泄漏与 `c.JSON`）不跳过。
 
