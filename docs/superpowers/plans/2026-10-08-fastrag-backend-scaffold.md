@@ -3266,6 +3266,11 @@ make clean        # 清理构建产物
 | `10001`–`10007` | 通用：参数错误 / 未登录 / 无权限 / 不存在 / 冲突 / 限流 / 内部错误 |
 | `10101`–`10106` | knowledge：不存在 / 名称重复 / 创建失败 / 更新失败 / 删除失败 / 检索未实现 |
 
+其中 `10102`（名称重复）当前为**预留**：脚手架未在 `Create` 里做名称唯一性校验，
+仓储接口（见 `domain/repository/knowledge`）也没有按名称查询的方法，因此这条码
+暂时不会由任何请求返回。等需要真正约束「同一用户下知识库不重名」时，再补仓储方法、
+表上的唯一索引与并发创建的处理。
+
 错误定义集中在 `common/errors/errors.go`。新增错误码时在此追加，不要在业务代码里随手 `errors.New`。
 
 错误分为两类：
@@ -3335,7 +3340,9 @@ curl http://localhost:8080/ready
 ## 后续规划
 
 - 接入向量库：实现 `domain/repository/knowledge.IKnowledgeRetriever`，
-  在 `infrastructure/persistence/register.go` 中替换 `RetrieverStub`，其余各层无需改动
+  在 `infrastructure/persistence/register.go` 中替换 `RetrieverStub`，其余各层无需改动。
+  接口约定：`RetrieveQuery.TopK` 为 `0` 表示客户端没有指定条数（`top_k` 是可选项），
+  由检索实现自己决定默认值——Application Service 只做透传，不替实现方定这个策略
 - 文档入库与切片：新增 `document` 模块
 - 鉴权：见上文「用户身份」
 ````
