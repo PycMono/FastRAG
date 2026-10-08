@@ -61,14 +61,24 @@ fi
 # 所以这里逐个真正打开每个 .go 文件，任何一个打不开都立刻 BLOCKER。
 # 用 -print0 / read -d '' 传路径：路径含换行时不能被拆成两条——拆出来的假路径照样会让
 # 计数虚增，把「真文件没被扫描」伪装成「扫过了」。
+# 这个 cat 循环只 open 普通文件（-type f）：命名为 *.go 的命名管道（FIFO）一旦被 open 会
+# 永久阻塞，所以它由下面单独的 -type p 检查拦下，绝不进这个循环；而名为 *.go 的目录等
+# 其它非普通条目不是源文件，跳过即可（不是 BLOCKER）。
+FIFO_HIT="$(find $SCAN_ROOTS -type p -name '*.go' -print 2>/dev/null || true)"
+if [ -n "$FIFO_HIT" ]; then
+    echo "BLOCKER: 扫描根下存在命名为 *.go 的命名管道（FIFO），按名读取的扫描会永久阻塞:"
+    printf '%s\n' "$FIFO_HIT"
+    exit 1
+fi
+
 READ_FAIL=0
 while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
-    if [ ! -f "$f" ] || ! cat "$f" >/dev/null 2>&1; then
+    if ! cat "$f" >/dev/null 2>&1; then
         echo "BLOCKER: .go 文件无法打开读取，扫描结果不可信: $f"
         READ_FAIL=1
     fi
-done < <(find $SCAN_ROOTS -name '*.go' -print0 2>/dev/null || true)
+done < <(find $SCAN_ROOTS -type f -name '*.go' -print0 2>/dev/null || true)
 if [ "$READ_FAIL" -ne 0 ]; then
     exit 1
 fi
@@ -202,8 +212,10 @@ fi
 #
 # **已知代价（可接受，刻意不消除）**：整行位于「上一行开始的多行块注释」体内、且含
 # `c.JSON(` 的一行会被报为违规。这不会说谎——该行确实含 `c.JSON(`，开发者一眼能看出
-# 它被注释掉了，失败是响亮且自明的；相比之下漏报是静默的。所以本检查**不是**穷尽的
-# 词法分析：它以「整行注释就跳过」这条启发式，换取「绝不静默放过真实调用」。
+# 它被注释掉了，失败是响亮且自明的；而漏掉一个真实调用却没有这种提示。所以本检查**不是**
+# 穷尽的词法分析：它以「整行注释就跳过」这条启发式，换取「绝不静默放过**同一行**上出现的
+# `c.JSON(`」——该保证只覆盖单行可见的 `c.JSON(` 文本：选择子拆到两行的 `c.` 换行 `JSON(…)`、
+# `c.JSON (…)` 多出的空格、方法值 `f := c.JSON`、接收者不叫 `c` 的 `ctx.JSON(…)` 都不在其内。
 echo "→ Checking unified response format..."
 FMT_FILES=0
 FMT_BAD=0
