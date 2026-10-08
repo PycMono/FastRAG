@@ -2479,8 +2479,8 @@ import (
 
 	"github.com/PycMono/FastRAG/infrastructure/config"
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
-	goredis "github.com/redis/go-redis/v9"
 	"github.com/gin-gonic/gin"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // Redis 未启用时 config.Redis.Addr 为空
@@ -2978,6 +2978,7 @@ for f in infrastructure/controller/http/*/*.go; do
     if [ -f "$f" ]; then
         if grep -q '"github.com/PycMono/FastRAG/domain/entity' "$f"; then
             echo "MAJOR: Controller $f imports domain/entity — may return Entity instead of VO"
+            ERRORS=$((ERRORS + 1))
         fi
     fi
 done
@@ -2985,7 +2986,7 @@ echo "  ✅ Controller entity check done"
 
 # 5. API 路由必须在 api Group 下
 echo "→ Checking API route grouping..."
-if grep -rn 'router\.\(GET\|POST\|PUT\|DELETE\).*"/api' infrastructure/controller/ 2>/dev/null; then
+if grep -rnE '\.(GET|POST|PUT|DELETE)\("/?api' infrastructure/controller/ 2>/dev/null; then
     echo "BLOCKER: API route registered on top-level router instead of api Group"
     ERRORS=$((ERRORS + 1))
 else
@@ -3103,7 +3104,7 @@ make clean        # 清理构建产物
 // 成功
 {"code": 0, "msg": "success", "data": {...}}
 // 参数错误（HTTP 400）
-{"code": 10001, "msg": "invalid parameter: ...", "data": {}}
+{"code": 10001, "msg": "invalid parameter", "data": {}}
 // 未找到（HTTP 404）
 {"code": 10101, "msg": "knowledge base not found", "data": {}}
 // 其他业务/系统错误（HTTP 200 + 业务码）
