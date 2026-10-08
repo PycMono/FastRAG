@@ -38,3 +38,22 @@ config.prod.json
 server
 
 main
+
+# --- Restored rules ---------------------------------------------------------
+# The block above replaced a tracked .gitignore from the initial commit and
+# dropped these. Re-appended so secrets and workspace/coverage artifacts stay
+# ignored (config.json already carries DB credentials, so .env is a plausible
+# future home for secrets).
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Code coverage profiles and other test artifacts
+coverage.*
+!coverage.go
+*.coverprofile
+profile.cov
