@@ -95,6 +95,7 @@ FastRAG/
 │   ├── driver/
 │   │   ├── gingext/gingext.go
 │   │   ├── gingext/response.go
+│   │   ├── gingext/response_test.go
 │   │   ├── mysql/mysql.go
 │   │   └── redis/redis.go
 │   ├── middleware/
@@ -349,15 +350,16 @@ userID 写入 bizctx，Controller 与 Application Service 均无需改动。
 - `GET /health` —— 存活探针，恒返回 `{"status":"up","timestamp":...}`
 - `GET /ready` —— 就绪探针，检查 MySQL / Redis（Redis 未启用时标注 `disabled`）
 
-## 8. 相对模板的三处刻意偏离
+## 8. 相对模板的四处刻意偏离
 
 | # | 偏离 | 原因 | 影响面 |
 |---|------|------|--------|
 | 1 | **Redis 可选**：`redis.addr` 为空时不报错，跳过 Redis 初始化 | 模板中 addr 为空会直接启动失败，骨架不该被 Redis 卡住 | 仅 `driver/redis/redis.go` + health 就绪检查 |
 | 2 | **`gingext.Send` 改用 `errors.As`** 提取 `CodeError` | 模板的类型断言遇到 Controller 惯用的 `fmt.Errorf("%w: %v", ...)` 包装必然失败，参数错误会被误报成 `ErrCodeUnknown`(-10000) | 仅 `driver/gingext/response.go` |
-| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法 | 新增 5 个 `_test.go` |
+| 3 | **补单元测试** | 模板只对 errors 有测试；骨架应示范测试写法 | 新增 6 个 `_test.go` |
+| 4 | **`vo.NewPageResult` 增加 `pageSize < 1 → 10` 兜底下限** | 模板直接 `int(total) / pageSize`，而 `PageSize` 是零值即为 0 的导出字段，调用方一旦忘记先走 `PageQuery.Limit()` 就会整数除零 panic（普通请求变 500）。`common/` 是每个列表接口都会照抄的公共件，不该带这个雷 | 仅 `common/vo/pagination.go`（3 行）+ 1 个测试 |
 
-除上述三点外，分层、命名、DI 装配方式、统一响应结构、错误码体系、分页工具、身份注入方式
+除上述四点外，分层、命名、DI 装配方式、统一响应结构、错误码体系、分页工具、身份注入方式
 （`middleware.Bizctx()` + `bizctx.GetUserID`）均与 micro-framework 一致。
 
 ## 9. 测试与验证
@@ -369,6 +371,10 @@ userID 写入 bizctx，Controller 与 Application Service 均无需改动。
 - `common/vo/pagination_test.go` —— `NewPageResult` 边界（整除、余数、total=0）
 - `infrastructure/middleware/middleware_test.go` —— 直接测试 `RateLimiter`：放行至上限、
   超限拒绝、不同 IP 互不影响、窗口过期后重置（`RateLimit()` 中间件固定 600 req/min，不便单测）
+- `infrastructure/driver/gingext/response_test.go` —— `Send` 的统一响应契约：成功时 `data`
+  归一化为 `{}` 而非 `null`、业务数据透传、包装后的业务错误码提取、404 映射、普通 error 的
+  兜底码。**这是偏离 #2 的回归护栏**：把 `errors.As` 改回模板的类型断言，该测试即失败
+  （已用扰动实验验证：HTTP 400→200、code 10001→-10000）
 - `application/service/knowledge/service_test.go` —— fake repo 驱动 5 个用例（含 not found 分支）
 
 验证命令：
