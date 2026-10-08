@@ -1,0 +1,30 @@
+{
+  "app": "fastrag",
+  "debug": true,
+  "http": {
+    "host": "",
+    "port": "8080",
+    "read_timeout": 120,
+    "write_timeout": 120
+  },
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "database": "fastrag",
+    "user": "root",
+    "password": "123456",
+    "max_open": 100,
+    "max_idle": 10,
+    "conn_lifetime": 3600,
+    "conn_timeout": 3,
+    "log_level": 3,
+    "slow_threshold": 500
+  },
+  "redis": {
+    "addr": [],
+    "password": "",
+    "db": 0,
+    "pool_size": 5
+  },
+  "snowflake_node_id": 1
+}
