@@ -1660,8 +1660,12 @@ func (r *KnowledgeBaseRepo) ListByUserID(ctx context.Context, userID string, pag
 }
 
 // Update 更新知识库可变字段
+//
+// 必须用 Model 而非 Table：gorm 仅在 stmt.Schema 非空时才会为 autoUpdateTime
+// 字段补 updated_at，而 Table + Updates(map) 的 Schema 由 map 类型推导、不含字段，
+// 会导致 updated_at 永远不刷新（见 gorm callbacks.ConvertToAssignments）。
 func (r *KnowledgeBaseRepo) Update(ctx context.Context, kb *knowledgeentity.KnowledgeBase) error {
-	return r.provider.UseDB(ctx).Table(knowledgeentity.KnowledgeBase{}.TableName()).
+	return r.provider.UseDB(ctx).Model(&knowledgeentity.KnowledgeBase{}).
 		Where("id = ? AND user_id = ?", kb.ID, kb.UserID).
 		Updates(map[string]interface{}{
 			"name":            kb.Name,
