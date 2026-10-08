@@ -1642,11 +1642,17 @@ func (r *KnowledgeBaseRepo) GetByIDAndUserID(ctx context.Context, id, userID str
 }
 
 // ListByUserID 按用户查询知识库列表（创建时间倒序）
+//
+// 两条查询都必须经过 Session(&gorm.Session{})：gorm v1.25.1 的 Count 会把
+// Statement.Selects 置为 ["count(*)"]，且在返回后不清除，而 db 是这两条查询
+// 共享的同一个 *gorm.DB 实例。直接复用该链会让随后的 Find 也被编译成
+// SELECT count(*)，此时接口返回的 total 正确、列表却恒为空（已用 DryRun 探针实测确认）。
+// Session 会克隆 Statement，使两条查询互不影响。
 func (r *KnowledgeBaseRepo) ListByUserID(ctx context.Context, userID string, page, pageSize int) (total int64, list []*knowledgeentity.KnowledgeBase, err error) {
 	db := r.provider.UseDB(ctx).Table(knowledgeentity.KnowledgeBase{}.TableName()).
 		Where("user_id = ?", userID)
 
-	if err = db.Count(&total).Error; err != nil {
+	if err = db.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return 0, nil, err
 	}
 
@@ -1655,7 +1661,7 @@ func (r *KnowledgeBaseRepo) ListByUserID(ctx context.Context, userID string, pag
 		offset = 0
 	}
 
-	err = db.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&list).Error
+	err = db.Session(&gorm.Session{}).Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&list).Error
 	return total, list, err
 }
 
