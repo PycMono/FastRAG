@@ -2953,8 +2953,8 @@ import (
 
 	"github.com/PycMono/FastRAG/infrastructure"
 	"github.com/PycMono/FastRAG/infrastructure/config"
-	"github.com/gin-gonic/gin"
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 )
