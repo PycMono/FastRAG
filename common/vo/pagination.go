@@ -11,6 +11,9 @@ type PageResult[T any] struct {
 
 // NewPageResult 创建分页结果
 func NewPageResult[T any](total int64, list []T, page, pageSize int) *PageResult[T] {
+	if pageSize < 1 {
+		pageSize = 10 // 与 dto.PageQuery.Limit() 的默认值保持一致，避免除零 panic
+	}
 	pages := int(total) / pageSize
 	if int(total)%pageSize > 0 {
 		pages++

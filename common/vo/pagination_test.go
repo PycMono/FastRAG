@@ -45,3 +45,14 @@ func TestNewPageResult_TotalSmallerThanPageSize(t *testing.T) {
 		t.Fatalf("Pages = %d, want 1", r.Pages)
 	}
 }
+
+func TestNewPageResult_ZeroPageSizeDefaultsInsteadOfPanicking(t *testing.T) {
+	r := NewPageResult(0, []string{}, 1, 0)
+
+	if r.Pages != 1 {
+		t.Fatalf("Pages = %d, want 1", r.Pages)
+	}
+	if r.PageSize != 10 {
+		t.Fatalf("PageSize = %d, want 10 (default)", r.PageSize)
+	}
+}
