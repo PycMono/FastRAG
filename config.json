@@ -26,5 +26,38 @@
     "db": 0,
     "pool_size": 5
   },
-  "snowflake_node_id": 1
+  "snowflake_node_id": 1,
+  "elasticsearch": {
+    "addrs": [
+      "http://127.0.0.1:9200"
+    ],
+    "index": "fastrag",
+    "username": "",
+    "password": "",
+    "dim": 1024,
+    "analyzer": "ik_max_word",
+    "search_analyzer": "ik_smart",
+    "shards": 1,
+    "replicas": 0,
+    "refresh_interval": "30s"
+  },
+  "embedding": {
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "dim": 1024,
+    "batch_size": 16,
+    "timeout_ms": 30000,
+    "query_prefix": ""
+  },
+  "search": {
+    "bm25_top": 50,
+    "knn_top": 50,
+    "num_candidates": 200,
+    "rank_constant": 60,
+    "dense_weight": 0.5
+  },
+  "security": {
+    "trust_request_account": true
+  }
 }

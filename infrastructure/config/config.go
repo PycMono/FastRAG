@@ -15,6 +15,53 @@ type Config struct {
 	MySQL           MySQLConfig `json:"mysql"`             // MySQL 配置
 	Redis           RedisConfig `json:"redis"`             // Redis 配置
 	SnowflakeNodeID int         `json:"snowflake_node_id"` // 雪花 ID 节点号 [0, 1023]
+
+	Elasticsearch ESConfig        `json:"elasticsearch"`
+	Embedding     EmbeddingConfig `json:"embedding"`
+	Search        SearchConfig    `json:"search"`
+	Security      SecurityConfig  `json:"security"`
+}
+
+// SecurityConfig 部署前提的显式确认（§6.1）。
+//
+// 默认零值 = false = 拒绝启动。这是刻意的：让「开箱即跑」这个动作
+// 在部署时（有人看日志）失败，而不是在生产时静默地不设防。
+type SecurityConfig struct {
+	TrustRequestAccount bool `json:"trust_request_account"`
+}
+
+// ESConfig Elasticsearch 配置
+type ESConfig struct {
+	Addrs           []string `json:"addrs"`       // 必须带 scheme，如 http://127.0.0.1:9200
+	Index           string   `json:"index"`       // 留空用 es.IndexName
+	Username        string   `json:"username"`
+	Password        string   `json:"password"`
+	Dim             int      `json:"dim"`             // 必须与 embedding 模型一致
+	Analyzer        string   `json:"analyzer"`        // 索引分词器
+	SearchAnalyzer  string   `json:"search_analyzer"` // 查询分词器
+	Shards          int      `json:"shards"`
+	Replicas        int      `json:"replicas"`
+	RefreshInterval string   `json:"refresh_interval"`
+}
+
+// EmbeddingConfig 向量化服务配置（OpenAI 兼容协议）
+type EmbeddingConfig struct {
+	BaseURL     string `json:"base_url"`
+	APIKey      string `json:"api_key"`
+	Model       string `json:"model"`
+	Dim         int    `json:"dim"`
+	BatchSize   int    `json:"batch_size"`
+	TimeoutMS   int    `json:"timeout_ms"`
+	QueryPrefix string `json:"query_prefix"` // 非对称编码前缀，如 "query: "；多数模型留空
+}
+
+// SearchConfig 检索调参
+type SearchConfig struct {
+	BM25Top       int     `json:"bm25_top"`
+	KNNTops       int     `json:"knn_top"`
+	NumCandidates int     `json:"num_candidates"`
+	RankConstant  int     `json:"rank_constant"`
+	DenseWeight   float64 `json:"dense_weight"`
 }
 
 // HTTPConfig HTTP 配置
@@ -54,6 +101,7 @@ func MustLoad() *Config {
 	if err != nil {
 		panic(err)
 	}
+
 	return c
 }
 

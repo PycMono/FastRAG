@@ -1,0 +1,104 @@
+# FastRAG 本地开发环境
+#
+# 只起 Elasticsearch + Kibana。
+# MySQL / Redis 本机已经在跑（3306 / 6379），直接用即可；
+# 需要独立一套时，见文件末尾的注释块。
+#
+#   docker compose up -d --build
+#   docker compose logs -f es
+#   docker compose down            # 保留数据
+#   docker compose down -v         # 连数据一起删
+
+name: fastrag
+
+services:
+  es:
+    build:
+      context: ./deploy/es
+      args:
+        ES_VERSION: ${ES_VERSION:-9.5.5}
+    image: fastrag/es:${ES_VERSION:-9.5.5}
+    container_name: fastrag-es
+
+    environment:
+      - discovery.type=single-node          # 单节点，免去 bootstrap 集群流程
+      - cluster.name=fastrag-local
+      - xpack.security.enabled=false        # 本地开发关掉 TLS，省去证书配置
+      - xpack.security.enrollment.enabled=false
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g           # 本地 1G 够用；生产至少一半物理内存
+
+    ports:
+      - "9200:9200"
+
+    ulimits:
+      memlock: { soft: -1, hard: -1 }       # 配合 bootstrap.memory_lock，禁止换出堆内存
+      nofile:  { soft: 65536, hard: 65536 }
+
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # Kibana 默认**不启动**——镜像 ~1.2GB，网络慢时先跳过。
+  # 需要时：docker compose --profile kibana up -d
+  kibana:
+    profiles: ["kibana"]
+    image: kibana:${ES_VERSION:-9.5.5}
+    container_name: fastrag-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://es:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      es:
+        condition: service_healthy
+
+volumes:
+  esdata:
+
+# ---------------------------------------------------------------------------
+# 可选：如果你想要一套完全独立的 MySQL / Redis（不共用本机已有的），
+# 把下面这块取消注释。故意错开端口（3307 / 6380）避免和本机已有的冲突。
+#
+# 注意：取消注释后，应用的 DSN 要相应改成 127.0.0.1:3307。
+#
+# DDL 挂在 infrastructure/persistence/migration/ —— 那是建表语句的单一事实源
+# （服务里用 go:embed 读的也是它），这样容器初始化和代码内建表不会各走各的。
+# 该目录下的 .go 文件会被 MySQL 入口脚本忽略，只执行 .sql。
+# ---------------------------------------------------------------------------
+#
+#   mysql:
+#     image: mysql:8.4
+#     container_name: fastrag-mysql
+#     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+#     environment:
+#       - MYSQL_ROOT_PASSWORD=fastrag
+#       - MYSQL_DATABASE=fastrag
+#     ports:
+#       - "3307:3306"
+#     volumes:
+#       - ./infrastructure/persistence/migration:/docker-entrypoint-initdb.d:ro
+#       - mysqldata:/var/lib/mysql
+#     healthcheck:
+#       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pfastrag"]
+#       interval: 10s
+#       retries: 12
+#
+#   redis:
+#     image: redis:7.4-alpine
+#     container_name: fastrag-redis
+#     command: redis-server --appendonly yes
+#     ports:
+#       - "6380:6379"
+#     volumes:
+#       - redisdata:/data
+#
+# volumes:
+#   mysqldata:
+#   redisdata:

@@ -25,7 +25,23 @@ const (
 	CodeKnowledgeBaseCreateFail   = 10103 // 知识库创建失败
 	CodeKnowledgeBaseUpdateFail   = 10104 // 知识库更新失败
 	CodeKnowledgeBaseDeleteFail   = 10105 // 知识库删除失败
-	CodeKnowledgeRetrievalNotImpl = 10106 // 检索能力未实现
+	CodeKnowledgeRetrievalNotImpl = 10106 // 检索能力未实现（已被下方 10301 取代，仅保留兼容）
+)
+
+// 导入相关错误码
+const (
+	CodeDocChunkEmpty   = 10201 // 切片结果为空
+	CodeChunkTooLarge   = 10202 // 单切片过长
+	CodeDocIngestFail   = 10203 // 导入失败
+	CodeDocDeleteFail   = 10204 // 文档删除失败
+	CodeEmbeddingFail   = 10205 // embedding 服务异常
+	CodeVectorStoreFail = 10206 // 向量库异常
+	CodeIndexInitFail   = 10207 // 索引初始化失败
+)
+
+// 检索相关错误码
+const (
+	CodeSearchFail = 10301 // 检索失败
 )
 
 // ─── CodeError 基础 ──────────────────────────────────────────────────────────
@@ -156,3 +172,24 @@ var (
 	ErrKnowledgeBaseDeleteFailed = NewSysError(CodeKnowledgeBaseDeleteFail, "knowledge base delete failed")
 	ErrKnowledgeRetrievalNotImpl = NewBizError(CodeKnowledgeRetrievalNotImpl, "knowledge retrieval not implemented")
 )
+
+// ─── 文档导入 / 检索 ──────────────────────────────────────────────────────────
+
+var (
+	ErrDocChunkEmpty     = NewBizError(CodeDocChunkEmpty, "chunk result is empty")
+	ErrChunkTooLarge     = NewBizError(CodeChunkTooLarge, "chunk too large for embedding")
+	ErrDocIngestFailed   = NewSysError(CodeDocIngestFail, "doc ingest failed")
+	ErrDocDeleteFailed   = NewSysError(CodeDocDeleteFail, "doc delete failed")
+	ErrEmbeddingFailed   = NewSysError(CodeEmbeddingFail, "embedding service failed")
+	ErrVectorStoreFailed = NewSysError(CodeVectorStoreFail, "vector store failed")
+	ErrIndexInitFailed   = NewSysError(CodeIndexInitFail, "index init failed")
+	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
+)
+
+// NewParamError 生成带自定义文案的参数错误。
+//
+// 基础错误 ErrInvalidParam 的 msg 是固定串，Params() 走的是 Sprintf，
+// 没有占位符时参数会被直接丢掉，所以另开一个构造函数。
+func NewParamError(msg string) *BizError {
+	return NewBizError(CodeInvalidParam, msg)
+}
