@@ -476,8 +476,6 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 6. `application/service/ingest/service.go`、`search/service.go` — 换成按名字解析。
 7. `README.md` — 「API 示例」补 `model` / `embed_model` / `rerank_model`；
    配置一节写明第 8 节的代价。
-8. `docs/superpowers/specs/2026-10-09-rerank-implementation-plan.md` — 它是单服务商版本，
-   本方案是它的超集；在其开头加一句指向本文，内容不动。
 
 ⚠️ **落地前需先与在飞分支对齐**：工作区里有一份未提交的 rerank 实现
 （`infrastructure/serviceimpl/rerank.go`、`rerank_test.go`、`httpclient.go` 等）。

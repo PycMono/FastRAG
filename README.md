@@ -115,6 +115,42 @@ make tidy         # 整理 go.mod
 make clean        # 清理构建产物
 ```
 
+## 模型配置
+
+`embedding` 和 `rerank` 各是一组服务商，分**外层**与 `models` 两层：
+共用的字段放外层大家一起持有，只有逐家不同的才放进 `models`。所以加一家
+通常只要 4、5 行：
+
+```json
+"embedding": {
+  "default": "bge-m3",
+  "dim": 1024,
+  "batch_size": 16,
+  "timeout_ms": 60000,
+  "models": {
+    "bge-m3": { "url": "http://127.0.0.1:11434/v1/embeddings" },
+    "qwen": {
+      "protocol": "dashscope",
+      "url": "https://…/api/v1/services/embeddings/text-embedding/text-embedding",
+      "api_key": "sk-…",
+      "model": "qwen3.7-text-embedding",
+      "batch_size": 10
+    }
+  }
+}
+```
+
+几点必须知道的：
+
+- **`dim` 和 `top_n` 只在外层**：一个是索引的性质，一个是服务级的策略，
+  任何一家单独改了都不成立。`query_prefix` 反过来只在 entry 里。
+- **`protocol` 取 `openai`（默认）或 `dashscope`**，指的是上游原生协议，
+  不是两套实现——分批、并发、重试、排序都是共用的。
+- **换 embedding 服务商不会让旧数据变得不可用，也不会保证新旧向量在同一个空间里。**
+  维度不同会被 ES 直接拦下（会响）；维度相同但向量空间不同则是**静默**的噪声排序，
+  接口不报错、日志不报警。要换就重建索引重导，本服务不替你保持自洽。
+- **换 rerank 服务商随时安全**：它只在查询期调用，不落库。
+
 ## 统一响应格式
 
 所有 JSON API 均通过 `ginsdk.Send` 返回（`/health`、`/ready` 两个探针除外：K8s 探针需要固定格式，
@@ -188,10 +224,11 @@ make clean        # 清理构建产物
 ```bash
 # 导入文档。format 取 markdown / text / chunks；
 # refresh=true 表示写完立刻刷索引、返回即可搜（默认 false，按 30s 周期）
+# model 指定这篇的向量用哪家算（config.embedding.models 的 key），省略则用 default
 curl -X POST http://localhost:8080/api/v1/docs \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md","format":"text",
-       "content":"……正文……","refresh":true}'
+       "model":"bge-m3","content":"……正文……","refresh":true}'
 
 # 批量导入：请求体是数组，最多 100 篇。恒返回 200 + 逐条明细，
 # 单条失败不改状态码——否则调用方分不清「全挂」和「挂 3 条」，只能整批重试
@@ -206,12 +243,15 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
   -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md"}'
 
 # 检索。dense_weight 省略则用配置默认值；<=0.01 只走 BM25，>=0.99 只走 kNN
-# rerank_switch=true 且 config.rerank.enabled=true 时会调用 /rerank 精排；
-# retrieve_count 控制 rerank 前召回多少候选（默认 limit*2，上限 200）
+# rerank_switch=true 且 config.rerank.enabled=true 时会调用精排；
+# retrieve_count 控制精排前召回多少候选（默认 limit*2，上限 200）
+# embed_model / rerank_model 分别选两路用哪家，省略则各用各的 default；
+# 名字不存在返回 code=10001 并列出可用的名字，不会悄悄回落到默认那家
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
-       "limit":5,"dense_weight":0.5,"rerank_switch":false}'
+       "limit":5,"dense_weight":0.5,"rerank_switch":false,
+       "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
 
 # 探针
 curl http://localhost:8080/health
