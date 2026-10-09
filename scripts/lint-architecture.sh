@@ -202,7 +202,7 @@ else
     echo "  ✅ API route grouping check done"
 fi
 
-# 6. 检查是否使用 gingext.Send 而非 c.JSON（health 探针豁免）
+# 6. 检查是否使用 ginsdk.Send 而非 c.JSON（health 探针豁免）
 #
 # 规则 6 要回答的是「这个文件里有没有一处真实的 c.JSON( 调用」。
 # 判定**完全逐行进行，不携带任何跨行状态**（刻意的收窄，不是疏漏）：
@@ -260,7 +260,7 @@ while IFS= read -r -d '' f; do
     ' "$f" 2>/dev/null || true)"
     if [ -n "$FOUND" ]; then
         printf '%s\n' "$FOUND"
-        echo "BLOCKER: $f uses c.JSON() instead of gingext.Send()"
+        echo "BLOCKER: $f uses c.JSON() instead of ginsdk.Send()"
         ERRORS=$((ERRORS + 1))
         FMT_BAD=$((FMT_BAD + 1))
     fi

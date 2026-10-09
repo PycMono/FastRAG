@@ -88,25 +88,30 @@ make clean        # 清理构建产物
 
 ## 统一响应格式
 
-所有 JSON API 均通过 `gingext.Send` 返回（`/health`、`/ready` 两个探针除外：K8s 探针需要固定格式，
+所有 JSON API 均通过 `ginsdk.Send` 返回（`/health`、`/ready` 两个探针除外：K8s 探针需要固定格式，
 因此直接用 `c.JSON`，见 `infrastructure/controller/http/health/controller.go`）：
 
 ```jsonc
 // 成功
 {"code": 0, "msg": "success", "data": {...}}
-// 参数错误（HTTP 400）
+// 参数错误
 {"code": 10001, "msg": "invalid parameter", "data": {}}
-// 未登录（HTTP 401）
+// 未登录
 {"code": 10002, "msg": "unauthorized", "data": {}}
-// 未找到（HTTP 404）
+// 未找到
 {"code": 10101, "msg": "knowledge base not found", "data": {}}
-// 未命中下方映射表的业务/系统错误（HTTP 200 + 业务码）
+// 其他业务/系统错误
 {"code": 10103, "msg": "knowledge base create failed", "data": {}}
 ```
 
-HTTP 状态码由业务码映射（`httpStatusForCode`，见 `infrastructure/driver/gingext/response.go`）：
-`10001`→`400`、`10002`→`401`、`10003`→`403`、`10004`/`10101`→`404`、`10006`→`429`；
-未列入映射表的业务码（如 `10103`、`10104`、`10105`、`10106`）落到默认分支，返回 **HTTP 200 + 业务码**。
+**HTTP 状态码恒为 `200`**，成败一律由 `code` 表达。这是 `ginsdk.Send` 的契约：
+状态码不再承载语义，就不会出现「状态码说成功、body 说失败」两套信号打架，
+网关也不会按 4xx/5xx 自作主张重试。调用方（含 `infrastructure/controller/http/web/`
+的前端页面）必须按 `code !== 0` 判失败，不要用 `resp.ok` / `resp.status`。
+
+代价是中间件和监控看不见失败了，所以 `ginsdk.Send` 会把错误挂到 `c.Errors`，
+`Tracing` / `Metrics` / `Logger` 三个中间件靠它识别失败请求。这一点由 SDK
+保证，业务代码不必操心——但**自定义 Sender 时必须自己调 `ctx.Error(err)`**。
 
 ### 错误码
 

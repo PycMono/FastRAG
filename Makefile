@@ -1,4 +1,4 @@
-.PHONY: build run debug test test-pkg test-single lint clean tidy
+.PHONY: build run debug test test-pkg test-single lint es-vectors es-vector-full mysql clean tidy
 
 # 构建项目
 build:
@@ -27,6 +27,19 @@ test-single:
 # 架构红线检查
 lint:
 	bash scripts/lint-architecture.sh
+
+# 看 ES 里有没有向量（排查用：_source 里看不到 *_vec 是 ES 9 的正常行为）
+es-vectors:
+	bash scripts/es-inspect-vector.sh
+
+# 同上，但把 1024 维向量**全部**打出来（前 6 维看不够时用）
+es-vector-full:
+	bash scripts/es-inspect-vector.sh --full
+
+# 连 MySQL 改数据（**别用 docker exec mysql mysql**，那条连接客户端字符集是 latin1，
+# 手工插中文会变 æ¼”ç¤º... 这种双向编码错。详见 scripts/mysql.sh 头部注释）
+mysql:
+	bash scripts/mysql.sh
 
 # 清理构建产物
 clean:

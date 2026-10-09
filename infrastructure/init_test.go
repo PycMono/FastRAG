@@ -1,7 +1,6 @@
 package infrastructure_test
 
 import (
-	"context"
 	"sort"
 	"testing"
 
@@ -10,16 +9,7 @@ import (
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
-	"gorm.io/gorm"
 )
-
-// stubProvider 占位 MySQL Provider。
-// 本测试验证的是依赖图能否装配、路由能否注册，不是数据库连通性。
-type stubProvider struct{}
-
-func (stubProvider) UseDB(ctx context.Context) *gorm.DB {
-	panic("stubProvider.UseDB 不应被调用：冒烟测试不执行任何数据库操作")
-}
 
 // TestInit_BuildsGraphAndRegistersRoutes 是 T11 唯一的运行时验证。
 //
@@ -36,14 +26,31 @@ func TestInit_BuildsGraphAndRegistersRoutes(t *testing.T) {
 		// Redis 故意留空：redis.NewClient 在 addr 为空时返回 (nil, nil)，
 		// fx 允许这个 nil 值进入依赖图（已实测）。
 		SnowflakeNodeID: 1,
+
+		// 地址随便给一个：NewClient 不发探活请求（A4.2 的 ⚠️），
+		// 所以这里不需要真有一个 ES 在跑。
+		Elasticsearch: config.ESConfig{Addrs: []string{"http://127.0.0.1:9200"}},
+
+		// 不做鉴权的显式开关（§6.1）。不置 true 时 core 里的闸门会直接拒绝启动，
+		// 装配测试也得过这一道——这正是把闸门做成 fx.Invoke 而不是写在 main 里的意义。
+		Security: config.SecurityConfig{TrustRequestAccount: true},
 	}
 
 	var got []string
 	app := fx.New(
 		fx.NopLogger,
 		infrastructure.Init(conf),
-		// 用桩替换真实 MySQL provider，从而无需数据库即可装配整图
-		fx.Decorate(func() sqlsdk.Provider { return stubProvider{} }),
+		// 顶掉 TransProvider 的构造函数，从而无需数据库即可装配整图。
+		//
+		// 为什么顶的是 *sqlsdk.TransProvider 而不是 sqlsdk.Provider：
+		// dig 是按类型取值的，仓储要 sqlsdk.Provider、Save 的事务要
+		// transaction.Manager，两个都由同一个 *TransProvider 派生。
+		// 只替换下游接口的话，dig 仍会去构造上游的 TransProvider——
+		// 而 mysql.NewProvider 构造时就真连库，连不上直接 panic。
+		//
+		// 零值 TransProvider 的 UseDB 会空指针，但本测试不执行任何数据库操作：
+		// ensureIndexOnStart 是 fx.Invoke，它的 OnStart 只有在 app.Start() 时才跑。
+		fx.Decorate(func() *sqlsdk.TransProvider { return &sqlsdk.TransProvider{} }),
 		fx.Invoke(func(engine *gin.Engine) {
 			for _, r := range engine.Routes() {
 				got = append(got, r.Method+" "+r.Path)
@@ -57,15 +64,19 @@ func TestInit_BuildsGraphAndRegistersRoutes(t *testing.T) {
 		t.Fatalf("fx 依赖图装配失败: %v", err)
 	}
 
+	// 路由刻意很少：只有「写文档」「删文档」「检索」三件事（§1.2）。
+	// 知识库 CRUD 已移出本服务范围，这里多出来的任何一条都该被质疑。
+	//
+	// 两个例外，都不是业务接口：/health 与 /ready 是 K8s 探针（固定路径），
+	// / 是内嵌的演示页（给人看的 HTML）。它们同样在顶层，不带 /api 前缀。
 	want := []string{
-		"DELETE /api/v1/knowledge-bases/:id",
-		"GET /api/v1/knowledge-bases",
-		"GET /api/v1/knowledge-bases/:id",
+		"GET /",
 		"GET /health",
 		"GET /ready",
-		"POST /api/v1/knowledge-bases",
-		"POST /api/v1/knowledge-bases/:id/search",
-		"PUT /api/v1/knowledge-bases/:id",
+		"POST /api/v1/docs",
+		"POST /api/v1/docs/batch",
+		"POST /api/v1/docs/delete",
+		"POST /api/v1/search",
 	}
 	sort.Strings(got)
 	if len(got) != len(want) {

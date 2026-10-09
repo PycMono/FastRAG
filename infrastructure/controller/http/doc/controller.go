@@ -6,7 +6,7 @@ import (
 	"github.com/PycMono/FastRAG/application/service/ingest"
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
-	"github.com/PycMono/FastRAG/infrastructure/driver/gingext"
+	ginsdk "github.com/PycMono/go-gin-sdk"
 	"github.com/gin-gonic/gin"
 )
 
@@ -29,12 +29,12 @@ func NewController(service *ingest.Service) *Controller {
 func (ctl *Controller) Ingest(c *gin.Context) {
 	var param dto.DocIngestDTO
 	if err := c.ShouldBindJSON(&param); err != nil {
-		gingext.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
+		ginsdk.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
 		return
 	}
 
 	result, err := ctl.service.Ingest(c.Request.Context(), &param)
-	gingext.Send(c, result, err)
+	ginsdk.Send(c, result, err)
 }
 
 // BatchIngest POST /api/v1/docs/batch
@@ -45,20 +45,20 @@ func (ctl *Controller) Ingest(c *gin.Context) {
 func (ctl *Controller) BatchIngest(c *gin.Context) {
 	var params []*dto.DocIngestDTO
 	if err := c.ShouldBindJSON(&params); err != nil {
-		gingext.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
+		ginsdk.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
 		return
 	}
 	if len(params) == 0 {
-		gingext.Send(c, nil, apperrors.NewParamError("批量导入列表为空"))
+		ginsdk.Send(c, nil, apperrors.NewParamError("批量导入列表为空"))
 		return
 	}
 	if len(params) > maxBatchDocs {
-		gingext.Send(c, nil, apperrors.NewParamError(fmt.Sprintf(
+		ginsdk.Send(c, nil, apperrors.NewParamError(fmt.Sprintf(
 			"单次最多 %d 篇，收到 %d 篇；请上游分批调用", maxBatchDocs, len(params))))
 		return
 	}
 
-	gingext.Send(c, ctl.service.BatchIngest(c.Request.Context(), params), nil)
+	ginsdk.Send(c, ctl.service.BatchIngest(c.Request.Context(), params), nil)
 }
 
 // Delete POST /api/v1/docs/delete
@@ -68,10 +68,10 @@ func (ctl *Controller) BatchIngest(c *gin.Context) {
 func (ctl *Controller) Delete(c *gin.Context) {
 	var param dto.DocDeleteDTO
 	if err := c.ShouldBindJSON(&param); err != nil {
-		gingext.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
+		ginsdk.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
 		return
 	}
 
 	result, err := ctl.service.DeleteDoc(c.Request.Context(), &param)
-	gingext.Send(c, result, err)
+	ginsdk.Send(c, result, err)
 }

@@ -16,6 +16,7 @@ import (
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	knowledgerepo "github.com/PycMono/FastRAG/domain/repository/knowledge"
 	"github.com/PycMono/FastRAG/infrastructure/config"
+	logsdk "github.com/PycMono/go-logger-sdk"
 	elasticsearch "github.com/elastic/go-elasticsearch/v9"
 )
 
@@ -56,9 +57,9 @@ func NewESVectorStore(
 // 建好之后改不了，真出现不一致只能新建索引重导（§9.4、§11 场景 9）。
 // 自动「修正」在这里反而危险——它多半会把索引删了重建，等于全量丢数据。
 func (s *ESVectorStore) EnsureIndex(ctx context.Context) error {
-	res, err := s.client.IndicesExists(
+	res, err := s.client.Indices.Exists(
 		[]string{s.index},
-		s.client.IndicesExists.WithContext(ctx),
+		s.client.Indices.Exists.WithContext(ctx),
 	)
 	if err != nil {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
@@ -84,10 +85,10 @@ func (s *ESVectorStore) EnsureIndex(ctx context.Context) error {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
 	}
 
-	create, err := s.client.IndicesCreate(
+	create, err := s.client.Indices.Create(
 		s.index,
-		s.client.IndicesCreate.WithBody(bytes.NewReader(payload)),
-		s.client.IndicesCreate.WithContext(ctx),
+		s.client.Indices.Create.WithBody(bytes.NewReader(payload)),
+		s.client.Indices.Create.WithContext(ctx),
 	)
 	if err != nil {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
@@ -181,9 +182,9 @@ func (s *ESVectorStore) Save(ctx context.Context, docs []knowledgerepo.VectorDoc
 // ⚠️ 粒度是**整个索引**：ES 没有「按文档刷新」这种操作。单索引多租户（D2）下
 // 会顺带刷到别的租户的段，所以只在上面两种情况下调，别放进常规写入路径。
 func (s *ESVectorStore) Refresh(ctx context.Context) error {
-	res, err := s.client.IndicesRefresh(
-		s.client.IndicesRefresh.WithContext(ctx),
-		s.client.IndicesRefresh.WithIndex(s.index),
+	res, err := s.client.Indices.Refresh(
+		s.client.Indices.Refresh.WithContext(ctx),
+		s.client.Indices.Refresh.WithIndex(s.index),
 	)
 	if err != nil {
 		return apperrors.ErrVectorStoreFailed.Wrap(err)
@@ -313,7 +314,17 @@ func (s *ESVectorStore) DeleteExcept(
 		[]string{s.index},
 		bytes.NewReader(body),
 		s.client.DeleteByQuery.WithContext(ctx),
+		// 删到一半撞上版本冲突时继续，别把整批回滚
 		s.client.DeleteByQuery.WithConflicts("proceed"),
+		// refresh 必须开（§5.2 ②）：删除和写入一样，**要等下一次刷新才对检索可见**。
+		// 而调用方的刷新在删除之前——那是为了「让 delete_by_query 看得见上一批旧切片」，
+		// 帮不到这里的「让删除结果被检索看见」。少了这一次刷新，
+		// 重导入之后立刻检索会同时返回新旧两份内容，直到索引的 30s 周期刷新到来，
+		// §12.1 那条「重导入后旧切片搜不到」就会时灵时不灵，且窗口正好落在
+		// 「刚导入完就去搜」这个最自然的用法上。
+		//
+		// 语义上也不该省：调用方请求的是「写完即可检索」，而「写完」包含清掉旧的。
+		s.client.DeleteByQuery.WithRefresh(true),
 	)
 	if err != nil {
 		return 0, apperrors.ErrVectorStoreFailed.Wrap(err)
@@ -377,7 +388,12 @@ func (s *ESVectorStore) Search(
 		go func(rt route) {
 			defer wg.Done()
 
+			s.logSearch(ctx, rt.name, rt.body)
+
 			hits, err := s.runSearch(ctx, rt.body)
+
+			// 在加锁前记，别让日志把两路的并发串起来
+			s.logSearchResult(ctx, rt.name, hits, err)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -394,6 +410,111 @@ func (s *ESVectorStore) Search(
 		return out, errors.Join(errs...)
 	}
 	return out, nil
+}
+
+// logSearch 把真正发给 ES 的请求体打出来，每次检索两条（route=bm25 / route=knn）。
+//
+// 存在的理由：混合检索一次发**两个**请求，只看其中一个很容易得出「根本没走向量检索」
+// 的错误结论——2026-10-09 就是这么误判的。这里把两路都打出来，靠 route 字段区分。
+//
+// 想看 ES 那一侧收到的原始报文，那是另一条路（ES 慢日志），不要和这里混为一谈。
+func (s *ESVectorStore) logSearch(ctx context.Context, route string, body map[string]any) {
+	logsdk.Info(ctx, "检索请求发往 ES",
+		logsdk.Any("route", route),
+		logsdk.Any("index", s.index),
+		logsdk.Any("body", summarizeQueryVec(body)),
+	)
+}
+
+// logSearchResult 记每一路**回来了什么**。
+//
+// 和 logSearch 配对用：那个证明「发出去了」，这个证明「回来了」。
+// 只有前者的话，日志里看到 route=knn 也仍然不知道向量路到底召回没有——
+// 2026-10-09 就被问过一次「是不是真查到数据了」。
+//
+// top_score 对向量路是**各条 kNN 子句余弦相似度之和**，content 模式下有
+// 标题+正文两条子句，所以量程是 0~2 而不是 0~1；title 模式只有一条，是 0~1。
+// 对 BM25 路则是无上界的相关性分。三者的数不能横向比。
+func (s *ESVectorStore) logSearchResult(
+	ctx context.Context, route string, hits []knowledgerepo.VectorHit, err error,
+) {
+	if err != nil {
+		logsdk.Error(ctx, "ES 检索返回失败",
+			logsdk.Any("route", route),
+			logsdk.Err(err),
+		)
+		return
+	}
+
+	fields := []logsdk.Fields{
+		logsdk.Any("route", route),
+		logsdk.Any("hits", len(hits)),
+	}
+	// 空结果是合法状态（这个租户没数据、或过滤后为空），不当错误报，
+	// 但 hits=0 本身就是要看的信号，所以照记。
+	if len(hits) > 0 {
+		fields = append(fields,
+			logsdk.Any("top_chunk_id", hits[0].ChunkID),
+			logsdk.Any("top_score", hits[0].Score),
+		)
+	}
+	logsdk.Info(ctx, "ES 检索返回", fields...)
+}
+
+// summarizeQueryVec 返回 body 的浅拷贝，把 knn 里的 query_vector 换成一句摘要。
+//
+// 1024 个 float32 原样打出来会把日志刷爆，而排查「有没有走向量路」只需要知道
+// 维度对不对、数值是不是全零。原 body 要原样发给 ES，所以只能拷贝不能改。
+//
+// knn 有两种形态都要认：**数组**（content 模式，标题+正文两条子句）和
+// **单对象**（title 模式一条）。只认其中一种的话，另一种形态会在日志里
+// 原样吐出 1024 个数——而日志恰恰是排查这类问题时唯一能看的东西。
+func summarizeQueryVec(body map[string]any) map[string]any {
+	out := make(map[string]any, len(body))
+	for k, v := range body {
+		out[k] = v
+	}
+
+	switch knn := out["knn"].(type) {
+	case map[string]any:
+		out["knn"] = summarizeClause(knn)
+	case []any:
+		clauses := make([]any, 0, len(knn))
+		for _, c := range knn {
+			m, ok := c.(map[string]any)
+			if !ok {
+				clauses = append(clauses, c)
+				continue
+			}
+			clauses = append(clauses, summarizeClause(m))
+		}
+		out["knn"] = clauses
+	}
+	return out
+}
+
+// summarizeClause 把一条 knn 子句的 query_vector 换成摘要，其余字段原样。
+func summarizeClause(clause map[string]any) map[string]any {
+	cp := make(map[string]any, len(clause))
+	for k, v := range clause {
+		cp[k] = v
+	}
+
+	if vec, ok := clause["query_vector"].([]float32); ok {
+		cp["query_vector"] = describeVec(vec)
+	}
+	return cp
+}
+
+func describeVec(vec []float32) string {
+	if len(vec) < 8 {
+		return fmt.Sprintf("<%d 维 float32: %v>", len(vec), vec)
+	}
+	return fmt.Sprintf("<%d 维 float32，首尾各 4 个: %.6f %.6f %.6f %.6f ... %.6f %.6f %.6f %.6f>",
+		len(vec),
+		vec[0], vec[1], vec[2], vec[3],
+		vec[len(vec)-4], vec[len(vec)-3], vec[len(vec)-2], vec[len(vec)-1],
+	)
 }
 
 func (s *ESVectorStore) runSearch(
@@ -494,30 +615,56 @@ func (s *ESVectorStore) bm25Body(req knowledgerepo.VectorSearchReq) map[string]a
 }
 
 // knnBody 向量路。
+//
+// knn 这里传的是**数组**：content 模式下标题向量和正文向量各出一条子句，
+// ES 把两条子句的分数**相加**后出一个榜单（实测 0.969 + 0.840 = 1.809）。
+//
+// 为什么要两条子句：只查 content_vec 时，「标题讲这件事、正文恰好没重复这个词」
+// 的切片永远进不了榜。2026-10-09 在同一批数据上实测，加上 title_vec 后 top50 里
+// 有 18 条是单查 content_vec 召不回来的（交集 32 条）。
+//
+// 对齐的是 go-ai-knowledge 的做法——它在 ES 原生 RRF 里给 title_vec / content_vec
+// 各挂一个 retriever。区别只在融合口径：它是按**名次**融合，这里是按**分数**相加。
+// 相加的语义是「两处都像」压过「一处极像」，也正是 ES 官方对多字段 kNN 的推荐用法。
+//
+// title 模式（search_mode = title）仍然只发一条：那条路的语义就是「不碰正文」
+// （§7.2），顺带查 content_vec 等于把只按标题建的库悄悄按正文检索。
 func (s *ESVectorStore) knnBody(req knowledgerepo.VectorSearchReq) map[string]any {
-	field := FieldContentVec
+	return map[string]any{
+		"size":    req.KNNTops,
+		"knn":     s.knnClauses(req),
+		"_source": sourceFields(),
+	}
+}
+
+// knnClauses 按检索模式决定查几个向量字段，逐条构造 kNN 子句。
+func (s *ESVectorStore) knnClauses(req knowledgerepo.VectorSearchReq) []any {
+	fields := []string{FieldTitleVec, FieldContentVec}
 	if req.TitleOnly {
-		field = FieldTitleVec
+		fields = []string{FieldTitleVec}
 	}
 
 	k := req.KNNTops
 	numCandidates := req.NumCandidates
 	if numCandidates < k {
-		// num_candidates 必须 >= k，否则 ES 直接 400
+		// num_candidates 必须 >= k，否则 ES 直接 400。
+		// 每条子句各自受这条约束，所以放在循环外算一次
 		numCandidates = k
 	}
 
-	return map[string]any{
-		"size": k,
-		"knn": map[string]any{
-			"field":          field,
+	out := make([]any, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, map[string]any{
+			"field":          f,
 			"query_vector":   req.QueryVec,
 			"k":              k,
 			"num_candidates": numCandidates,
-			"filter":         s.filters(req),
-		},
-		"_source": sourceFields(),
+			// filter 必须挂在**每条子句**上，不能只挂请求外层。
+			// 漏掉一条 = 那条子句跨租户召回，account 隔离就只剩一半（D2）
+			"filter": s.filters(req),
+		})
 	}
+	return out
 }
 
 // filters 所有「只做范围限定、不参与打分」的条件。

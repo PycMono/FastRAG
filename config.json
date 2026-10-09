@@ -42,12 +42,12 @@
     "refresh_interval": "30s"
   },
   "embedding": {
-    "base_url": "",
+    "base_url": "http://127.0.0.1:11434/v1",
     "api_key": "",
-    "model": "",
+    "model": "bge-m3",
     "dim": 1024,
     "batch_size": 16,
-    "timeout_ms": 30000,
+    "timeout_ms": 60000,
     "query_prefix": ""
   },
   "search": {

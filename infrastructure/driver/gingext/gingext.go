@@ -26,7 +26,9 @@ func NewEngine(conf *config.Config) *gin.Engine {
 	router.Use(middleware.Bizctx())
 	router.Use(middleware.CORS())
 	router.Use(middleware.Tracing())
-	router.Use(middleware.Logger())
+	// LoggerOptions.HeaderAllowlist 留空 = 不把请求头写进日志。
+	// 想记就把头名加进去，deniedLogHeaders（authorization/cookie/set-cookie）永远记不了。
+	router.Use(middleware.Logger(middleware.LoggerOptions{}))
 	router.Use(mw.AccessLog())
 	router.Use(mw.RateLimit())
 

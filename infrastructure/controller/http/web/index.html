@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastRAG 演示台</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e242c;
+    --border: #2a323c;
+    --text: #e6e9ee;
+    --muted: #8b97a6;
+    --accent: #4c8dff;
+    --accent-dim: #2f5cab;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .health { margin-left: auto; font-size: 12px; color: var(--muted); }
+  header .health b { color: var(--ok); font-weight: 500; }
+  header .health b.bad { color: var(--err); }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(360px, 420px) 1fr;
+    gap: 16px;
+    padding: 16px 24px 40px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .col { display: flex; flex-direction: column; gap: 16px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card > h2 {
+    margin: 0; padding: 11px 14px;
+    font-size: 13px; font-weight: 600;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card > h2 .badge {
+    margin-left: auto; font-weight: 400; font-size: 11px;
+    color: var(--muted);
+  }
+  .card .body { padding: 14px; }
+
+  label.field { display: block; margin-bottom: 10px; }
+  label.field > span {
+    display: block; margin-bottom: 5px;
+    font-size: 12px; color: var(--muted);
+  }
+  input[type=text], input[type=number], textarea, select {
+    width: 100%; padding: 8px 10px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; font-size: 13px;
+    outline: none;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent-dim); }
+  textarea { resize: vertical; min-height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; min-width: 0; }
+
+  .dropzone {
+    border: 1.5px dashed var(--border);
+    border-radius: 6px;
+    padding: 18px 12px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .dropzone:hover, .dropzone.over { border-color: var(--accent); background: rgba(76,141,255,.06); color: var(--text); }
+  .dropzone strong { color: var(--text); font-weight: 500; }
+
+  button {
+    padding: 8px 16px; border-radius: 6px;
+    border: 1px solid var(--accent); background: var(--accent);
+    color: #fff; font: inherit; font-size: 13px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { background: #5f9bff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+  button.ghost:hover { color: var(--text); border-color: var(--muted); background: transparent; }
+
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+  .actions .hint { font-size: 12px; color: var(--muted); }
+
+  .check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .check input { width: auto; margin: 0; }
+
+  .msg { padding: 10px 12px; border-radius: 6px; font-size: 12.5px; margin-top: 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.ok { background: rgba(63,185,80,.1); border: 1px solid rgba(63,185,80,.35); color: #7ee787; }
+  .msg.err { background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.35); color: #ff9c93; }
+  .msg.warn { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.35); color: #e3b341; }
+  .msg code { font-family: ui-monospace, Menlo, monospace; }
+
+  .results { display: flex; flex-direction: column; gap: 10px; }
+  .hit {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .hit .top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; flex-wrap: wrap; }
+  .hit .rank {
+    flex: none; width: 22px; height: 22px; line-height: 22px; text-align: center;
+    background: var(--accent-dim); color: #fff; border-radius: 5px;
+    font-size: 11px; font-weight: 600;
+  }
+  .hit .title { font-weight: 600; font-size: 13.5px; }
+  .hit .title.empty { color: var(--muted); font-weight: 400; font-style: italic; }
+  .hit .score {
+    margin-left: auto; font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px; color: var(--muted);
+  }
+  .hit .path { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; word-break: break-all; }
+  .hit .content {
+    font-size: 12.5px; color: #c9d1d9; white-space: pre-wrap;
+    word-break: break-word; max-height: 240px; overflow: auto;
+  }
+  .hit .meta {
+    margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--border);
+    font-size: 11px; color: var(--muted);
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  .hit .meta code { font-family: ui-monospace, Menlo, monospace; color: #9aa7b6; }
+  mark { background: rgba(76,141,255,.3); color: #cfe0ff; border-radius: 2px; padding: 0 1px; }
+
+  details.raw { margin-top: 12px; }
+  details.raw summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  details.raw pre {
+    margin: 8px 0 0; padding: 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 11.5px; max-height: 320px; overflow: auto;
+    font-family: ui-monospace, Menlo, monospace; color: #9aa7b6;
+  }
+  .empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 26px 0; }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px; vertical-align: -1px;
+    border: 2px solid rgba(255,255,255,.28); border-top-color: #fff;
+    border-radius: 50%; animation: spin .7s linear infinite; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FastRAG 演示台</h1>
+  <span class="sub">上传 markdown → 混合检索（BM25 + kNN + 应用层 RRF）</span>
+  <span class="health" id="health">探针检查中…</span>
+</header>
+
+<main>
+  <!-- ───────── 左栏：连接 + 导入 ───────── -->
+  <div class="col">
+
+    <div class="card">
+      <h2>连接参数</h2>
+      <div class="body">
+        <div class="row">
+          <label class="field">
+            <span>account（租户）</span>
+            <input type="text" id="account" value="demo">
+          </label>
+          <label class="field">
+            <span>kb_no（知识库编号）</span>
+            <input type="text" id="kb_no" value="demo-kb">
+          </label>
+        </div>
+        <div class="msg warn show" style="margin-top:0">
+          本服务不做鉴权：<code>account</code> 就是请求体里的普通字段，填谁就是谁。
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>导入文档 <span class="badge">POST /api/v1/docs</span></h2>
+      <div class="body">
+        <div class="dropzone" id="dropzone">
+          把 <strong>.md / .txt</strong> 拖进来，或<strong>点击选择</strong><br>
+          <span id="fileInfo" style="font-size:11.5px"></span>
+        </div>
+        <input type="file" id="file" accept=".md,.markdown,.txt,text/*" style="display:none">
+
+        <div style="margin-top:12px">
+          <label class="field">
+            <span>doc_name（同名 = 覆盖更新，doc_id 不变）</span>
+            <input type="text" id="doc_name" placeholder="例如 产品手册.md">
+          </label>
+          <label class="field">
+            <span>正文（可直接粘贴；有文件时以文件为准）</span>
+            <textarea id="content" placeholder="# 标题&#10;&#10;把 markdown 粘在这里…"></textarea>
+          </label>
+          <div class="row">
+            <label class="field">
+              <span>format</span>
+              <select id="format">
+                <option value="markdown">markdown（服务端按标题树切）</option>
+                <option value="text">text（按分隔符兜底切）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>chunk_size（可留空）</span>
+              <input type="number" id="chunk_size" placeholder="800">
+            </label>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="refresh" checked>
+            <label for="refresh">refresh：写完立刻刷新索引，返回即可检索（否则最多等 30s）</label>
+          </div>
+          <div class="actions">
+            <button id="btnIngest">导入</button>
+            <button class="ghost" id="btnClear">清空</button>
+            <span class="hint" id="ingestHint"></span>
+          </div>
+          <div class="msg" id="ingestMsg"></div>
+          <details class="raw" id="ingestRawWrap" style="display:none">
+            <summary>原始响应</summary><pre id="ingestRaw"></pre>
+          </details>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ───────── 右栏：检索 ───────── -->
+  <div class="col">
+
+    <div class="card">
+      <h2>检索 <span class="badge">POST /api/v1/search</span></h2>
+      <div class="body">
+        <label class="field">
+          <span>query</span>
+          <input type="text" id="query" placeholder="想找什么？">
+        </label>
+        <div class="row">
+          <label class="field">
+            <span>limit</span>
+            <input type="number" id="limit" value="10" min="1" max="100">
+          </label>
+          <label class="field">
+            <span>dense_weight（0 = 纯 BM25，1 = 纯 kNN）</span>
+            <input type="number" id="dense_weight" value="0.5" min="0" max="1" step="0.05">
+          </label>
+        </div>
+        <div class="check">
+          <input type="checkbox" id="rerank_switch">
+          <label for="rerank_switch">rerank_switch（本期是 stub，开了也只是原样返回）</label>
+        </div>
+        <div class="actions">
+          <button id="btnSearch">检索</button>
+          <span class="hint" id="searchHint"></span>
+        </div>
+        <div class="msg" id="searchMsg"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>结果 <span class="badge" id="resultCount">0 条</span></h2>
+      <div class="body">
+        <div class="results" id="results">
+          <div class="empty">还没有结果。先在左边导入一篇，再检索。</div>
+        </div>
+        <details class="raw" id="searchRawWrap" style="display:none">
+          <summary>原始响应</summary><pre id="searchRaw"></pre>
+        </details>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  // ── 统一响应封装是 {code, msg, data}，code === 0 表示成功（ginsdk.StatusOK）
+  async function call(path, body) {
+    const resp = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let parsed = null;
+    const text = await resp.text();
+    try { parsed = JSON.parse(text); } catch (_) { /* 非 JSON，下面统一报错 */ }
+    if (!parsed) {
+      throw new Error(`HTTP ${resp.status}，响应不是 JSON：${text.slice(0, 200)}`);
+    }
+    // 成败只看 code。后端走统一 envelope，HTTP 状态码恒为 200
+    // （ginsdk.Send 就是这么发的），不要拿 resp.ok / resp.status 判成败
+    if (parsed.code !== 0) {
+      throw new Error(`[${parsed.code}] ${parsed.msg}`);
+    }
+    return parsed.data;
+  }
+
+  function showMsg(el, kind, text) {
+    el.className = 'msg ' + kind + ' show';
+    el.innerHTML = text;
+  }
+  function hideMsg(el) { el.className = 'msg'; }
+
+  function escapeHTML(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // 把 query 里的词在正文里标出来。纯前端高亮，不改动服务端返回的内容
+  function highlight(text, query) {
+    const safe = escapeHTML(text);
+    const terms = String(query || '').split(/\s+/).filter((t) => t.length >= 1);
+    if (!terms.length) return safe;
+    const pattern = terms
+      .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .sort((a, b) => b.length - a.length)
+      .join('|');
+    if (!pattern) return safe;
+    try {
+      return safe.replace(new RegExp('(' + pattern + ')', 'gi'), '<mark>$1</mark>');
+    } catch (_) { return safe; }
+  }
+
+  // ── 探针 ────────────────────────────────────────────────────────────────
+  async function pingHealth() {
+    const el = $('health');
+    try {
+      const r = await fetch('/health');
+      const j = await r.json();
+      el.innerHTML = '服务 <b>' + escapeHTML(j.status || '?') + '</b>';
+    } catch (e) {
+      el.innerHTML = '服务 <b class="bad">连不上</b>';
+    }
+  }
+  pingHealth();
+
+  // ── 文件选择 / 拖拽 ──────────────────────────────────────────────────────
+  const dropzone = $('dropzone');
+  const fileInput = $('file');
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  ['dragenter', 'dragover'].forEach((ev) =>
+    dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((ev) =>
+    dropzone.addEventListener(ev, () => dropzone.classList.remove('over')));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) readFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) readFile(fileInput.files[0]);
+  });
+
+  function readFile(f) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      $('content').value = reader.result;
+      // doc_name 默认取文件名：同名重导入走「更新」语义，这是最常见的使用姿势
+      if (!$('doc_name').value.trim()) $('doc_name').value = f.name;
+      $('fileInfo').textContent = `已载入 ${f.name}（${(f.size / 1024).toFixed(1)} KB）`;
+      // 后缀不是 .md 的按纯文本走兜底切分
+      $('format').value = /\.(md|markdown)$/i.test(f.name) ? 'markdown' : 'text';
+      hideMsg($('ingestMsg'));
+    };
+    reader.onerror = () => showMsg($('ingestMsg'), 'err', '读取文件失败');
+    reader.readAsText(f, 'utf-8');
+  }
+
+  $('btnClear').addEventListener('click', () => {
+    $('content').value = ''; $('doc_name').value = '';
+    $('fileInfo').textContent = ''; fileInput.value = '';
+    hideMsg($('ingestMsg'));
+    $('ingestRawWrap').style.display = 'none';
+  });
+
+  // ── 导入 ─────────────────────────────────────────────────────────────────
+  $('btnIngest').addEventListener('click', async () => {
+    const btn = $('btnIngest');
+    const content = $('content').value;
+    const docName = $('doc_name').value.trim();
+
+    if (!docName) { return showMsg($('ingestMsg'), 'err', 'doc_name 不能为空'); }
+    if (!content.trim()) { return showMsg($('ingestMsg'), 'err', '正文不能为空'); }
+
+    const body = {
+      account: $('account').value.trim(),
+      kb_no: $('kb_no').value.trim(),
+      doc_name: docName,
+      format: $('format').value,
+      content: content,
+      refresh: $('refresh').checked,
+    };
+    const size = parseInt($('chunk_size').value, 10);
+    if (size > 0) body.split_options = { chunk_size: size };
+
+    btn.disabled = true;
+    showMsg($('ingestMsg'), 'warn', '<span class="spinner"></span>导入中：切分 → 向量化 → 写 ES → 写 MySQL…');
+    const t0 = performance.now();
+
+    try {
+      const data = await call('/api/v1/docs', body);
+      const ms = Math.round(performance.now() - t0);
+      showMsg($('ingestMsg'), 'ok',
+        `导入成功（${ms} ms）：<code>doc_id=${data.doc_id}</code>，` +
+        `${data.chunk_count} 个切片，${data.created ? '新建' : '覆盖更新'}` +
+        ($('refresh').checked ? '，索引已刷新，可以马上检索。' : '，最多等 30s 才能搜到。'));
+      $('ingestHint').textContent = '';
+      $('searchHint').textContent = '';
+      $('ingestRawWrap').style.display = '';
+      $('ingestRaw').textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      showMsg($('ingestMsg'), 'err', '导入失败：' + escapeHTML(e.message));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ── 检索 ─────────────────────────────────────────────────────────────────
+  $('btnSearch').addEventListener('click', doSearch);
+  $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+  async function doSearch() {
+    const btn = $('btnSearch');
+    const query = $('query').value.trim();
+    const kbNo = $('kb_no').value.trim();
+    if (!query) { return showMsg($('searchMsg'), 'err', 'query 不能为空'); }
+
+    const body = {
+      account: $('account').value.trim(),
+      kb_nos: [kbNo],
+      query: query,
+      limit: parseInt($('limit').value, 10) || 10,
+      dense_weight: parseFloat($('dense_weight').value),
+      rerank_switch: $('rerank_switch').checked,
+    };
+
+    btn.disabled = true;
+    showMsg($('searchMsg'), 'warn', '<span class="spinner"></span>检索中：embedding → 两路 ES → RRF 融合…');
+    const t0 = performance.now();
+
+    try {
+      const data = await call('/api/v1/search', body);
+      const ms = Math.round(performance.now() - t0);
+      const items = (data && data.items) || [];
+      hideMsg($('searchMsg'));
+      $('searchHint').textContent = `${ms} ms`;
+      $('searchRawWrap').style.display = '';
+      $('searchRaw').textContent = JSON.stringify(data, null, 2);
+      renderResults(items, query);
+    } catch (e) {
+      showMsg($('searchMsg'), 'err', '检索失败：' + escapeHTML(e.message));
+      $('results').innerHTML = '<div class="empty">检索失败。</div>';
+      $('resultCount').textContent = '0 条';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderResults(items, query) {
+    const box = $('results');
+    $('resultCount').textContent = items.length + ' 条';
+
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">没有命中。' +
+        '可能是：刚导入还没刷新（勾上 refresh 重导一次）、' +
+        '或这条 query 的词确实不在语料里。</div>';
+      return;
+    }
+
+    box.innerHTML = items.map((it, i) => `
+      <div class="hit">
+        <div class="top">
+          <span class="rank">${i + 1}</span>
+          <span class="title${it.title ? '' : ' empty'}">${it.title ? highlight(it.title, query) : '（无标题）'}</span>
+          <span class="score">${Number(it.score).toFixed(4)}</span>
+        </div>
+        ${it.heading_path ? `<div class="path">${highlight(it.heading_path, query)}</div>` : ''}
+        <div class="content">${highlight(it.content, query)}</div>
+        <div class="meta">
+          <span>文档 <code>${escapeHTML(it.doc_name)}</code></span>
+          <span>库 <code>${escapeHTML(it.kb_no || it.kb_id)}</code></span>
+          <span>切片 <code>#${it.order}</code></span>
+          <span>chunk_id <code>${escapeHTML(String(it.chunk_id).slice(0, 12))}…</code></span>
+        </div>
+      </div>`).join('');
+  }
+})();
+</script>
+</body>
+</html>

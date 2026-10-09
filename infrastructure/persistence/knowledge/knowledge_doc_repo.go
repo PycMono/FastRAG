@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"time"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	knowledgeentity "github.com/PycMono/FastRAG/domain/entity/knowledge"
@@ -103,15 +102,24 @@ func (r *KnowledgeDocRepo) Save(
 
 		switch {
 		case errors.Is(e, gorm.ErrRecordNotFound):
-			// 行不存在 → 新建。oldChunkCount 自然是 0
+			// 没有活着的同名行 → 本次插入一行新的。oldChunkCount 自然是 0
+			//
+			// 含「软删后同名重建」：软删那行 delete_ts != 0，不在这条查询的范围内，
+			// 唯一键 (kb_id, name, delete_ts) 因此被让了出来，落库的是一行**新 id**
+			// 的行。调用方那边 LoadByName 同样查不到，于是分配了新雪花——两边一致。
+			// 对调用方而言这确实是新建（doc_id 变了），报 created = true 是实话。
 			created = true
 		case e != nil:
 			return apperrors.ErrInternal.Wrap(e)
 		default:
-			oldChunkCount = cur.ChunkCount
-			// created 的判据是「主键是不是我刚生成的那个」，而不是"查不到行"——
-			// 一行被软删后同名重建时同样查不到，但那不是新建，是重导
-			created = cur.Id == row.Id
+			oldChunkCount = int(cur.ChunkCount) // PO 是 int32（对齐 DDL 的 INT），实体统一用 int
+			// 查到了活着的同名行 → 本次是覆盖。
+			//
+			// 这里**不能**用「主键是不是我刚生成的那个」来判：重导入恰恰是
+			// 复用库里那一行的 id（§5.3），于是 cur.Id == row.Id 恒成立，
+			// 条件退化成恒真，每次重导入都会报 created = true。
+			// 后果是 KB 的 doc_count 每重导入一次 +1，越滚越大。
+			created = false
 		}
 
 		// ② upsert。走 GORM 的 OnConflict 是为了让「并发时在唯一键上等待」

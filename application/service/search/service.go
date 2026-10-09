@@ -41,7 +41,7 @@ func NewService(
 	}
 }
 
-// Search 混合检索。编排见 §7.1。
+// Search 混合检索。
 func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResultVO, error) {
 	opts, err := s.resolveOptions(in)
 	if err != nil {

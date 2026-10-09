@@ -3,6 +3,8 @@ package infrastructure
 import (
 	"context"
 	"fmt"
+	"net"
+	"time"
 
 	"github.com/PycMono/FastRAG/application/service"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -16,6 +18,7 @@ import (
 	"github.com/PycMono/FastRAG/infrastructure/driver/mysql"
 	"github.com/PycMono/FastRAG/infrastructure/persistence"
 	"github.com/PycMono/FastRAG/infrastructure/serviceimpl"
+	ginsdk "github.com/PycMono/go-gin-sdk"
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
 	"github.com/PycMono/go-mysql-sdk/transaction"
 	logsdk "github.com/PycMono/go-logger-sdk"
@@ -30,6 +33,11 @@ func Init(conf *config.Config) fx.Option {
 		fx.Provide(gingext.NewEngine),
 		fx.Provide(gingext.NewHTTPServer),
 		controller.Register,
+
+		// 必须显式启动监听。ginsdk 的 HTTPServer 只是个 http.Server 的壳，
+		// 自己不会去 ListenAndServe——没有这个 Invoke，服务会打满一屏
+		// [Fx] RUNNING 然后安静地不监听任何端口。
+		fx.Invoke(startHTTPServer),
 	)
 }
 
@@ -119,6 +127,65 @@ func ensureIndexOnStart(lc fx.Lifecycle, store knowledgerepo.IVectorStore) {
 			}
 			logsdk.Info(ctx, "ES 索引就绪")
 			return nil
+		},
+	})
+}
+
+// startHTTPServer 真正把端口监听起来（§9.4 同款理由：起不来的服务不该假装起来了）。
+//
+// Serve 内部是阻塞的 ListenAndServe，所以只能丢进 goroutine；
+// 代价是「端口被占用」这类错误发生在 goroutine 里，OnStart 看不见，
+// 服务会照常进入 RUNNING——正是我们刚踩过的那个坑。
+// 所以 Serve 之后再回dial一次：连得上才算启动成功。
+//
+// 为什么不让它 panic 了事：panic 在 goroutine 里会打崩整个进程，
+// 却拿不到 fx 的回滚（已经跑起来的 OnStart 不会被回滚），
+// 日志里只会剩一句语焉不详的 panic。在这里返回 error 更干净。
+func startHTTPServer(lc fx.Lifecycle, srv *ginsdk.HTTPServer, conf *config.Config) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			// 先自己 bind 一次再放开，只为拿到一句像样的错误。
+			// Serve 里的 ListenAndServe 跑在 goroutine 里，端口被占时它的 panic
+			// 是打崩整个进程，而不是回到这里——日志里只会剩一段栈，
+			// 「8090 被谁占了」这个信息拿不到。这里先问一次，答案就清楚了。
+			// 之后 Serve 再 bind 有一次极短的抢跑窗口，概率上可以忽略。
+			listenAddr := conf.HTTP.Host + ":" + conf.HTTP.Port // gin 那边也是这么拼的
+			probe, err := net.Listen("tcp", listenAddr)
+			if err != nil {
+				return fmt.Errorf("HTTP 服务无法监听 %s: %w", listenAddr, err)
+			}
+			probe.Close()
+
+			go srv.Serve(ctx)
+
+			// Host 为空表示监听 0.0.0.0，回dial 要用具体地址
+			host := conf.HTTP.Host
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			addr := net.JoinHostPort(host, conf.HTTP.Port)
+
+			// 最多等 2s。这个等待只在启动期发生一次，不影响请求路径。
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+				if err == nil {
+					conn.Close()
+					logsdk.Info(ctx, "HTTP 服务已监听", logsdk.Any("addr", addr))
+					return nil
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("HTTP 服务未能在 %s 上监听: %w", addr, err)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		},
+		OnStop: func(ctx context.Context) error {
+			return srv.Shutdown(ctx)
 		},
 	})
 }

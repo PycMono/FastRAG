@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-
 	"github.com/PycMono/FastRAG/infrastructure"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 	logsdk "github.com/PycMono/go-logger-sdk"

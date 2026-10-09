@@ -6,7 +6,7 @@ import (
 	appsvc "github.com/PycMono/FastRAG/application/service/search"
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
-	"github.com/PycMono/FastRAG/infrastructure/driver/gingext"
+	ginsdk "github.com/PycMono/go-gin-sdk"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,10 +23,10 @@ func NewController(service *appsvc.Service) *Controller {
 func (ctl *Controller) Search(c *gin.Context) {
 	var param dto.SearchDTO
 	if err := c.ShouldBindJSON(&param); err != nil {
-		gingext.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
+		ginsdk.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
 		return
 	}
 
 	result, err := ctl.service.Search(c.Request.Context(), &param)
-	gingext.Send(c, result, err)
+	ginsdk.Send(c, result, err)
 }

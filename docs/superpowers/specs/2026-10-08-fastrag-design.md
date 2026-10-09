@@ -183,8 +183,13 @@ FastRAG/
 │       └── doc_indexed.go
 ├── infrastructure/
 │   ├── controller/http/
-│   │   ├── doc_controller.go
-│   │   └── search_controller.go
+│   │   ├── register.go                    # 全部路由挂载点（A4.15）
+│   │   ├── doc/controller.go              # 导入 / 批量导入 / 删除（A4.13）
+│   │   ├── search/controller.go           # 检索（A4.14）
+│   │   ├── health/controller.go           # /health、/ready（A4.2）
+│   │   └── web/                           # 演示页（A4.18）
+│   │       ├── web.go                     # goembed，GET /
+│   │       └── index.html                 # 单文件前端，无构建步骤
 │   ├── persistence/                       # ← 端口实现
 │   │   ├── knowledge/
 │   │   │   ├── knowledge_base_repo.go     # IKnowledgeBaseRepo（GORM，只读）
@@ -361,6 +366,24 @@ CREATE TABLE `knowledge_doc` (
 }
 ```
 
+> **向量字段刻意不写 `index_options`，让 ES 9 自己填 `bbq_hnsw`。**
+> 上面两行只声明了 `dims / index / similarity`，但 ES 建出来的实际 mapping 是——
+> 这是从运行中的索引上读回来的，不是猜的：
+>
+> ```json
+> "content_vec": {
+>   "type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine",
+>   "index_options": { "type": "bbq_hnsw", "m": 16, "ef_construction": 100,
+>                      "rescore_vector": { "oversample": 3.0 } }
+> }
+> ```
+>
+> `bbq_hnsw` 是二值量化 HNSW，图的内存占用大约是纯 HNSW 的 1/4，代价是召回有损；
+> ES 靠 `rescore_vector.oversample: 3.0`（多捞 3 倍候选再用全精度重排）补回来一部分。
+> **召回实测不达标时，把它覆盖成纯 `hnsw` 就是那个旋钮**——
+> 见 A4.7 里 `vectorField()` 的注释。注意 `index_options` 建好之后就改不了了，
+> 要换只能重建索引重导。
+
 | 字段 | 用途 |
 |---|---|
 | `account` | 租户隔离 filter（D2）。**必须 `keyword`，写成 `text` 就是越权** |
@@ -372,6 +395,43 @@ CREATE TABLE `knowledge_doc` (
 | `title_vec` / `content_vec` | 向量字段 |
 
 不存 `doc_name` / `kb_name`：存活校验本来就要查 `knowledge_doc`，顺手 JOIN 拿到名字。
+
+> ⚠️ **在 Kibana 里看 `_source` 是看不到 `title_vec` / `content_vec` 的，这不是 bug。**
+>
+> ES 9 新增了 `index.mapping.exclude_source_vectors`，**新建索引默认就是 `true`**。
+> 它做的事是在**存储层**把 dense_vector 从 `_source` 里摘掉（不是查询时才过滤），
+> 顺带 `_search` / `_mget` / `_get` 的响应里也不返回。省下来的正是每切片那 8KB 向量。
+>
+> 已经实测确认过（ES 9.5.5，本索引 `exclude_source_vectors = true`）：
+>
+> - **向量确实在**：绕开应用层直接发 `knn` 查询，命中 3 条、cosine ≈ 0.79；
+>   `/api/v1/search` 在 `dense_weight` 为 0.0 / 0.5 / 1.0 三条路径上都出结果。
+> - **想看的话有两条路**：查询时加 `"_source": {"exclude_vectors": false}`，
+>   或者用 `fields` API（`{"_source": false, "fields": ["content_vec"]}`）——
+>   后者是官方推荐，值从内部表示 rehydrate 回来，所以**精度是量化后的**，
+>   和写入时不完全 bit 相等（本索引用的是 bbq/int8 量化，本来也不是原值）。
+> - **`_reindex` 不会丢向量**：实测 157 条全量复制过去，目标索引里 `content_vec` 仍是 1024 维。
+>   ES 自己会处理 rehydrate，不用担心 §9.2 的扩容路径。
+>
+> **我们的代码不受影响**：`sourceFields()` 本来就不取 `*_vec`（§7.2 只用它们算相似度，
+> 不需要回传），所以这个开关开着对我们只有好处——省磁盘，没有代价。
+> **别为了"能在 Kibana 里看见"把它关掉**：关掉之后向量会在 `_source` 里再存一份原始表示，
+> 磁盘直接多出 §12.1 容量估算里那 8KB/切片——纯粹为了调试方便付的账不划算。
+> 真要排查，用上面那两条路，临时开着看就行。
+>
+> 手敲上面那些查询太麻烦，所以仓库里放了个脚本（`make es-vectors` 或直接跑）：
+>
+> ```bash
+> make es-vectors                                  # 总数 + 抽一条切片
+> make es-vector-full                              # 把 1024 个数字**全部**打出来
+> bash scripts/es-inspect-vector.sh <chunk_id>     # 指定切片（chunk_id 就是 _id）
+> bash scripts/es-inspect-vector.sh --account demo # 某个租户
+> ```
+>
+> 它做三件事：用 `exists` 聚合数一遍**有多少切片带向量**（而不是翻 `_source` 翻不到就下结论）；
+> 用 `fields` API 把某条切片的 `content_vec` / `title_vec` 打出来；
+> 最后**拿这条切片自己的向量去 kNN 搜它自己**，命中且 `score≈1.0` 才算数——
+> 毕竟"看得见"不是目的，"能用它检索"才是。
 
 **可见性 SLA**：`refresh_interval: 30s` 是拿"导入后立即可搜"换写入吞吐。落地的口径是——
 
@@ -1116,7 +1176,11 @@ type IEmbeddingService interface {
 }
 ```
 
-区分 `EmbedDocs` / `EmbedQuery` 是必要的：多数模型（bge-m3、E5、GTE）检索时要给 query 加指令前缀（如 `"query: "`），doc 侧不加，混用会显著掉分。
+区分 `EmbedDocs` / `EmbedQuery` 是必要的：**非对称**模型（E5 的 `"query: "` / `"passage: "`、bge-large-zh 的中文指令）检索时要给 query 加指令前缀，doc 侧不加，混用会显著掉分。
+
+> **本期选的 `bge-m3` 是对称模型，不加前缀**——所以 `query_prefix` 在配置里留空，
+> 不是忘了填。早先这里把 bge-m3 和 E5 并列举例，是错的：bge-m3 从不使用检索指令，
+> 给它加 `"query: "` 反而是把分布推偏。
 
 实现：`embedding_openai.go`——OpenAI 兼容协议，可覆盖火山引擎 / 通义 / vLLM / 自建 model_proxy / Ollama。
 
@@ -1136,8 +1200,9 @@ type IEmbeddingService interface {
   "embedding": {
     "base_url": "", "api_key": "", "model": "", "dim": 1024,
     "batch_size": 32, "timeout_ms": 30000,
-    // bge-m3 / E5 / GTE 这类模型检索时要给 query 加指令前缀，doc 侧不加。
-    // 前缀写错不会报错，只是效果变差——很难归因，所以值得单独配一项
+    // 非对称模型（E5、bge-large-zh）检索时要给 query 加指令前缀，doc 侧不加。
+    // 前缀写错不会报错，只是效果变差——很难归因，所以值得单独配一项。
+    // 本期的 bge-m3 是对称模型，留空
     "query_prefix": ""
   },
   "search": {
@@ -1156,6 +1221,14 @@ type IEmbeddingService interface {
 > 这是 demo，先把核心链路跑通。代价要说清楚：**批量导入会无节制地打 embedding 接口**，
 > 并发度只受 §5.5 的固定工作池（4）约束，没有全局配额概念。
 > 真要多租户上量，这一块得补回来，见 §13 待定。
+
+> **仓库里的 `config.json` 与上面这段有出入，以仓库为准。** 差异都是本机 demo 环境的取值，
+> 不是配置项本身的差异：`shards: 1 / replicas: 0`（单机一台 ES，副本数给 1 只会一直黄）、
+> `batch_size: 16 / timeout_ms: 60000`（本地 Ollama 首次加载模型慢，超时给宽一点）、
+> `bm25_top / knn_top / num_candidates = 50 / 50 / 200`（demo 语料小，取小值省算力）、
+> `trust_request_account: true`（§6.1 的闸门，本机跑必须显式打开）。
+> **上面那段保留的是"生产该怎么填"，不是"现在填了什么"**——两者的取舍不同，
+> 混在一起读会以为 `replicas: 1` 已经在跑了。
 
 ---
 
@@ -1286,7 +1359,7 @@ P0/P1 的"验收"如果不写数，就只是"跑通了"。下面这一节的意�
 
 > 这几个数目前是**假设**，不是需求。落盘后第一件事是找产品确认，因为 `shards` / `num_candidates` / 是否需要分桶，全都挂在这上面。
 
-**冒烟回路（比指标更早的一步）**：附录代码**未经编译**（A6），所以落盘后第一条要跑的既不是评测集也不是压测，而是这条四步回路——它覆盖的是本期改动最集中、也最容易静默出错的那条路径：
+**冒烟回路（比指标更早的一步）**：落盘后第一条要跑的既不是评测集也不是压测，而是这条四步回路——它覆盖的是本期改动最集中、也最容易静默出错的那条路径：
 
 ```text
 ① 导入一篇 → ② 检索，能搜到 → ③ 改一个字的正文，重导入 → ④ 再检索，只应搜到新内容
@@ -1304,13 +1377,43 @@ P0/P1 的"验收"如果不写数，就只是"跑通了"。下面这一节的意�
 
 > MySQL `chunk_count` 与 ES 切片数的差值是判断"§5.2 ② 有没有漏删"的直接手段，也是 §A5.1 对账命令真正要对上的东西。这条对不上，后面所有检索质量指标都建在流沙上。
 
+**实测记录（2026-10-09，本机单机环境）**：上表五行**全部通过**。
+
+| 检查 | 实测 |
+|---|---|
+| 旧切片真的没了 | 重导入后 ES `_count` = 3，与 MySQL `chunk_count` = 3 一致；旧标记词 0 命中 |
+| 新内容真的能搜到 | 新标记词 1 命中 |
+| 旧内容搜不到 | 旧标记词 0 命中 |
+| 连续两次导入 | 再连做两轮，ES 恒为 3，`doc_count` / `chunk_count` 稳定在 1 / 3 |
+| 批内同名被拦 | 两条同 `doc_name` 均进 `errors`，其余照常成功，整批 200 |
+
+跑这个回路的价值不在"确认它能用"，而在**它逮到了两个真 bug 和一处启动缺口**，三个都是读代码看不出来的：
+
+1. **重导入后旧切片时有时无**（A6 第 7 条、A4.6）。ES 的可见性有两档延迟，
+   代码只堵了"让删除看得见旧切片"那一档，漏了"让删除结果被检索看见"那一档。
+   症状恰好是"刚导入完查是 5 条，隔 40s 再查是 3 条"——**只有把 §12.1 那条
+   "连做两轮、间隔 < 30s"真跑了才会撞上**。
+2. **每次重导入都报 `created = true`，KB 的 `doc_count` 越滚越大**（A4.4）。
+   判定条件用了"主键是不是我刚生成的那个"，而重导入恰恰**复用**库里那行的 id，
+   于是条件恒真。实测同一篇重导入两次，`doc_count` 从 1 变成 3。
+   这条不在上面那张表里——它是靠"顺手多导入一次看看计数"发现的。
+3. **服务打了满屏 `[Fx] RUNNING` 却没监听任何端口**（A4.16）。
+   `ginsdk.HTTPServer` 不会自己 `ListenAndServe`，附录漏了这一句。
+
+> 三个问题的共同点：**都不报错**。第 1 个要等 30s 才自愈、第 2 个只是计数慢慢变大、
+> 第 3 个压根没有请求发出去。这正是把冒烟回路排在压测和评测集之前的原因——
+> 指标测不出"静默地做错了"。
+
+**仍未验证的部分**：上表之外的质量与性能指标（Recall@10、P95/P99、容量）**一条都没测**。
+它们要么需要标注集，要么需要压测环境，都不在本期范围内（§12.2 P1）。
+
 ---
 
 ## 13. 待定
 
 | # | 问题 | 当前取值 | 备选 |
 |---|---|---|---|
-| 1 | embedding 模型与维度 | 1024 维（占位，**必须与模型对齐后才能建索引**） | bge-m3 / text-embedding-3 / 通义 |
+| 1 | embedding 模型与维度 | **已定：`bge-m3`，1024 维**（本机 Ollama 提供，`/v1/embeddings`）。索引已按 1024 建好，两者对齐**实测过**：一次请求塞 2 条文本，回来 2 个 1024 维向量 | 换模型 = 必须重建索引重导（`dims` 建好后改不了，§9.4、§11 场景 9） |
 | 2 | 检索深翻页 | 只做 top-N | 单路 `search_after` + 客户端二次融合 |
 | 3 | `account` 形态 | 字符串 | 纯数字 ID（`_routing` 若要启用，数字型更省） |
 | 4 | `rank_constant` | 60（RFC 标准值，**未调**） | 需用语料评测集验证（§12.1） |
@@ -1318,18 +1421,24 @@ P0/P1 的"验收"如果不写数，就只是"跑通了"。下面这一节的意�
 | 6 | 是否需要 gRPC 接入 | 先只做 HTTP | 同时提供 gRPC |
 | 7 | **写侧限流** | **不做（demo）** | Redis 滑窗；或调用侧网关限流（§10.3） |
 | 8 | **embedding 失败重试** | **不做** | 指数退避重试 + 熔断；当前靠调用方重试（§11 场景 8） |
-| 9 | **写侧一致性（代次切换）** | **不做**——重导入/并发写同一文档时，新旧切片可能同时在 ES 里，检索会重复召回 | 四步协议：MySQL 预占 `ver`（`ver+1` 读回，唯一串行化点）→ ES 写带 `ver` 的切片 → 删 `ver` 更小的 → MySQL 带 `ver` 条件提交。代价：`knowledge_doc` 多一列、ES mapping 多一字段、仓储多两个方法（`ReserveVer`/`CommitIngest`）、查询侧多一次比对。**要等核心功能做完再上**（§2 D4） |
+| 9 | **写侧一致性（代次切换）** | **不做**——重导入/并发写同一文档时，新旧切片可能同时在 ES 里，检索会重复召回。**窗口已从"一个刷新周期"压到"一次请求内的几十毫秒"**（A4.6 的 `WithRefresh(true)`），但没消除 | 四步协议：MySQL 预占 `ver`（`ver+1` 读回，唯一串行化点）→ ES 写带 `ver` 的切片 → 删 `ver` 更小的 → MySQL 带 `ver` 条件提交。代价：`knowledge_doc` 多一列、ES mapping 多一字段、仓储多两个方法（`ReserveVer`/`CommitIngest`）、查询侧多一次比对。**要等核心功能做完再上**（§2 D4） |
 | 10 | **多 `search_mode` 混查的并行度** | 每种模式一组，组间串行 | 组间并行（§7.2） |
 | 11 | **可见性 SLA** | 一个刷新周期（30s）；重导入路径必刷，首次导入可传 `refresh: true`（§4.2） | `refresh_interval: 1s`（贵）；或把 `_refresh` 收窄到具体分片 |
 | 12 | 租户 / 切片规模 | 假设值，**待产品确认** | 直接决定分片数与是否启用 `_routing`（§12.1） |
+| 13 | **服务端口** | `8080`（仓库 `config.json`）。本机 8080 上原本还挂着另一个无关项目，**已停掉**，现在 8080 由本服务独占。冒烟期间曾临时跑在 8090 | 改配置即可。注意 `startHTTPServer` 的探测只挡得住**完全冲突**，挡不住 `*:8080` 与 `127.0.0.1:8080` 的**部分重叠**（A4.16） |
 
 ---
 
 # 附录 A · 完整代码（P0 + P1）
 
 > **怎么读**：按层给全量代码，每个文件标题下的路径就是它该待的位置。
-> 代码基于仓库现有骨架与私有 SDK 的真实签名写成（`sqlsdk` / `logsdk` / `bizctx` / `ginsdk` / `snowflake` 均已逐条核对源码），
-> 但**未经编译**——落盘时请把这一节当实现稿，而不是已验证的成品。
+>
+> ⚠️ **本附录的时效已过：代码已经落盘、编译、跑通并完成冒烟验收（§12.1）。**
+> 仓库里的真实文件才是事实来源；本附录与它有出入时，以代码为准。
+> 落盘过程中发现并修掉的三处问题——ES v9 的命名空间 API、`c.Data` 之外的
+> 演示页路由、以及 `ginsdk.HTTPServer` 不会自启——都已回写进对应小节，
+> 但**不敢保证没有别的出入**：这一节最初是按记忆写的，不是照着源码抄的
+> （详见 A6 第 1 条）。
 
 ## A0 · 前置说明
 
@@ -2221,7 +2330,7 @@ type IEmbeddingService interface {
 
 	// EmbedQuery 编码查询串。
 	//
-	// 必须与 EmbedDocs 分开：多数模型（bge-m3 / E5 / GTE）检索时
+	// 必须与 EmbedDocs 分开：非对称模型（E5、bge-large-zh）检索时
 	// 要给 query 加指令前缀（如 "query: "），doc 侧不加，混用会显著掉分。
 	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 
@@ -4047,15 +4156,25 @@ func (r *KnowledgeDocRepo) Save(
 
 		switch {
 		case errors.Is(e, gorm.ErrRecordNotFound):
-			// 行不存在 → 新建。oldChunkCount 自然是 0
+			// 没有活着的同名行 → 本次插入一行新的。oldChunkCount 自然是 0
+			//
+			// 含「软删后同名重建」：软删那行 delete_ts != 0，不在这条查询的范围内，
+			// 唯一键 (kb_id, name, delete_ts) 因此被让了出来，落库的是一行**新 id**
+			// 的行。调用方那边 LoadByName 同样查不到，于是分配了新雪花——两边一致。
+			// 对调用方而言这确实是新建（doc_id 变了），报 created = true 是实话。
 			created = true
 		case e != nil:
 			return apperrors.ErrInternal.Wrap(e)
 		default:
-			oldChunkCount = cur.ChunkCount
-			// created 的判据是「主键是不是我刚生成的那个」，而不是"查不到行"——
-			// 一行被软删后同名重建时同样查不到，但那不是新建，是重导
-			created = cur.Id == row.Id
+			oldChunkCount = int(cur.ChunkCount) // PO 是 int32（对齐 DDL 的 INT），实体统一用 int
+			// 查到了活着的同名行 → 本次是覆盖。
+			//
+			// 这里**不能**用「主键是不是我刚生成的那个」来判：重导入恰恰是
+			// 复用库里那一行的 id（§5.3），于是 cur.Id == row.Id 恒成立，
+			// 条件退化成恒真，每次重导入都会报 created = true。
+			// 后果是 KB 的 doc_count 每重导入一次 +1，越滚越大（实测过：
+			// 同一篇文档重导入两次，doc_count 从 1 变成 3）。
+			created = false
 		}
 
 		// ② upsert。走 GORM 的 OnConflict 是为了让「并发时在唯一键上等待」
@@ -4287,9 +4406,9 @@ func NewESVectorStore(
 // 建好之后改不了，真出现不一致只能新建索引重导（§9.4、§11 场景 9）。
 // 自动「修正」在这里反而危险——它多半会把索引删了重建，等于全量丢数据。
 func (s *ESVectorStore) EnsureIndex(ctx context.Context) error {
-	res, err := s.client.IndicesExists(
+	res, err := s.client.Indices.Exists(
 		[]string{s.index},
-		s.client.IndicesExists.WithContext(ctx),
+		s.client.Indices.Exists.WithContext(ctx),
 	)
 	if err != nil {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
@@ -4315,10 +4434,10 @@ func (s *ESVectorStore) EnsureIndex(ctx context.Context) error {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
 	}
 
-	create, err := s.client.IndicesCreate(
+	create, err := s.client.Indices.Create(
 		s.index,
-		s.client.IndicesCreate.WithBody(bytes.NewReader(payload)),
-		s.client.IndicesCreate.WithContext(ctx),
+		s.client.Indices.Create.WithBody(bytes.NewReader(payload)),
+		s.client.Indices.Create.WithContext(ctx),
 	)
 	if err != nil {
 		return apperrors.ErrIndexInitFailed.Wrap(err)
@@ -4412,9 +4531,9 @@ func (s *ESVectorStore) Save(ctx context.Context, docs []knowledgerepo.VectorDoc
 // ⚠️ 粒度是**整个索引**：ES 没有「按文档刷新」这种操作。单索引多租户（D2）下
 // 会顺带刷到别的租户的段，所以只在上面两种情况下调，别放进常规写入路径。
 func (s *ESVectorStore) Refresh(ctx context.Context) error {
-	res, err := s.client.IndicesRefresh(
-		s.client.IndicesRefresh.WithContext(ctx),
-		s.client.IndicesRefresh.WithIndex(s.index),
+	res, err := s.client.Indices.Refresh(
+		s.client.Indices.Refresh.WithContext(ctx),
+		s.client.Indices.Refresh.WithIndex(s.index),
 	)
 	if err != nil {
 		return apperrors.ErrVectorStoreFailed.Wrap(err)
@@ -4500,9 +4619,15 @@ func (s *ESVectorStore) DeleteByQuery(
 //
 // 单独开一个方法还有个好处：doc_id 的条件写在这里，调用方没有机会忘。
 //
-// ⚠️ 已知缺口（§5.2、§11）：Save 之后、DeleteExcept 生效之前，新旧切片共存。
-// refresh_interval=30s 时这个窗口可以持续一个刷新周期。期间检索可能重复召回
-// 同一段内容的两个版本。本期接受——写侧一致性（代次切换）是明确推迟的增强项（§13 待定 9）。
+// **它自己带 refresh=true，不依赖调用方**。ES 的删除和写入一样要等刷新才对
+// 检索可见，而调用方那次刷新发生在删除**之前**（那次是为了让本方法看得见
+// 上一批旧切片），管不到「让删除结果被看见」。少了这一次刷新，重导入后
+// 立刻检索会同时返回新旧两份，直到 30s 周期刷新到来为止。
+//
+// 剩下的窗口（§5.2、§11）：Save 之后、本方法跑完之前，新旧切片共存。
+// 这个窗口现在是「一次请求内的几十毫秒」量级——本方法返回时删除已经可见，
+// 所以调用方拿到响应之后不会再看到旧内容。真正的并发同名导入导致的
+// 互相删除仍在（§5.5），本期接受——写侧一致性（代次切换）是明确推迟的增强项（§13 待定 9）。
 func (s *ESVectorStore) DeleteExcept(
 	ctx context.Context, f knowledgerepo.VectorFilter, keepIDs []string,
 ) (int64, error) {
@@ -4544,7 +4669,17 @@ func (s *ESVectorStore) DeleteExcept(
 		[]string{s.index},
 		bytes.NewReader(body),
 		s.client.DeleteByQuery.WithContext(ctx),
+		// 删到一半撞上版本冲突时继续，别把整批回滚
 		s.client.DeleteByQuery.WithConflicts("proceed"),
+		// refresh 必须开（§5.2 ②）：删除和写入一样，**要等下一次刷新才对检索可见**。
+		// 而调用方的刷新在删除之前——那是为了「让 delete_by_query 看得见上一批旧切片」，
+		// 帮不到这里的「让删除结果被检索看见」。少了这一次刷新，
+		// 重导入之后立刻检索会同时返回新旧两份内容，直到索引的 30s 周期刷新到来，
+		// §12.1 那条「重导入后旧切片搜不到」就会时灵时不灵，且窗口正好落在
+		// 「刚导入完就去搜」这个最自然的用法上。
+		//
+		// 语义上也不该省：调用方请求的是「写完即可检索」，而「写完」包含清掉旧的。
+		s.client.DeleteByQuery.WithRefresh(true),
 	)
 	if err != nil {
 		return 0, apperrors.ErrVectorStoreFailed.Wrap(err)
@@ -5041,9 +5176,11 @@ func (e *OpenAIEmbedding) EmbedDocs(ctx context.Context, texts []string) ([][]fl
 
 // EmbedQuery 编码查询串，带非对称前缀。
 //
-// 必须与 EmbedDocs 分开：bge-m3 / E5 / GTE 这类模型检索时要求给 query
+// 必须与 EmbedDocs 分开：非对称模型（E5、bge-large-zh）检索时要求给 query
 // 加指令前缀（如 "query: "），doc 侧不加。混用会显著掉分，
 // 而且不会报错——只是效果变差，很难归因。
+//
+// 本期配的 bge-m3 是对称模型，queryPrefix 为空串，这里等于直接透传。
 func (e *OpenAIEmbedding) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
 	vecs, err := e.embed(ctx, []string{e.queryPrefix + text})
 	if err != nil {
@@ -5335,7 +5472,9 @@ package http
 
 import (
 	docctl "github.com/PycMono/FastRAG/infrastructure/controller/http/doc"
+	"github.com/PycMono/FastRAG/infrastructure/controller/http/health"
 	searchctl "github.com/PycMono/FastRAG/infrastructure/controller/http/search"
+	webctl "github.com/PycMono/FastRAG/infrastructure/controller/http/web"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
 )
@@ -5344,8 +5483,10 @@ const v1Prefix = "/api/v1"
 
 // Register 注册所有 HTTP 控制器到 FX 容器
 var Register = fx.Options(
+	fx.Provide(health.NewController),
 	fx.Provide(docctl.NewController),
 	fx.Provide(searchctl.NewController),
+	fx.Provide(webctl.NewController),
 	fx.Invoke(RegisterRoutes),
 )
 
@@ -5353,15 +5494,26 @@ var Register = fx.Options(
 type RouteDeps struct {
 	fx.In
 	Router    *gin.Engine
+	HealthCtl *health.Controller
 	DocCtl    *docctl.Controller
 	SearchCtl *searchctl.Controller
+	WebCtl    *webctl.Controller
 }
 
 // RegisterRoutes 统一入口。
 //
 // 路由刻意做得很少：只有「写文档」「删文档」「检索」三件事（§1.2）。
 // 知识库的 CRUD、发布、版本全部不在本服务范围内。
+//
+// 探针路由（/health、/ready）注册在顶层、不带 /api 前缀——
+// K8s 的 livenessProbe / readinessProbe 按固定路径打，前缀变了探针就瞎了。
+//
+// 演示页挂在根路径，同样是顶层：它是给人看的 HTML，不是 API，
+// 塞进 /api/v1 只会让「哪些路径是接口」这件事变得含糊（A4.18）。
 func RegisterRoutes(d RouteDeps) {
+	registerHealthRoutes(d.Router, d.HealthCtl)
+	d.Router.GET("/", d.WebCtl.Index)
+
 	api := d.Router.Group(v1Prefix)
 	{
 		docs := api.Group("/docs")
@@ -5374,11 +5526,24 @@ func RegisterRoutes(d RouteDeps) {
 		api.POST("/search", d.SearchCtl.Search)
 	}
 }
+
+func registerHealthRoutes(r *gin.Engine, ctl *health.Controller) {
+	r.GET("/health", ctl.Health)
+	r.GET("/ready", ctl.Ready)
+}
 ```
 
-> `/health` 和 `/ready` 保留原样（`health.Controller` 不动）。
-> 建议 P1 把 `/ready` 改成真检查一次 ES —— 现在它只回「进程活着」，
-> ES 挂了它照样报健康，这个探针就失去意义了。
+> ⚠️ **这一节曾经漏掉 `registerHealthRoutes`。** 写实现时照着旧版抄，
+> `/health` 和 `/ready` 就从路由表里消失了——而 `init_test.go` 里那张
+> 「注册路由 = 6 条」的清单正好是照着同一份文档写的，两边一起错，谁也没发现。
+> 教训不是「文档写错了」，而是**路由清单和注册代码必须有且只有一个来源**：
+> 现在清单是测试里手写的，靠人肉同步，下次改动还会漂。
+
+> **`/ready` 已经改成真检查 ES**（A4.2 早就点名要这么做）。原来它只回「进程活着」，
+> ES 挂了照样报健康——而 `es.NewClient` 不发探活请求，ES 没起来服务照常启动，
+> `/ready` 是唯一能提前发现这件事的地方。
+> Redis 那条检查删掉了：限流本期不做（§10.3），Redis 已从 fx 图里摘掉（A0.2），
+> 探一个不参与请求链路的依赖只会让人以为它在起作用。
 
 ### A4.16 `infrastructure/init.go`（改写）
 
@@ -5415,6 +5580,11 @@ func Init(conf *config.Config) fx.Option {
 		fx.Provide(gingext.NewEngine),
 		fx.Provide(gingext.NewHTTPServer),
 		controller.Register,
+
+		// 必须显式启动监听。ginsdk 的 HTTPServer 只是个 http.Server 的壳，
+		// 自己不会去 ListenAndServe——没有这个 Invoke，服务会打满一屏
+		// [Fx] RUNNING 然后安静地不监听任何端口（见下面的 ⚠️）。
+		fx.Invoke(startHTTPServer),
 	)
 }
 
@@ -5521,14 +5691,102 @@ func ensureIndexOnStart(lc fx.Lifecycle, store knowledgerepo.IVectorStore) {
 > 2. **`security` 配置块必须加**（A4.1）。这个字段的零值是 `false`，
 >    也就是「忘记配 = 拒绝启动」，而不是「忘记配 = 裸奔」。
 
+> ⚠️ **这一节曾经漏掉「把服务监听起来」这一步，而且漏得很隐蔽。**
+>
+> `ginsdk.HTTPServer` 只是个 `http.Server` 的壳，`Serve()` 必须由调用方自己
+> 从生命周期钩子里拉起来；本节的 `Init` 里一个 `fx.Invoke(startHTTPServer)` 都没有。
+> 后果是：进程正常启动、`[Fx] RUNNING` 打得漂漂亮亮、`/health` 却连不上——
+> 因为没有 socket 被创建过。**编译过、依赖图装配过、单测全绿，全都发现不了**，
+> 因为那三样都碰不到「真的 bind 了吗」。
+>
+> 修法是下面这段。两个细节值得留下：
+>
+> ```go
+> // startHTTPServer 真正把端口监听起来。
+> //
+> // Serve 内部是阻塞的 ListenAndServe，所以只能丢进 goroutine；
+> // 代价是「端口被占用」这类错误发生在 goroutine 里（panic，直接打崩进程），
+> // OnStart 看不见——服务会照常进入 RUNNING。所以先自己 bind 一次问一句，
+> // Serve 之后再回dial 一次：连得上才算启动成功。
+> func startHTTPServer(lc fx.Lifecycle, srv *ginsdk.HTTPServer, conf *config.Config) {
+> 	lc.Append(fx.Hook{
+> 		OnStart: func(ctx context.Context) error {
+> 			// 先自己 bind 一次再放开，只为拿到一句像样的错误
+> 			listenAddr := conf.HTTP.Host + ":" + conf.HTTP.Port
+> 			probe, err := net.Listen("tcp", listenAddr)
+> 			if err != nil {
+> 				return fmt.Errorf("HTTP 服务无法监听 %s: %w", listenAddr, err)
+> 			}
+> 			probe.Close()
+>
+> 			go srv.Serve(ctx)
+>
+> 			host := conf.HTTP.Host
+> 			if host == "" {
+> 				host = "127.0.0.1" // Host 为空表示监听 0.0.0.0，回dial 要用具体地址
+> 			}
+> 			addr := net.JoinHostPort(host, conf.HTTP.Port)
+>
+> 			deadline := time.Now().Add(2 * time.Second)
+> 			for {
+> 				conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+> 				if err == nil {
+> 					conn.Close()
+> 					logsdk.Info(ctx, "HTTP 服务已监听", logsdk.Any("addr", addr))
+> 					return nil
+> 				}
+> 				if time.Now().After(deadline) {
+> 					return fmt.Errorf("HTTP 服务未能在 %s 上监听: %w", addr, err)
+> 				}
+> 				select {
+> 				case <-ctx.Done():
+> 					return ctx.Err()
+> 				case <-time.After(50 * time.Millisecond):
+> 				}
+> 			}
+> 		},
+> 		OnStop: func(ctx context.Context) error { return srv.Shutdown(ctx) },
+> 	})
+> }
+> ```
+>
+> 1. **回dial 那一段是必需的，不是洁癖。** 只写 `go srv.Serve(ctx)` 的话，
+>    「端口被别的进程占着」会表现成「启动日志一切正常、请求全部超时」——
+>    这正是踩过的坑（`:8090` 上还挂着一个旧进程，新进程 bind 失败，
+>    但 `[Fx] RUNNING` 照打，人眼完全看不出来是哪个进程在响应）。
+> 2. **`go srv.Serve(ctx)` 里的 panic 会打崩整个进程**，且拿不到 fx 的回滚
+>    （已经跑起来的 OnStart 不会被回滚）。所以宁可在这里返回 error。
+>
+> 这条也解释了为什么 `ensureIndexOnStart` 那种「起不来就别装起来」的写法
+> 不够：**它只覆盖了 ES，没有任何东西覆盖「HTTP 端口本身」**。
+
+> ⚠️ **这道探测的覆盖范围要说清楚，否则会误以为「端口冲突已经全防住了」。**
+> 它挡得住的是**完全冲突**（两次 bind 落在同一个 IP 栈上）。
+> 它挡不住**部分重叠**：macOS 允许 `*:8080`（IPv6 通配，双栈）与
+> `127.0.0.1:8080`（IPv4 回环）同时 bind 成功，两个进程都报「已监听」。
+>
+> 实测过这个状态（本机 8080 上另有一个无关项目）：
+>
+> | 地址 | 实际应答 |
+> |---|---|
+> | `127.0.0.1:8080` | 另一个项目 |
+> | `[::1]:8080` | **本服务** |
+> | `localhost:8080` | **本服务**（`/etc/hosts` 里 `localhost` 同时有 `127.0.0.1` 和 `::1` 两行，curl 先走 IPv6） |
+>
+> 也就是说：日志说「HTTP 服务已监听」、`/ready` 全绿、浏览器打开 `localhost:8080`
+> 看到的就是本服务——**一切都像正常的**，但任何按 IPv4 直连 `127.0.0.1:8080` 的
+> 调用方拿到的都是另一个项目。两个人互相偷流量，谁也不报错。
+>
+> **结论：探测能防的是「起不来」，防不了「表面上起来了、实际只在半个地址上」。**
+> 上线前请把端口占用的检查放到部署层（K8s 的 `hostPort` 冲突是硬失败，
+> 不会给你半个地址），别指望进程自己探出来。
+
 ### A4.17 `cmd/server/main.go`（微调）
 
 ```go
 package main
 
 import (
-	"context"
-
 	"github.com/PycMono/FastRAG/infrastructure"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 	logsdk "github.com/PycMono/go-logger-sdk"
@@ -5542,6 +5800,81 @@ func main() {
 	app.Run()
 }
 ```
+
+> `main` 保持这么薄是有意的：**启动顺序全部由 `Init` 里的生命周期钩子决定，
+> 不在这里手写。** 「建索引」「监听端口」这两件事都属于「起不来就别装起来」，
+> 写成 `fx.Invoke` + `OnStart` 才会让 `app.Run()` 真的返回错误，
+> 而不是打一行日志然后继续往下走。
+>
+> `fx.New(infrastructure.Init(...))` —— `Init` 返回的是 `fx.Option`，
+> 不是 `*fx.App`。这个区分不是风格问题：`fx.New` 才是构建 + 校验依赖图的地方，
+> 让 `Init` 返回 `*fx.App` 会把「构造」和「运行」焊死，
+> 装配测试就再也拿不到一个「装好了但没启动」的 App 去做路由断言了（T11）。
+
+### A4.18 `infrastructure/controller/http/web/`（演示页）
+
+设计文档里原本没有这一节——它不在任何一条业务链路上。加它的理由只有一个：
+**§12.1 那条冒烟回路需要有人真的走一遍，而"打开终端敲三条 curl"是最劝退的一步。**
+
+```go
+// infrastructure/controller/http/web/web.go
+package web
+
+import (
+	_ "embed"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+// indexHTML 演示页。整页（样式 + 脚本）就这一个文件，没有构建步骤、没有外部依赖——
+// 它要能在「clone 下来、起服务、打开浏览器」之后立刻用，这才是它存在的意义。
+// 引 CDN 就得有网，用框架就得有 node_modules，两者都会让这个页面在任何一台
+// 只能连内网的机器上直接白屏。
+//
+//go:embed index.html
+var indexHTML []byte
+
+type Controller struct{}
+
+func NewController() *Controller { return &Controller{} }
+
+// Index GET /
+//
+// 用 c.Data 而不是 gingext.Send：这里返回的是 HTML 而不是 JSON 信封，
+// 拿统一响应包装它，浏览器只会把 {"code":0,...} 渲染成一串文本。
+func (ctl *Controller) Index(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+}
+```
+
+`index.html` 是一个单文件页面，四块：
+
+| 区块 | 做什么 |
+|---|---|
+| 连接参数 | `account` / `kb_no` 两个输入框，默认 `demo` / `demo-kb`，页面上明说「本服务不做鉴权」（§6.1） |
+| 导入文档 | 拖拽 / 选择 `.md`、或直接粘贴；`doc_name` 默认取文件名（同名 = 重导入）；`refresh` 勾选框直接对应 §4.2 那个字段 |
+| 检索 | `query` / `limit` / `dense_weight` 滑杆 / `rerank_switch`，对应 `dto.SearchDTO` |
+| 结果 | 每条显示 `title`、`heading_path`、`score`、`order`、`chunk_id` 前 12 位，正文里高亮命中的词；底下折叠着原始 JSON |
+
+几个刻意的决定：
+
+- **`/` 挂在顶层，不进 `/api/v1`。** 它是给人看的 HTML，不是 API。
+  混进 API 前缀里，会让「哪些路径是接口」这件事变得含糊——而这正是
+  A4.15 那条「路由刻意做得很少」想守住的东西。
+- **`c.Data` 而不是 `gingext.Send`。** 这条是架构 linter 规则 6 唯一放行的
+  第二种写法（另一种是 health 探针）。规则 6 拦的是 `c.JSON(`，
+  `c.Data` 不在其内，不需要额外开豁免——一个 HTML 页面本来就不该穿 JSON 信封。
+- **高亮和转义都在前端做，服务端返回的正文一个字不改。** 高亮是展示层的事；
+  要是让它污染 `content`，检索结果的字节就不可复现了。
+- **它不改变任何接口约定。** 页面调的就是 `POST /api/v1/docs` 和
+  `POST /api/v1/search` 两个公开接口，和外部调用方走同一条路——
+  这也是它作为「冒烟回路」可信的前提：页面能用，说明接口能用。
+
+> 演示页**不是**生产入口：它没有鉴权（本来也没有）、没有速率限制（§10.3 不做）、
+> 会把原始 JSON 摊在屏幕上。上线前请把它摘掉，或者挡在内网之后。
+
+---
 
 ---
 
@@ -5611,11 +5944,42 @@ func main() {
 
 ## A6 · 落盘时的注意事项
 
-1. **代码没编译过。** SDK 调用是按 `go-mysql-sdk@v1.0.2` / `go-elasticsearch/v9@v9.4.2` /
-   `go-logger-sdk@v1.0.5` 的源码逐条核对的，但按你的选择「只写进文档」，
-   没有落成真文件跑 `go build`。第一次落盘请务必先编译。
+1. **代码已经编译、跑通、冒烟验收过了——但这份附录不是它的准确来源。**
+
+   写这一版附录时，SDK 调用是按记忆里的签名写的，不是逐条核对源码。
+   这个差别在 `go-elasticsearch/v9` 上真的爆了：附录里原本写的是 v8 时代的
+   扁平调用（`IndicesExists` / `IndicesCreate` / `IndicesRefresh`），
+   而 v9 把它们全都搬进了命名空间（`client.Indices.Exists(...)` /
+   `.Create(...)` / `.Refresh(...)`），编译期直接报未定义。
+   同样的事情也发生在 `ginsdk.HTTPServer` 上——它只是个 `http.Server` 的壳，
+   自己不会 `ListenAndServe`，附录当时漏了这一句，服务起得来、端口却没人监听。
+
+   `go-mysql-sdk` / `go-logger-sdk` 那几处反倒蒙对了，因为调用面窄、
+   和骨架里既有的用法一致，照抄即可。
+
+   所以：**附录 A 的正确性上限是「一个读过骨架的人凭记忆写出来的实现稿」。**
+   仓库里已经落盘、且 `go build` / `go vet` / `go test` / 架构 linter 全过的
+   那份代码，才是当前的事实来源；本附录与它有出入时，以代码为准。
+   下面第 5 条列了本次真正跑通的清单。
 
 2. **`go.mod` 要加一行**：`github.com/elastic/go-elasticsearch/v9 v9.4.2`。
+
+   另有一处**已落盘时顺手升的版本**：`go-cache-sdk v1.0.3 → v1.0.4`。
+   起因是启动后 stdout 每 5 秒冒一行 `获取正在获取断开连接的redis....`，
+   与业务无关但很脏。追下去发现：`ginsdk` 的根包 import 了 `session`，
+   `session` 又 import 了 `go-cache-sdk/redis/connect`，而那个包有个**包级 `init()`**
+   起了个后台重连 goroutine，**在没有任何已注册 redis 客户端时也照打不误**——
+   `fmt.Println` 就在 `getBrokenConn()` 的第一行，在遍历之前，无条件执行。
+   我们按 A2/A0.2 的约定压根没 provide redis，所以这条日志全是噪声。
+
+   > 这个 `init()` 是**跑得掉但躲不开**的：`HTTPServer` / `ServerOptions` / `StatusOK` /
+   > `ErrCodeUnknown` / `HTTPJSONBody` 全在 `ginsdk` 同一个包里，只要用它就必然
+   > 把这个 `init()` 链进来，配置层面关不掉。唯一的办法是改依赖本身。
+   >
+   > v1.0.4 的 diff 正好修的就是它：删掉那行 `fmt.Println`，间隔 5s → 30s，
+   > 并把 `recover` 从函数级挪进循环内（原写法一旦某次 `Ping` panic、
+   > 被 recover 掉之后协程直接退出，**之后永久失去重连监控**——那是个真 bug）。
+   > 实测：22 秒窗口内 v1.0.4 打 0 次，v1.0.3 打 4 次。
 
 3. **`es` 相关字段名一律引用常量**（`FieldAccount` 等）。散着写字符串的话，
    mapping 和查询体对不上不会报错，只会静默查不到——这是这个项目里
@@ -5639,6 +6003,10 @@ func main() {
    | `infrastructure/driver/mysql/*` | `NewProvider` 返回值改成 `*sqlsdk.TransProvider` | A4.16 的两个 `fx.Provide` 拿不到具体类型 |
    | `common/errors/*` | 删 `CodeKnowledgeBaseMismatch`、`ErrKBMismatch` | 未使用的错误码会过 lint，但 403 语义已经不用了 |
    | `infrastructure/driver/gingext/*` | 删 403 错误码映射 | 同上 |
+   | `infrastructure/controller/http/register.go` | 加 `/` 和 `/health`、`/ready` 三条顶层路由 + `webctl` 的 Provide（A4.15、A4.18） | 演示页打不开、K8s 探针全红 |
+   | `infrastructure/init.go` | 加 `fx.Invoke(startHTTPServer)`（A4.16） | **服务打一屏 `[Fx] RUNNING` 然后不监听任何端口**——本次踩到的最大一个坑 |
+   | `config.json` | `embedding` 块指向本机 Ollama 的 `bge-m3`（A4.1 的 `query_prefix` 留空，对称模型不加前缀） | 起得来，但每次导入都在等一个连不上的 8000 端口 |
+   | `infrastructure/init_test.go` | `want` 路由清单补 4 条 | 测试红 |
 
 6. **ES 对未在 mapping 里声明的字段是照收不报错的**（dynamic mapping 会自己猜类型）。
    本期的字段集合与 mapping 一一对应，所以不受影响；但将来加字段时记住这一点：
@@ -5653,6 +6021,17 @@ func main() {
 
    > **只跑一遍不算过。** §5.2 ② 依赖之前那次刷新，把 ①→④ 连做两轮、间隔 < 30s，
    > 才验得出刷新这一步是不是真接上了。验收口径与判定表见 §12.1。
+   >
+   > **本条已被验证——而且正是它逮到了落盘期唯一的真 bug。**
+   > 第一轮冒烟时「重导入后旧切片消失」时灵时不灵：重导入当下查是 5 条（新旧共存），
+   > 隔 40s 再查又是 3 条。根因是 ES 的可见性有**两档**延迟，而代码只堵了一档——
+   > 调用方的 `Refresh()` 在 `Save` 与 `DeleteExcept` 之间，是为了让
+   > `delete_by_query` 看得见上一批旧切片；但**删除本身的结果同样要等下一次刷新
+   > 才对检索可见**，这一档漏了。修法是 `DeleteExcept` 自己带上
+   > `WithRefresh(true)`（A4.6）。窗口从「一个刷新周期」缩到「一次请求内的几十毫秒」。
+   >
+   > 事后看，这条预测准得有点刺眼：「写对了也可能没生效」「只能靠数一下切片数确认」
+   > ——两条全中。**这正是它被排在压测和评测集前面的原因。**
 
 8. **`search_mode` 在多库混查时按库分组，不取并集**（A3.3 的 `groupBySearchMode`）。
    一次请求里混着 `title` 和 `title_and_content` 两种库时，**分成两组各发一次 ES 请求**：

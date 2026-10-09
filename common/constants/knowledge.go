@@ -33,5 +33,5 @@ const (
 	MaxIngestChunks    = 5000 // 单文档切片数上限，超过基本可以断定是切错了
 )
 
-// 向量维度上限，与 IndexSpec.Validate 保持一致
+// MaxVectorDim 向量维度上限，与 IndexSpec.Validate 保持一致
 const MaxVectorDim = 4096
