@@ -23,4 +23,13 @@ type SearchDTO struct {
 	DenseWeight *float64 `json:"dense_weight" binding:"omitempty,gte=0,lte=1"`
 
 	RerankSwitch bool `json:"rerank_switch"`
+
+	// EmbedModel 查询向量用哪家算，取 config.embedding.models 里的 key。
+	// 留空用配置的 default。必须与库里那批数据的生成方一致，否则检索会退化成
+	// 噪声排序且不报错（设计文档 §2、§8）。
+	EmbedModel string `json:"embed_model" binding:"omitempty,max=64"`
+
+	// RerankModel 精排用哪家，取 config.rerank.models 里的 key。留空用 default。
+	// 精排只在查询期发生、不落库，所以换它随时都安全。
+	RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 }

@@ -14,29 +14,29 @@ import (
 
 // Service 检索应用服务。
 type Service struct {
-	kbRepo   repository.IKnowledgeBaseRepo
-	docRepo  repository.IKnowledgeDocRepo
-	store    repository.IVectorStore
-	embedder interfaces.IEmbedding
-	rerank   interfaces.IRerank // P2，可为 nil
-	tuning   SearchTuning
+	kbRepo     repository.IKnowledgeBaseRepo
+	docRepo    repository.IKnowledgeDocRepo
+	store      repository.IVectorStore
+	embeddings interfaces.IEmbeddingRegistry
+	reranks    interfaces.IRerankRegistry
+	tuning     SearchTuning
 }
 
 func NewService(
 	kbRepo repository.IKnowledgeBaseRepo,
 	docRepo repository.IKnowledgeDocRepo,
 	store repository.IVectorStore,
-	embedder interfaces.IEmbedding,
-	rerank interfaces.IRerank,
+	embeddings interfaces.IEmbeddingRegistry,
+	reranks interfaces.IRerankRegistry,
 	tuning SearchTuning,
 ) *Service {
 	return &Service{
-		kbRepo:   kbRepo,
-		docRepo:  docRepo,
-		store:    store,
-		embedder: embedder,
-		rerank:   rerank,
-		tuning:   tuning.WithDefaults(),
+		kbRepo:     kbRepo,
+		docRepo:    docRepo,
+		store:      store,
+		embeddings: embeddings,
+		reranks:    reranks,
+		tuning:     tuning.WithDefaults(),
 	}
 }
 
@@ -47,6 +47,22 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		return nil, err
 	}
 	empty := &vo.SearchResultVO{Items: []*vo.SearchItemVO{}}
+
+	// ⓪ 先把两个名字解出来。
+	//
+	//    放在最前面是刻意的：拼错的名字应当**立刻**报错，而不是先花一次 ES
+	//    往返再报。代价是 dense_weight=0（压根不走向量路）时也会校验
+	//    embed_model——这是想要的，传了一个用不上的错名字同样应该被指出。
+	//
+	//    rerank 那边 enabled=false 时注册表对任何名字都给空实现，不会在这里挡人。
+	embedder, err := s.embeddings.Get(in.EmbedModel)
+	if err != nil {
+		return nil, err
+	}
+	reranker, err := s.reranks.Get(in.RerankModel)
+	if err != nil {
+		return nil, err
+	}
 
 	// ① 加载 KB。不属于该 account 的库在仓储层就被丢掉了（§6）
 	kbs, err := s.kbRepo.LoadByNos(ctx, in.KBNos, in.Account)
@@ -61,7 +77,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	// ② 查询向量。dense_weight 为 0 时不发这一路，也就不必花这次调用
 	var queryVec []float32
 	if opts.useKNN() {
-		queryVec, err = s.embedder.EmbedQuery(ctx, opts.Query)
+		queryVec, err = embedder.EmbedQuery(ctx, opts.Query)
 		if err != nil {
 			return nil, apperrors.ErrEmbeddingFailed.Wrap(err)
 		}
@@ -108,8 +124,11 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	}
 
 	// ⑥ 可选重排。失败时退回融合原序，不阻断检索。
-	if opts.Rerank && s.rerank != nil && len(items) > 1 {
-		reranked, err := s.rerankItems(ctx, opts.Query, items)
+	//
+	//    判据里不再有 s.rerank != nil：注册表永远返回一个非 nil 的实现，
+	//    enabled=false 时给的是空实现（原序返回），行为与以前一致。
+	if opts.Rerank && len(items) > 1 {
+		reranked, err := s.rerankItems(ctx, reranker, opts.Query, items)
 		if err != nil {
 			logsdk.Warn(ctx, "重排失败，退回融合原序", logsdk.Err(err))
 		} else {
@@ -272,7 +291,10 @@ func (s *Service) filterAlive(
 }
 
 func (s *Service) rerankItems(
-	ctx context.Context, query string, items []*vo.SearchItemVO,
+	ctx context.Context,
+	reranker interfaces.IRerank,
+	query string,
+	items []*vo.SearchItemVO,
 ) ([]*vo.SearchItemVO, error) {
 	cands := make([]interfaces.RerankCandidate, len(items))
 	for i, it := range items {
@@ -284,7 +306,7 @@ func (s *Service) rerankItems(
 		}
 	}
 
-	order, err := s.rerank.Rerank(ctx, query, cands, len(items))
+	order, err := reranker.Rerank(ctx, query, cands, len(items))
 	if err != nil {
 		return nil, err
 	}

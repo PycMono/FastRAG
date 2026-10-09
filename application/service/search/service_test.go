@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PycMono/FastRAG/common/dto"
+	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/common/vo"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
@@ -49,15 +50,21 @@ func (m *mockDocRepo) SoftDelete(ctx context.Context, kbID uint64, name string, 
 func (m *mockDocRepo) SoftDeleteByKBID(ctx context.Context, kbID uint64, account string, now int64) (int64, error) {
 	return 0, nil
 }
-func (m *mockDocRepo) CountByKBID(ctx context.Context, kbID uint64) (int64, error)        { return 0, nil }
-func (m *mockDocRepo) SumChunkCountByKBID(ctx context.Context, kbID uint64) (int64, error) { return 0, nil }
+func (m *mockDocRepo) CountByKBID(ctx context.Context, kbID uint64) (int64, error) { return 0, nil }
+func (m *mockDocRepo) SumChunkCountByKBID(ctx context.Context, kbID uint64) (int64, error) {
+	return 0, nil
+}
 
 type mockVectorStore struct {
 	search func(ctx context.Context, req repository.VectorSearchReq) (repository.SearchResult, error)
+
+	// searched 记录 Search 是否被调到过。用例用它断言"名字解析失败时
+	// 不该再发 ES 请求"——mock 的 search 字段可能为 nil，靠这个布尔量观察。
+	searched bool
 }
 
 func (m *mockVectorStore) Save(ctx context.Context, docs []repository.VectorDoc) error { return nil }
-func (m *mockVectorStore) Refresh(ctx context.Context) error                            { return nil }
+func (m *mockVectorStore) Refresh(ctx context.Context) error                           { return nil }
 func (m *mockVectorStore) DeleteByQuery(ctx context.Context, filter repository.VectorFilter) (int64, error) {
 	return 0, nil
 }
@@ -65,6 +72,10 @@ func (m *mockVectorStore) DeleteExcept(ctx context.Context, filter repository.Ve
 	return 0, nil
 }
 func (m *mockVectorStore) Search(ctx context.Context, req repository.VectorSearchReq) (repository.SearchResult, error) {
+	m.searched = true
+	if m.search == nil {
+		return repository.SearchResult{}, nil
+	}
 	return m.search(ctx, req)
 }
 
@@ -79,7 +90,7 @@ func (m *mockEmbedding) EmbedQuery(ctx context.Context, text string) ([]float32,
 	out := make([]float32, m.dim)
 	return out, nil
 }
-func (m *mockEmbedding) Dim() int     { return m.dim }
+func (m *mockEmbedding) Dim() int      { return m.dim }
 func (m *mockEmbedding) Model() string { return "mock" }
 
 type mockRerank struct {
@@ -96,6 +107,26 @@ func (m *mockRerank) Rerank(ctx context.Context, query string, cands []interface
 	return m.order, nil
 }
 
+// mockEmbeddingRegistry 只有一个名字，且总是能取到——检索用例不关心取名字这件事。
+type mockEmbeddingRegistry struct{ impl interfaces.IEmbedding }
+
+func (m mockEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) { return m.impl, nil }
+func (m mockEmbeddingRegistry) Names() []string                                { return []string{"mock"} }
+
+// mockRerankRegistry 同上。
+type mockRerankRegistry struct{ impl interfaces.IRerank }
+
+func (m mockRerankRegistry) Get(name string) (interfaces.IRerank, error) { return m.impl, nil }
+func (m mockRerankRegistry) Names() []string                             { return []string{"mock"} }
+
+// errEmbeddingRegistry 任何名字都取不到。
+type errEmbeddingRegistry struct{}
+
+func (errEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) {
+	return nil, apperrors.NewParamError("没有名为 " + name + " 的 embedding 模型")
+}
+func (errEmbeddingRegistry) Names() []string { return []string{"bge-m3"} }
+
 // ─── 构造 Service 的辅助函数 ─────────────────────────────────────────────────
 
 func newSearchServiceForTest(
@@ -105,13 +136,16 @@ func newSearchServiceForTest(
 	embedder interfaces.IEmbedding,
 	rerank interfaces.IRerank,
 ) *Service {
-	return NewService(kbRepo, docRepo, store, embedder, rerank, SearchTuning{
-		BM25Top:       10,
-		KNNTops:       10,
-		NumCandidates: 50,
-		RankConstant:  60,
-		DenseWeight:   0.5,
-	})
+	return NewService(kbRepo, docRepo, store,
+		mockEmbeddingRegistry{impl: embedder},
+		mockRerankRegistry{impl: rerank},
+		SearchTuning{
+			BM25Top:       10,
+			KNNTops:       10,
+			NumCandidates: 50,
+			RankConstant:  60,
+			DenseWeight:   0.5,
+		})
 }
 
 func defaultKB() *entity.KnowledgeBase {
@@ -374,7 +408,7 @@ func TestService_Search_RetrieveCount_Default(t *testing.T) {
 
 func TestService_Search_RerankItems_CandidateComposition(t *testing.T) {
 	reranker := &mockRerank{order: []int{0}}
-	svc := NewService(nil, nil, nil, nil, reranker, SearchTuning{})
+	svc := NewService(nil, nil, nil, nil, mockRerankRegistry{impl: reranker}, SearchTuning{})
 
 	items := []*vo.SearchItemVO{
 		{
@@ -384,7 +418,7 @@ func TestService_Search_RerankItems_CandidateComposition(t *testing.T) {
 			Content:     "正文",
 		},
 	}
-	_, err := svc.rerankItems(context.Background(), "query", items)
+	_, err := svc.rerankItems(context.Background(), reranker, "query", items)
 	if err != nil {
 		t.Fatalf("rerankItems 不应失败: %v", err)
 	}
@@ -395,3 +429,28 @@ func TestService_Search_RerankItems_CandidateComposition(t *testing.T) {
 
 // floatPtr 辅助函数。
 func floatPtr(f float64) *float64 { return &f }
+
+// 名字写错必须**在花掉一次 ES 往返之前**就返回。
+//
+// 注意即便 dense_weight=0（压根不走向量路）也要校验 embed_model——
+// 传了一个用不上的错名字同样应该被指出，而不是被静默忽略。
+func TestService_Search_UnknownModel_FailsBeforeES(t *testing.T) {
+	kbRepo := &mockKBRepo{load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
+		return entity.KnowledgeBases{defaultKB()}, nil
+	}}
+	store := &mockVectorStore{}
+	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{}, SearchTuning{})
+
+	_, err := svc.Search(context.Background(), &dto.SearchDTO{
+		Account:    "demo",
+		KBNos:      []string{"kb1"},
+		Query:      "问题",
+		EmbedModel: "nope",
+	})
+	if err == nil {
+		t.Fatal("未知 embed_model 必须报错")
+	}
+	if store.searched {
+		t.Error("名字解析失败时不该再发 ES 请求")
+	}
+}
