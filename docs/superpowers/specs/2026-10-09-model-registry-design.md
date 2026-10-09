@@ -95,8 +95,7 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
         "model": "text-embedding-v4",                      // 上游真名，和 key 不一样没关系
         "dim": 1024,
         "batch_size": 10,                                  // 通义单次上限 10 条
-        "timeout_ms": 30000,
-        "parameters": { "dimension": 1024 }                // 原样塞进请求的 parameters 块
+        "timeout_ms": 30000
       }
 
       // 再加一家？在这里再加一段就行，代码一个字都不用改
@@ -191,9 +190,8 @@ type EmbeddingEntry struct {
     Model       string         `json:"model"`        // 留空 = 用 map 的 key
     Dim         int            `json:"dim"`
     BatchSize   int            `json:"batch_size"`
-    TimeoutMS   int            `json:"timeout_ms"`
-    QueryPrefix string         `json:"query_prefix"`
-    Parameters  map[string]any `json:"parameters"`   // 仅 dashscope：并入 parameters 块
+    TimeoutMS   int    `json:"timeout_ms"`
+    QueryPrefix string `json:"query_prefix"`
 }
 
 type RerankConfig struct {
@@ -209,9 +207,8 @@ type RerankEntry struct {
     Model       string         `json:"model"`
     TimeoutMS   int            `json:"timeout_ms"`
     BatchSize   int            `json:"batch_size"`
-    Concurrency int            `json:"concurrency"`
-    TopN        int            `json:"top_n"`
-    Parameters  map[string]any `json:"parameters"`
+    Concurrency int `json:"concurrency"`
+    TopN        int `json:"top_n"`
 }
 ```
 
@@ -219,34 +216,70 @@ type RerankEntry struct {
 `NewEmbedding(conf)` → `NewEmbedding(entry)`、`NewRerankImpl(conf)` → `NewRerankImpl(entry)`，
 两个实现体只改构造签名和入口，内部逻辑不动。
 
-## 4. 协议：openai 与 dashscope
+## 4. 协议：一个实现，两处形状开关
 
-`protocol` 字段两处都要，因为请求体**和**响应体都不一样。
+先把一件事说清楚：**这不是两套实现**。分批、并发（`errgroup`）、重试（`retry-go`）、
+按下标回填、排序、空内容沉底、候选文本拼接——全部共用，一行都不分叉。真正不同的只有
+"请求体怎么拼"和"响应体从哪取分数"两件事，落在两个函数里，合计约 30 行。
 
-### 4.1 embedding
+`protocol` 字段两处都要，因为这两件事在 dashscope 上都不一样。
 
-| | openai（现状） | dashscope |
+### 4.1 形状差异（已实测）
+
+**embedding**
+
+| | openai | dashscope |
 |---|---|---|
-| body | `{model, input: ["..."]}` | `{model, input: {texts: [...]}, parameters: {...}}` |
+| body | `{model, input: ["a","b"]}` | `{model, input: {texts: [...]}, parameters: {text_type}}` |
 | 响应 | `data[].{index, embedding}` | `output.embeddings[].{text_index, embedding}` |
-| query/doc 区分 | 靠 `query_prefix` 字符串前缀 | **协议自带**：`parameters.text_type` = `query` / `document` |
+| query/doc 区分 | 靠 `query_prefix` 字符串前缀 | 协议自带：`parameters.text_type` = `query` / `document` |
 
-`text_type` 由实现按调用的方法决定——`EmbedDocs` → `document`，`EmbedQuery` → `query`；
-配置里的 `parameters` 先并入、随后被实现覆写，避免手滑把 query 当 document 编码而不报错。
+**rerank**
 
-现有端口把 `EmbedDocs` / `EmbedQuery` 分成两个方法（原本是为了非对称前缀），
-到 dashscope 这里正好对上协议要求，不需要额外改造。
-
-### 4.2 rerank
-
-| | openai（现状） | dashscope |
+| | openai | dashscope |
 |---|---|---|
 | body | `{model, query, documents, return_documents}` | `{model, input: {query, documents}, parameters: {top_n, return_documents}}` |
 | 响应 | `results[].{index, relevance_score}` | `output.results[].{index, relevance_score}` |
 
-⚠️ **dashscope 的响应形状尚未实测确认。** 本机没有 key、官方文档站抓不到，
-所以实现先同时认 `results` 和 `output.results` 两个位置。第一次真调用时把原始响应贴出来，
-再按实际形状收窄——不要照着猜的写死。
+实测记录（2026-10-09，专属接入点 `ws-…maas.aliyuncs.com`，`qwen3.7-text-embedding` /
+`qwen3.7-text-rerank`）：两份响应都是 `output` 包一层；`parameters.text_type`、
+`parameters.top_n`、`parameters.return_documents` 均被接受，无 400。
+
+⚠️ **两个解析器不能共用**：rerank 的下标字段叫 `index`，embedding 的叫 `text_index`。
+形状看着像，字段名不一样，抄错一个就是把所有向量都挂到第 0 条上。
+
+### 4.2 分叉点
+
+```go
+// 共用：分批、并发、重试、排序 —— 一行不动
+func (r *Rerank) scoreBatch(...) { ... }
+
+// 只有这两个函数分叉
+func (r *Rerank) buildBody(query string, docs []string) any {
+    if r.protocol == protocolDashScope {
+        return map[string]any{
+            "model": r.model,
+            "input": map[string]any{"query": query, "documents": docs},
+            "parameters": map[string]any{
+                "top_n":            len(docs), // 必须等于本批长度，见 4.3
+                "return_documents": false,
+            },
+        }
+    }
+    return map[string]any{
+        "model": r.model, "query": query, "documents": docs, "return_documents": false,
+    }
+}
+
+func (r *Rerank) parseScores(body []byte, n int) ([]float64, error) { ... }
+```
+
+embedding 那边同理：`buildBody` 决定 `input` 是数组还是 `{texts: [...]}`、要不要带
+`text_type`；`parseVectors` 决定从 `data` 还是 `output.embeddings` 里取。
+
+`text_type` 由实现按调用的方法决定——`EmbedDocs` → `document`，`EmbedQuery` → `query`。
+它是 dashscope 协议的一部分，不是可选装饰，所以不留配置开关。现有端口把这两个方法分开
+（原本是为了非对称前缀），到 dashscope 这里正好对上协议要求。
 
 ### 4.3 分批时 `top_n` 必须等于本批长度
 
@@ -390,7 +423,9 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
    - dashscope rerank 的请求体含 `input.{query,documents}` 与 `parameters.top_n`，
      且**分批时 `top_n` 等于本批长度**；
    - dashscope embedding 的 `text_type` 随 `EmbedDocs`/`EmbedQuery` 切换；
-   - 两种响应形状（`results` / `output.results`）都能解析出分数。
+   - 两个协议各按自己的形状解析：rerank 取 `results` 或 `output.results`，
+     embedding 取 `data` 或 `output.embeddings`；下标字段 `index` 与 `text_index` 不能混。
+   - 测试夹具直接用第 4.1 节那两份实测响应，不自己编。
 3. **真栈 A/B**：同一份 `config.json` 里放两个 key，用不同 `model` 各导一篇文档、
    各搜一次，确认走的是对应那家；省略 `model` 走默认；传一个不存在的名字返回
    `code=10001` 且消息里列出可用名字。
@@ -402,10 +437,11 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 - **不支持一个索引里混不同维度的 embedding 模型**。`content_vec` 是一列，`dims` 建好
   改不了（§9.4），配了两个不同维度的 entry 至少一个必然写不进去。
 - **不做配置热加载**。改配置仍然要重启。
-- **不给 openai 协议补 `parameters` 逃生口以外的可选项**。真需要塞额外字段时用
-  `parameters`，不为此再加字段。
 - **不合并 `enabled` 与 `models` 为空**：`enabled` 是"这个实例要不要做重排"的部署决定，
   与"有哪几家可选"无关，语义不同，保留。
+- **不给 entry 留 `parameters` 之类的透传字段**。dashscope 那边要用到的参数
+  （`text_type` / `top_n` / `return_documents`）都由实现按协议填，不需要配置参与。
+  真出现要塞额外字段的服务商时再加，不预先留口子。
 
 ## 11. 落地顺序与文件清单
 
