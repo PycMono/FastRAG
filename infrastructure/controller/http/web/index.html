@@ -273,8 +273,8 @@
           </label>
         </div>
         <div class="check">
-          <input type="checkbox" id="rerank_switch">
-          <label for="rerank_switch">rerank_switch（本期是 stub，开了也只是原样返回）</label>
+          <input type="checkbox" id="rerank_switch" checked>
+          <label for="rerank_switch">rerank_switch（走 config.rerank 的精排模型重排；关掉就只用 RRF 融合序）</label>
         </div>
         <div class="actions">
           <button id="btnSearch">检索</button>
@@ -467,7 +467,8 @@
     };
 
     btn.disabled = true;
-    showMsg($('searchMsg'), 'warn', '<span class="spinner"></span>检索中：embedding → 两路 ES → RRF 融合…');
+    showMsg($('searchMsg'), 'warn', '<span class="spinner"></span>检索中：embedding → 两路 ES → RRF 融合'
+      + (body.rerank_switch ? ' → 精排…' : '…'));
     const t0 = performance.now();
 
     try {
