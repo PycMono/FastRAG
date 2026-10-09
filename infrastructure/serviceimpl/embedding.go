@@ -1,8 +1,16 @@
-// 本文件用 OpenAI 兼容协议对接向量化服务。
+// 本文件实现向量化：一个实现，两处形状开关。
 //
-// 兼容面很宽：OpenAI / 火山引擎 / 通义 / vLLM / Ollama / 自建 model_proxy
-// 都是 POST {base_url}/embeddings，请求体 {model, input}。
-// 协议这么简单，引第三方 SDK 反而是给自己加一层要跟着升级的依赖。
+// 分批、按下标回填、维度校验全部共用，一行都不分叉；真正随协议变的只有
+// "请求体怎么拼"（buildBody）和"响应从哪取向量、下标字段叫什么"（parseVectors）。
+//
+//	openai    POST {url}                       body {model, input:[...]}
+//	                                          响应 data[].{index, embedding}
+//	dashscope POST {url}（原生 /api/v1/services/...）
+//	                                           body {model, input:{texts}, parameters:{text_type}}
+//	                                          响应 output.embeddings[].{text_index, embedding}
+//
+// ⚠️ 两个协议的下标字段名不一样：openai 是 index，dashscope 是 text_index。
+// 形状看着像，抄错一个就是把所有向量挂到第 0 条上，而且不报错（设计文档 §4.1）。
 
 package serviceimpl
 
@@ -11,11 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
-	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 )
 
@@ -24,13 +30,20 @@ import (
 // 但没有上限地 ReadAll 迟早会被一个畸形响应打爆内存。
 const maxEmbedResponseBytes = 64 << 20
 
-// Embedding 基于 OpenAI 兼容协议的向量化实现。
+// text_type 是 dashscope 协议的一部分，不是可选装饰：它替代了 openai 那边
+// 靠字符串前缀实现的 query/doc 区分（§4.2）。
+const (
+	textTypeQuery    = "query"
+	textTypeDocument = "document"
+)
+
+// Embedding 向量化实现。
 //
-// 文件名与类型名不带厂商名：同一实现可对接 OpenAI / 火山 / 通义 / SiliconFlow / vLLM / Ollama
-// 等所有支持 POST {base_url}/embeddings 的服务，只需改配置即可切换。
+// 文件名与类型名不带厂商名：同一个实现靠 protocol 开关对接所有服务商。
 type Embedding struct {
 	client      *http.Client
-	baseURL     string
+	protocol    string
+	url         string // 完整端点，不再拼 /embeddings 后缀
 	apiKey      string
 	model       string
 	dim         int
@@ -38,26 +51,19 @@ type Embedding struct {
 	queryPrefix string
 }
 
-func NewEmbedding(conf *config.Config) interfaces.IEmbedding {
-	c := conf.Embedding
-
-	timeout := time.Duration(c.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	batch := c.BatchSize
-	if batch <= 0 {
-		batch = 32
-	}
-
+// newEmbedding 从一份已合并好的参数构造实现。
+//
+// 只有注册表调它——"继承外层"在 Params() 里就填完了，这里不再判 0。
+func newEmbedding(p config.EmbeddingParams) *Embedding {
 	return &Embedding{
-		client:      &http.Client{Timeout: timeout},
-		baseURL:     strings.TrimRight(c.BaseURL, "/"),
-		apiKey:      c.APIKey,
-		model:       c.Model,
-		dim:         c.Dim,
-		batchSize:   batch,
-		queryPrefix: c.QueryPrefix,
+		client:      &http.Client{Timeout: time.Duration(p.TimeoutMS) * time.Millisecond},
+		protocol:    p.Protocol,
+		url:         p.URL,
+		apiKey:      p.APIKey,
+		model:       p.Model,
+		dim:         p.Dim,
+		batchSize:   p.BatchSize,
+		queryPrefix: p.QueryPrefix,
 	}
 }
 
@@ -81,7 +87,7 @@ func (e *Embedding) EmbedDocs(ctx context.Context, texts []string) ([][]float32,
 			end = len(texts)
 		}
 
-		vecs, err := e.embed(ctx, texts[start:end])
+		vecs, err := e.embed(ctx, texts[start:end], textTypeDocument)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +102,7 @@ func (e *Embedding) EmbedDocs(ctx context.Context, texts []string) ([][]float32,
 // 加指令前缀（如 "query: "），doc 侧不加。混用会显著掉分，
 // 而且不会报错——只是效果变差，很难归因。
 func (e *Embedding) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vecs, err := e.embed(ctx, []string{e.queryPrefix + text})
+	vecs, err := e.embed(ctx, []string{e.queryPrefix + text}, textTypeQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -107,21 +113,72 @@ func (e *Embedding) EmbedQuery(ctx context.Context, text string) ([]float32, err
 	return vecs[0], nil
 }
 
+// embedResponse 两种协议的响应。data 是 openai 的，output.embeddings 是 dashscope 的；
+// 按协议只认其中一个，另一个留空。
 type embedResponse struct {
 	apiError
 	Data []struct {
 		Index     int       `json:"index"`
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
+	Output *struct {
+		Embeddings []struct {
+			TextIndex int       `json:"text_index"`
+			Embedding []float32 `json:"embedding"`
+		} `json:"embeddings"`
+	} `json:"output"`
 }
 
-func (e *Embedding) embed(ctx context.Context, texts []string) ([][]float32, error) {
-	payload, err := json.Marshal(map[string]any{"model": e.model, "input": texts})
+// buildBody 按协议拼请求体。
+//
+// textType 只有 dashscope 用得上（协议自带 query/document 之分）；openai 那边
+// query 与 doc 的区别靠 queryPrefix 字符串前缀，见 EmbedQuery。
+func (e *Embedding) buildBody(texts []string, textType string) any {
+	if e.protocol == config.ProtocolDashScope {
+		return map[string]any{
+			"model": e.model,
+			"input": map[string]any{"texts": texts},
+			"parameters": map[string]any{
+				"text_type": textType,
+			},
+		}
+	}
+	return map[string]any{"model": e.model, "input": texts}
+}
+
+// parseVectors 按协议取向量并按下标回填。
+//
+// ⚠️ 两种协议的向量结构长得几乎一样，下标字段名却不同（index / text_index）。
+// 正因为像，才必须分成两条分支写死——共用一个解析器就会把所有向量都挂到第 0 条上。
+func (e *Embedding) parseVectors(parsed *embedResponse, n int) [][]float32 {
+	out := make([][]float32, n)
+
+	if e.protocol == config.ProtocolDashScope {
+		if parsed.Output != nil {
+			for _, d := range parsed.Output.Embeddings {
+				if d.TextIndex >= 0 && d.TextIndex < n {
+					out[d.TextIndex] = d.Embedding
+				}
+			}
+		}
+		return out
+	}
+
+	for _, d := range parsed.Data {
+		if d.Index >= 0 && d.Index < n {
+			out[d.Index] = d.Embedding
+		}
+	}
+	return out
+}
+
+func (e *Embedding) embed(ctx context.Context, texts []string, textType string) ([][]float32, error) {
+	payload, err := json.Marshal(e.buildBody(texts, textType))
 	if err != nil {
 		return nil, apperrors.ErrEmbeddingFailed.Wrap(err)
 	}
 
-	body, status, err := postJSON(ctx, e.client, e.baseURL+"/embeddings", e.apiKey,
+	body, status, err := postJSON(ctx, e.client, e.url, e.apiKey,
 		payload, maxEmbedResponseBytes, apperrors.ErrEmbeddingFailed)
 	if err != nil {
 		return nil, err
@@ -136,13 +193,7 @@ func (e *Embedding) embed(ctx context.Context, texts []string) ([][]float32, err
 		return nil, err
 	}
 
-	out := make([][]float32, len(texts))
-	for _, d := range parsed.Data {
-		if d.Index < 0 || d.Index >= len(out) {
-			continue
-		}
-		out[d.Index] = d.Embedding
-	}
+	out := e.parseVectors(&parsed, len(texts))
 
 	for i, v := range out {
 		if len(v) == 0 {
