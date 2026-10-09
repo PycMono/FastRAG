@@ -1,7 +1,11 @@
 package serviceimpl
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/PycMono/FastRAG/infrastructure/config"
@@ -131,5 +135,103 @@ func TestEmbedding_ParseVectors_IndexFieldsNotInterchangeable(t *testing.T) {
 	got = newTestEmbedding("").parseVectors(&parsed, 2)
 	if len(got[1]) != 0 {
 		t.Errorf("openai 这一路不该认 text_index 字段：第 1 条应仍为空，得到 %v", got[1])
+	}
+}
+
+// ─── 空文本不得发往上游 ───────────────────────────────────────────────────────
+
+// newEmbedTestServer 起一个假的上游，把每次请求收到的 texts 记下来。
+func newEmbedTestServer(t *testing.T) (*httptest.Server, *[][]string) {
+	var got [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode 请求失败: %v", err)
+			return
+		}
+		got = append(got, req.Input)
+
+		out := make([]map[string]any, len(req.Input))
+		for i := range req.Input {
+			out[i] = map[string]any{"index": i, "embedding": []float32{1, 2, 3}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
+	}))
+	t.Cleanup(server.Close)
+	return server, &got
+}
+
+// 空文本（含纯空白）一个都不能发出去，但返回条数必须与入参一一对应。
+//
+// 为什么：DashScope 收到 texts 里任何一个空串，**整批**都会改用一个别的模型、
+// 返回 2560 维（实测 2026-10-09，只有 "" 触发，" " 和 "\n" 不触发）。而
+// format=text 的切片标题恒为空，也就等于纯文本导入必然踩中——报出来的是
+// "维度为 2560"，指不到真正的原因。
+func TestEmbedding_EmbedDocs_EmptyTextsNeverReachUpstream(t *testing.T) {
+	server, got := newEmbedTestServer(t)
+	e := &Embedding{
+		client:    http.DefaultClient,
+		url:       server.URL,
+		model:     "test-model",
+		dim:       3,
+		batchSize: 2, // 故意设小，逼出跨批次的回填
+	}
+
+	texts := []string{"标题A", "", "标题B", "   ", "标题C"}
+	vecs, err := e.EmbedDocs(context.Background(), texts)
+	if err != nil {
+		t.Fatalf("EmbedDocs 不应失败: %v", err)
+	}
+
+	if len(vecs) != len(texts) {
+		t.Fatalf("返回条数必须与入参一一对应：期望 %d，得到 %d", len(texts), len(vecs))
+	}
+
+	for _, batch := range *got {
+		for _, s := range batch {
+			if strings.TrimSpace(s) == "" {
+				t.Errorf("空文本不该发往上游，却发出去了：%q（本批 %q）", s, batch)
+			}
+		}
+	}
+
+	// 非空的位置拿到的是上游的真实向量，且顺序没被批次的切分打乱。
+	for _, i := range []int{0, 2, 4} {
+		if len(vecs[i]) != 3 {
+			t.Errorf("第 %d 条应拿到上游向量（3 维），得到 %v", i, vecs[i])
+		}
+	}
+	// 空的位置留 nil。
+	//
+	// 不能补零向量：ES 的 cosine 明确拒绝零模长向量，会让整批 bulk 400
+	// （比原来的问题还难查）。nil 序列化成 null，ES 当作字段不存在。
+	for _, i := range []int{1, 3} {
+		if vecs[i] != nil {
+			t.Errorf("第 %d 条应留 nil（不写 title_vec），得到 %#v", i, vecs[i])
+		}
+	}
+}
+
+// 整批都是空文本时也得返回等长的 nil 切片——
+// format=text 的标题那一路就是这种情况：全空，且一条都不该发出去。
+func TestEmbedding_EmbedDocs_AllEmpty(t *testing.T) {
+	server, got := newEmbedTestServer(t)
+	e := &Embedding{client: http.DefaultClient, url: server.URL, model: "m", dim: 3, batchSize: 10}
+
+	vecs, err := e.EmbedDocs(context.Background(), []string{"", "  "})
+	if err != nil {
+		t.Fatalf("EmbedDocs 不应失败: %v", err)
+	}
+	if len(vecs) != 2 {
+		t.Fatalf("期望 2 条，得到 %d", len(vecs))
+	}
+	if vecs[0] != nil || vecs[1] != nil {
+		t.Errorf("两条都该是 nil，得到 %#v", vecs)
+	}
+	if len(*got) != 0 {
+		t.Errorf("全是空文本时一个请求都不该发，却发了 %d 次：%q", len(*got), *got)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -75,24 +76,59 @@ func (e *Embedding) Model() string { return e.model }
 // 返回顺序与入参严格一一对应：**按响应里的 index 回填，不信返回数组的顺序**。
 // 顺序错位是最隐蔽的一类 bug——向量都在、条数也对，只是挂到了错误的切片上，
 // 检索结果全错但看起来一切正常。
+//
+// 空文本（含纯空白）**不发给上游**，返回值留 nil，但绝不改变返回的条数——
+// 下游 factory.BuildVectorDocs 会拿条数跟切片数对齐，少一条就 panic。
+//
+// 为什么非要挑出来：DashScope 收到 texts 里任何一个空串，**整批**都会改用一个
+// 别的模型、返回 2560 维（实测 2026-10-09，只有 "" 触发，空白串不触发），然后
+// 被下面那道维度检查拦下——报的是"维度为 2560"，完全指不到真正的原因。
+// 而 format=text 的切片标题恒为空（splitter.go 传的就是空串），也就是纯文本
+// 导入必然踩中；format=chunks 只要有一片没给 title 同样如此。Ollama 对空串
+// 老老实实返回 1024，所以这个坑一直藏着，换到通义才露出来。
 func (e *Embedding) EmbedDocs(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	out := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += e.batchSize {
+	// 先挑出真正需要算的下标，非空的按原顺序批量发出去，算完再按下标散布回 out。
+	wanted := make([]int, 0, len(texts))
+	for i, t := range texts {
+		if strings.TrimSpace(t) != "" {
+			wanted = append(wanted, i)
+		}
+	}
+
+	out := make([][]float32, len(texts))
+	for start := 0; start < len(wanted); start += e.batchSize {
 		end := start + e.batchSize
-		if end > len(texts) {
-			end = len(texts)
+		if end > len(wanted) {
+			end = len(wanted)
 		}
 
-		vecs, err := e.embed(ctx, texts[start:end], textTypeDocument)
+		batch := make([]string, 0, end-start)
+		for _, i := range wanted[start:end] {
+			batch = append(batch, texts[i])
+		}
+
+		vecs, err := e.embed(ctx, batch, textTypeDocument)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, vecs...)
+		for j, i := range wanted[start:end] {
+			out[i] = vecs[j]
+		}
 	}
+
+	// 剩下没被填上的就是空文本，留 nil——序列化成 null 后 ES 当作字段不存在。
+	//
+	// 为什么不补零向量：ES 的 cosine 相似度**明确拒绝零模长向量**
+	// （实测 document_parsing_exception: "The [cosine] similarity does not
+	// support vectors with zero magnitude"），补了会让整批 bulk 全部 400，
+	// 比原来的问题还难查。缺失字段则是合法的。
+	//
+	// 语义上这也更对：没有标题就不该有标题向量。该切片自然不会出现在
+	// title_vec 的 kNN 结果里——它本来也不该被标题检索召回。
 	return out, nil
 }
 
