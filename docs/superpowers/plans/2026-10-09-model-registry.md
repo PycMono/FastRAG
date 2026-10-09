@@ -48,7 +48,7 @@
 - Consumes: 无
 - Produces: 一个干净的 HEAD，后面所有任务都基于它
 
-- [ ] **Step 1: 确认工作区是绿的**
+- [x] **Step 1: 确认工作区是绿的**
 
 Run:
 ```bash
@@ -56,7 +56,7 @@ go build ./... && go vet ./... && go test ./...
 ```
 Expected: 全部无输出 / 全 ok。
 
-- [ ] **Step 2: 提交**
+- [x] **Step 2: 提交**
 
 ```bash
 git add -A
@@ -80,7 +80,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 3: 确认干净**
+- [x] **Step 3: 确认干净**
 
 Run: `git status -s`
 Expected: 只剩 `??` 之外的输出为空（即工作区干净）。
@@ -109,7 +109,7 @@ Expected: 只剩 `??` 之外的输出为空（即工作区干净）。
   - `config.ProtocolOpenAI = "openai"`、`config.ProtocolDashScope = "dashscope"`
   - `(*Config) validate() error`（在 `Load()` 里被调用）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `infrastructure/config/config_test.go`：
 
@@ -342,12 +342,12 @@ func TestNames_Sorted(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试，确认编译失败**
+- [x] **Step 2: 跑测试，确认编译失败**
 
 Run: `go test ./infrastructure/config/`
 Expected: FAIL — `undefined: ProtocolDashScope`、`c.validate undefined`、`EmbeddingConfig.Params undefined` 等。
 
-- [ ] **Step 3: 改 config.go**
+- [x] **Step 3: 改 config.go**
 
 把 `infrastructure/config/config.go` 第 46–69 行（`EmbeddingConfig` 与 `RerankConfig` 两个结构体整块）替换成：
 
@@ -647,12 +647,12 @@ import (
 )
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 Run: `go test ./infrastructure/config/ -v`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 换掉 config.example.json**
+- [x] **Step 5: 换掉 config.example.json**
 
 整个文件替换为：
 
@@ -731,7 +731,7 @@ Expected: 全部 PASS。
 
 > 示例里 `rerank.enabled=false` 是一个**能跑起来**的组合：`enabled=false` 时 `models` 允许为空。要看多服务商的完整样子，去设计文档 §3。
 
-- [ ] **Step 6: 确认示例配置本身能过校验**
+- [x] **Step 6: 确认示例配置本身能过校验**
 
 Run:
 ```bash
@@ -739,7 +739,7 @@ go run ./cmd/server -h 2>/dev/null; cp config.example.json /tmp/cfgcheck.json &&
 ```
 Expected: 不报错。真正的校验用 Step 8。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 gofmt -l infrastructure/config/
@@ -785,7 +785,7 @@ EOF
   - 常量 `textTypeQuery = "query"`、`textTypeDocument = "document"`
   - `Embedding` 结构体的字段变成 `client / protocol / url / apiKey / model / dim / batchSize / queryPrefix`（`baseURL` 改名 `url`，因为现在存的是完整端点）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `infrastructure/serviceimpl/embedding_test.go`：
 
@@ -921,12 +921,12 @@ func TestEmbedding_ParseVectors_IndexFieldsNotInterchangeable(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试，确认编译失败**
+- [x] **Step 2: 跑测试，确认编译失败**
 
 Run: `go test ./infrastructure/serviceimpl/ -run TestEmbedding_`
 Expected: FAIL — `undefined: textTypeQuery`、`e.buildBody undefined`、`embedResponse` 没有 `Output` 字段等。
 
-- [ ] **Step 3: 改 embedding.go 的头部与构造**
+- [x] **Step 3: 改 embedding.go 的头部与构造**
 
 把 `infrastructure/serviceimpl/embedding.go` 开头那段厂商名注释改成：
 
@@ -988,7 +988,7 @@ func (e *Embedding) Dim() int      { return e.dim }
 func (e *Embedding) Model() string { return e.model }
 ```
 
-- [ ] **Step 4: 改 embed / EmbedDocs / EmbedQuery**
+- [x] **Step 4: 改 embed / EmbedDocs / EmbedQuery**
 
 `EmbedDocs` 里的调用改成传 `textTypeDocument`：
 
@@ -1103,12 +1103,12 @@ func (e *Embedding) embed(ctx context.Context, texts []string, textType string) 
 }
 ```
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `go test ./infrastructure/serviceimpl/ -run TestEmbedding_ -v`
 Expected: 全部 PASS。（`go build ./...` 这时仍是红的——`register.go` 还在 `fx.Provide(NewEmbedding)`，Task 4 修。）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 gofmt -l infrastructure/serviceimpl/
@@ -1150,7 +1150,7 @@ EOF
   - `rerankResponse` / `rerankResult` 两个类型
   - `Rerank` 结构体字段变成 `client / protocol / url / apiKey / model / batchSize / concurrency / defaultTopN`（`baseURL` 改名 `url`）
 
-- [ ] **Step 1: 改测试辅助函数并加新用例（先写失败的测试）**
+- [x] **Step 1: 改测试辅助函数并加新用例（先写失败的测试）**
 
 在 `infrastructure/serviceimpl/rerank_test.go` 里，把 `newTestRerank` 换成：
 
@@ -1329,12 +1329,12 @@ func TestRerank_DashScope_TopNEqualsBatchSize(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `go test ./infrastructure/serviceimpl/ -run TestRerank_`
 Expected: FAIL — 编译不过（`Rerank` 没有 `url` / `protocol` 字段，没有 `buildBody` / `parseScores`）。
 
-- [ ] **Step 3: 改 rerank.go 的头部、构造与结构体**
+- [x] **Step 3: 改 rerank.go 的头部、构造与结构体**
 
 把文件开头那段注释改成：
 
@@ -1385,7 +1385,7 @@ func newRerank(p config.RerankParams) *Rerank {
 }
 ```
 
-- [ ] **Step 4: 加 buildBody / parseScores，改 score**
+- [x] **Step 4: 加 buildBody / parseScores，改 score**
 
 `rerankResponse` 换成：
 
@@ -1490,12 +1490,12 @@ func (r *Rerank) score(
 }
 ```
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `go test ./infrastructure/serviceimpl/ -run TestRerank_ -v`
 Expected: 全部 PASS，包括原有的分批、并发、重试、空内容沉底那几条。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 gofmt -l infrastructure/serviceimpl/
@@ -1537,7 +1537,7 @@ EOF
   - `NewRerankRegistry(conf *config.Config) (interfaces.IRerankRegistry, error)`
   - `(*embeddingRegistry)` / `(*rerankRegistry)` 两个未导出的实现
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `infrastructure/serviceimpl/registry_test.go`：
 
@@ -1682,12 +1682,12 @@ func TestRerankRegistry_EnabledResolvesByName(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `go test ./infrastructure/serviceimpl/ -run Registry`
 Expected: FAIL — `undefined: NewEmbeddingRegistry`、`undefined: IEmbeddingRegistry`。
 
-- [ ] **Step 3: 加两个端口**
+- [x] **Step 3: 加两个端口**
 
 在 `domain/interfaces/embedding.go` 末尾追加：
 
@@ -1716,7 +1716,7 @@ type IRerankRegistry interface {
 }
 ```
 
-- [ ] **Step 4: 写 registry.go**
+- [x] **Step 4: 写 registry.go**
 
 创建 `infrastructure/serviceimpl/registry.go`：
 
@@ -1825,7 +1825,7 @@ func (r *rerankRegistry) Get(name string) (interfaces.IRerank, error) {
 func (r *rerankRegistry) Names() []string { return r.conf.Names() }
 ```
 
-- [ ] **Step 5: 改 register.go**
+- [x] **Step 5: 改 register.go**
 
 把 `infrastructure/serviceimpl/register.go` 整个换成：
 
@@ -1882,7 +1882,7 @@ var (
 )
 ```
 
-- [ ] **Step 6: 跑测试，确认全仓恢复绿**
+- [x] **Step 6: 跑测试，确认全仓恢复绿**
 
 Run:
 ```bash
@@ -1894,7 +1894,7 @@ Expected:
 
 如果 `application/service/*` 仍红，那是 Task 5、6 的范围——但本任务只要求 `serviceimpl` 与 `config` 两个包能编、能测。**确认此时 `go build ./application/...` 的报错只剩"服务构造函数收的是 IEmbedding 而不是注册表"这一类。**
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 gofmt -l infrastructure/serviceimpl/ domain/interfaces/
@@ -1934,7 +1934,7 @@ EOF
   - `ingest.Service` 的字段与构造参数从 `embedder interfaces.IEmbedding` 换成 `embeddings interfaces.IEmbeddingRegistry`
   - `(*Service) embedChunks(ctx context.Context, e interfaces.IEmbedding, chunks entity.Chunks) (titleVecs, contentVecs [][]float32, err error)`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `application/service/ingest/service_test.go`：
 
@@ -1996,12 +1996,12 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `go test ./application/service/ingest/`
 Expected: FAIL — `unknown field 'Model' in struct literal of type dto.DocIngestDTO`、`cannot use errEmbeddingRegistry as interfaces.IEmbedding`。
 
-- [ ] **Step 3: 给 DTO 加字段**
+- [x] **Step 3: 给 DTO 加字段**
 
 在 `common/dto/doc.go` 的 `DocIngestDTO` 里，`SplitOptions` 之后插入：
 
@@ -2015,7 +2015,7 @@ Expected: FAIL — `unknown field 'Model' in struct literal of type dto.DocInges
 	Model string `json:"model" binding:"omitempty,max=64"`
 ```
 
-- [ ] **Step 4: 改 ingest/service.go**
+- [x] **Step 4: 改 ingest/service.go**
 
 把 `Service` 的字段与构造函数换成：
 
@@ -2107,12 +2107,12 @@ func (s *Service) embedChunks(
 }
 ```
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `go build ./... && go test ./application/service/ingest/ -v`
 Expected: `go build` 仍红在 `application/service/search`（Task 6 修），但 `go test ./application/service/ingest/` PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 gofmt -l common/dto/ application/service/ingest/
@@ -2147,7 +2147,7 @@ EOF
   - `search.Service` 的字段与构造参数从 `embedder interfaces.IEmbedding` / `rerank interfaces.IRerank` 换成 `embeddings interfaces.IEmbeddingRegistry` / `reranks interfaces.IRerankRegistry`
   - `(*Service) rerankItems(ctx context.Context, reranker interfaces.IRerank, query string, items []*vo.SearchItemVO) ([]*vo.SearchItemVO, error)`
 
-- [ ] **Step 1: 改测试（先写失败的测试）**
+- [x] **Step 1: 改测试（先写失败的测试）**
 
 在 `application/service/search/service_test.go` 里，把 `mockEmbedding` / `mockRerank` 保留不动，追加两个注册表 mock：
 
@@ -2226,12 +2226,12 @@ func (errEmbeddingRegistry) Names() []string { return []string{"bge-m3"} }
 
 `mockVectorStore` 需要一个 `searched bool` 字段，在 `Search` 方法里置 true——照着现有 `mockRerank.called` 的写法加。
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `go test ./application/service/search/`
 Expected: FAIL — `undefined: errEmbeddingRegistry` 之外，`NewService` 参数类型不匹配、`dto.SearchDTO` 没有 `EmbedModel`。
 
-- [ ] **Step 3: 给 DTO 加两个字段**
+- [x] **Step 3: 给 DTO 加两个字段**
 
 在 `common/dto/search.go` 的 `SearchDTO` 里，`RerankSwitch` 之前插入：
 
@@ -2246,7 +2246,7 @@ Expected: FAIL — `undefined: errEmbeddingRegistry` 之外，`NewService` 参�
 	RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 ```
 
-- [ ] **Step 4: 改 search/service.go**
+- [x] **Step 4: 改 search/service.go**
 
 字段与构造函数：
 
@@ -2351,7 +2351,7 @@ func (s *Service) rerankItems(
 }
 ```
 
-- [ ] **Step 5: 跑测试，确认全仓绿**
+- [x] **Step 5: 跑测试，确认全仓绿**
 
 Run:
 ```bash
@@ -2359,7 +2359,7 @@ go build ./... && go vet ./... && go test ./...
 ```
 Expected: `go build`、`go vet` 无输出；`go test` 全部 ok。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 gofmt -l common/dto/ application/service/search/
@@ -2391,7 +2391,7 @@ EOF
 - Consumes: 全部前置任务
 - Produces: 无
 
-- [ ] **Step 1: 改 README 的 API 示例**
+- [x] **Step 1: 改 README 的 API 示例**
 
 把「## API 示例」里导入那条 curl 换成：
 
@@ -2420,7 +2420,7 @@ curl -X POST http://localhost:8080/api/v1/search \
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
 ```
 
-- [ ] **Step 2: 在 README 里加一节配置说明**
+- [x] **Step 2: 在 README 里加一节配置说明**
 
 在「## 常用命令」之后、「## 统一响应格式」之前插入：
 
@@ -2462,11 +2462,11 @@ curl -X POST http://localhost:8080/api/v1/search \
 - **换 rerank 服务商随时安全**：它只在查询期调用，不落库。
 ```
 
-- [ ] **Step 3: 删掉设计文档里那条失效引用**
+- [x] **Step 3: 删掉设计文档里那条失效引用**
 
 `docs/superpowers/specs/2026-10-09-model-registry-design.md` §11 的清单里，第 8 条指的是 `2026-10-09-rerank-implementation-plan.md`，该文件已不存在。把这一条整个删掉（连同它的编号），并把后面的 ⚠️ 段落保留。
 
-- [ ] **Step 4: 全量复查**
+- [x] **Step 4: 全量复查**
 
 Run:
 ```bash
@@ -2474,7 +2474,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 ```
 Expected: build / vet 无输出，test 全 ok，`gofmt -l` 只列出改动前就已经脏的那个文件（如果本来就有的话）。
 
-- [ ] **Step 5: 真栈 A/B（人工，需要跑起来的 MySQL / Redis / ES / Ollama）**
+- [x] **Step 5: 真栈 A/B（人工，需要跑起来的 MySQL / Redis / ES / Ollama）**
 
 1. 把 `config.example.json` 复制成 `config.json`，按设计文档 §3 的样子补上第二家 embedding 和一家 rerank。
 2. 起服务，用两个不同的 `model` 各导一篇文档、各搜一次，确认走的是对应那家（看上游日志或返回内容的差异）。
@@ -2482,7 +2482,7 @@ Expected: build / vet 无输出，test 全 ok，`gofmt -l` 只列出改动前就
 4. 传一个不存在的名字，确认返回 `code=10001` 且消息里列出可用名字。
 5. 把某家 embedding 的 `dim` 外层值改错（比如 512），确认服务**起不来**且报的是配置校验错误。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-10-09-model-registry-design.md
