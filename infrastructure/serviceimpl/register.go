@@ -30,12 +30,15 @@ var Register = fx.Options(
 )
 
 // nopRerank 未启用 rerank 时的空实现：原样返回候选顺序。
+//
+// 分数一律给 NoRerankScore——调用方据此保留自己原有的融合分，
+// 于是"没配 rerank"和"以前没做 rerank"在响应里逐字节一致。
 type nopRerank struct{}
 
-func (nopRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]int, error) {
-	out := make([]int, len(cands))
+func (nopRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]interfaces.ScoredIndex, error) {
+	out := make([]interfaces.ScoredIndex, len(cands))
 	for i := range out {
-		out[i] = i
+		out[i] = interfaces.ScoredIndex{Index: i, Score: interfaces.NoRerankScore}
 	}
 	return out, nil
 }

@@ -13,9 +13,25 @@ type RerankCandidate struct {
 	Content     string
 }
 
-// IRerank 重排能力（P2，本期只留接口与空实现）。
+// NoRerankScore 是"这一条没有上游分"的哨兵。
+//
+// 两条路会给出它：候选内容为空（挑出来没发给上游），以及 rerank 未启用
+// （nopRerank 原序返回）。调用方见到负分要保留自己原有的分数，不要写进展示字段。
+const NoRerankScore = -1
+
+// ScoredIndex 重排结果的一条：候选在原数组里的下标，加上上游给的相关性分。
+//
+// 为什么要把分数一并带回来：只回下标的话，调用方重排了顺序却无从更新 score，
+// 页面上就会出现"0.0150 排在 0.0156 前面"——顺序是精排给的，分数还是旧的融合分，
+// 自相矛盾，而且看不出精排到底有没有生效。
+type ScoredIndex struct {
+	Index int
+	Score float64
+}
+
+// IRerank 重排能力。
 type IRerank interface {
-	Rerank(ctx context.Context, query string, cands []RerankCandidate, topN int) ([]int, error)
+	Rerank(ctx context.Context, query string, cands []RerankCandidate, topN int) ([]ScoredIndex, error)
 }
 
 // IRerankRegistry 按名字取重排序实现。

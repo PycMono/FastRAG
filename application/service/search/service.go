@@ -312,10 +312,19 @@ func (s *Service) rerankItems(
 	}
 
 	out := make([]*vo.SearchItemVO, 0, len(order))
-	for _, idx := range order {
-		if idx >= 0 && idx < len(items) {
-			out = append(out, items[idx])
+	for _, s := range order {
+		if s.Index < 0 || s.Index >= len(items) {
+			continue
 		}
+		it := items[s.Index]
+		// 精排分替换融合分。不换的话页面就会出现"0.0150 排在 0.0156 前面"——
+		// 顺序是精排给的，分数还是旧的 RRF 分，两列自相矛盾，也看不出精排生效没有。
+		//
+		// 负分是哨兵（空内容 / 未启用精排），保留原融合分不动。
+		if s.Score >= 0 {
+			it.Score = s.Score
+		}
+		out = append(out, it)
 	}
 	return out, nil
 }

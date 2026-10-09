@@ -66,18 +66,18 @@ func newRerank(p config.RerankParams) *Rerank {
 	}
 }
 
-// Rerank 对候选列表重排序，返回原数组下标顺序。
+// Rerank 对候选列表重排序，返回原数组下标与上游相关性分。
 //
-// topN <= 0 时返回全部候选按相关性排序后的下标。
-// 空内容候选自动给最低分，沉底但不丢失（保持下标完整性）。
+// topN <= 0 时返回全部候选按相关性排序后的结果。
+// 空内容候选自动给 NoRerankScore，沉底但不丢失（保持下标完整性）。
 func (r *Rerank) Rerank(
 	ctx context.Context,
 	query string,
 	cands []interfaces.RerankCandidate,
 	topN int,
-) ([]int, error) {
+) ([]interfaces.ScoredIndex, error) {
 	if len(cands) == 0 {
-		return []int{}, nil
+		return []interfaces.ScoredIndex{}, nil
 	}
 	if topN <= 0 {
 		topN = r.defaultTopN
@@ -86,13 +86,13 @@ func (r *Rerank) Rerank(
 		topN = len(cands)
 	}
 
-	// 给每个候选记录原始下标，并过滤掉空内容（空内容不发给服务端，直接给最低分）
+	// 给每个候选记录原始下标，并过滤掉空内容（空内容不发给服务端，直接给哨兵分）
 	infos := make([]candInfo, 0, len(cands))
 	emptyScores := make([]scoredIdx, 0)
 	for i, c := range cands {
 		content := r.candidateText(c)
 		if strings.TrimSpace(content) == "" {
-			emptyScores = append(emptyScores, scoredIdx{idx: i, score: -1})
+			emptyScores = append(emptyScores, scoredIdx{idx: i, score: interfaces.NoRerankScore})
 			continue
 		}
 		infos = append(infos, candInfo{origIdx: i, content: content})
@@ -100,11 +100,11 @@ func (r *Rerank) Rerank(
 
 	// 全空则原序返回前 topN
 	if len(infos) == 0 {
-		out := make([]int, len(cands))
-		for i := range out {
-			out[i] = i
+		out := make([]interfaces.ScoredIndex, 0, topN)
+		for i := 0; i < topN && i < len(cands); i++ {
+			out = append(out, interfaces.ScoredIndex{Index: i, Score: interfaces.NoRerankScore})
 		}
-		return out[:topN], nil
+		return out, nil
 	}
 
 	// 分批并发调用 /rerank
@@ -121,9 +121,9 @@ func (r *Rerank) Rerank(
 		return scored[i].score > scored[j].score
 	})
 
-	out := make([]int, 0, len(scored))
+	out := make([]interfaces.ScoredIndex, 0, len(scored))
 	for _, s := range scored {
-		out = append(out, s.idx)
+		out = append(out, interfaces.ScoredIndex{Index: s.idx, Score: s.score})
 	}
 	if len(out) > topN {
 		out = out[:topN]

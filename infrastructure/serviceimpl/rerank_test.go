@@ -87,9 +87,17 @@ func TestRerank_Rerank_Basic(t *testing.T) {
 		t.Fatalf("期望返回 %d 条，得到 %d 条", len(want), len(order))
 	}
 	for i, idx := range order {
-		if idx != want[i] {
-			t.Errorf("order[%d] = %d，期望 %d", i, idx, want[i])
+		if idx.Index != want[i] {
+			t.Errorf("order[%d].Index = %d，期望 %d", i, idx.Index, want[i])
 		}
+	}
+	// 上游分要原样带出来。stub 对 3 条候选给 index0=1.0、index1=2/3，
+	// 取前 2 条就该是这两个分——调用方靠它替换融合分。
+	if order[0].Score != 1.0 {
+		t.Errorf("order[0].Score 应为上游分 1.0，得到 %v", order[0].Score)
+	}
+	if want := 2.0 / 3.0; order[1].Score != want {
+		t.Errorf("order[1].Score 应为上游分 %v，得到 %v", want, order[1].Score)
 	}
 }
 
@@ -137,8 +145,16 @@ func TestRerank_Rerank_EmptyContent_Sinks(t *testing.T) {
 		t.Fatalf("Rerank 不应失败: %v", err)
 	}
 	// 空内容应沉底
-	if order[0] != 0 || order[1] != 1 {
+	if order[0].Index != 0 || order[1].Index != 1 {
 		t.Errorf("空内容应沉底，得到 order=%v", order)
+	}
+	// 有效的那条带上游分；空内容那条没有上游分，给哨兵——
+	// 调用方据此保留原融合分，而不是把 0 分写进展示字段。
+	if order[0].Score != 0.8 {
+		t.Errorf("有效候选应带上游分 0.8，得到 %v", order[0].Score)
+	}
+	if order[1].Score != interfaces.NoRerankScore {
+		t.Errorf("空内容候选应为哨兵分 %d，得到 %v", interfaces.NoRerankScore, order[1].Score)
 	}
 }
 
@@ -183,8 +199,8 @@ func TestRerank_Rerank_Batching(t *testing.T) {
 	// batch0 的 0,1,2... 与 batch1 的 10,11,12... 交替出现。
 	wantFirst := []int{0, 10, 1, 11, 2, 12}
 	for i, want := range wantFirst {
-		if order[i] != want {
-			t.Errorf("order[%d] = %d，期望 %d", i, order[i], want)
+		if order[i].Index != want {
+			t.Errorf("order[%d].Index = %d，期望 %d", i, order[i].Index, want)
 		}
 	}
 }
@@ -214,8 +230,8 @@ func TestRerank_Rerank_OutOfRangeIndex_Ignored(t *testing.T) {
 	// index 0 最高，index 1 次之，越界 index 被忽略
 	want := []int{0, 1}
 	for i, idx := range order {
-		if idx != want[i] {
-			t.Errorf("order[%d] = %d，期望 %d", i, idx, want[i])
+		if idx.Index != want[i] {
+			t.Errorf("order[%d].Index = %d，期望 %d", i, idx.Index, want[i])
 		}
 	}
 }
@@ -270,7 +286,7 @@ func TestRerank_Rerank_RetryOnce(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("期望调用 2 次（初次失败 + 1 次重试），实际 %d 次", calls)
 	}
-	if len(order) != 1 || order[0] != 0 {
+	if len(order) != 1 || order[0].Index != 0 {
 		t.Errorf("重排结果错误: %v", order)
 	}
 }
@@ -306,7 +322,7 @@ func TestRerank_Rerank_TopN(t *testing.T) {
 	if len(order) != 2 {
 		t.Fatalf("期望返回 2 条，得到 %d 条", len(order))
 	}
-	if order[0] != 0 || order[1] != 1 {
+	if order[0].Index != 0 || order[1].Index != 1 {
 		t.Errorf("topN 截取错误: %v", order)
 	}
 }

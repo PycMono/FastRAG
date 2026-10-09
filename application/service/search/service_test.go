@@ -95,11 +95,11 @@ func (m *mockEmbedding) Model() string { return "mock" }
 
 type mockRerank struct {
 	called bool
-	order  []int
+	order  []interfaces.ScoredIndex
 	err    error
 }
 
-func (m *mockRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]int, error) {
+func (m *mockRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]interfaces.ScoredIndex, error) {
 	m.called = true
 	if m.err != nil {
 		return nil, m.err
@@ -195,7 +195,7 @@ func TestService_Search_NoRerank(t *testing.T) {
 			}, nil
 		},
 	}
-	reranker := &mockRerank{order: []int{1, 0}}
+	reranker := &mockRerank{order: []interfaces.ScoredIndex{{Index: 1}, {Index: 0}}}
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	// rerank_switch=false 时不应调用 rerank
@@ -243,7 +243,10 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	reranker := &mockRerank{order: []int{1, 0}} // rerank 把 c2 排第一
+	reranker := &mockRerank{order: []interfaces.ScoredIndex{ // rerank 把 c2 排第一，并给出上游分
+		{Index: 1, Score: 0.93},
+		{Index: 0, Score: 0.21},
+	}}
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
@@ -266,6 +269,62 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 	// rerank 返回 order[1,0]，所以 c2 在前
 	if res.Items[0].ChunkID != "c2" {
 		t.Errorf("rerank 后第一条应为 c2，得到 %s", res.Items[0].ChunkID)
+	}
+	// 分数要跟着精排走。不换的话展示层会出现"0.0150 排在 0.0156 前面"
+	// ——顺序是精排给的、分数还是旧融合分，两列自相矛盾。
+	if res.Items[0].Score != 0.93 {
+		t.Errorf("精排后分数应回填为上游分 0.93，得到 %v", res.Items[0].Score)
+	}
+	if res.Items[1].Score != 0.21 {
+		t.Errorf("精排后第二条分数应为 0.21，得到 %v", res.Items[1].Score)
+	}
+}
+
+// 哨兵分（空内容 / 未启用精排）不得覆盖融合分——否则展示层会突然出现一条 0 分，
+// 把"没上游分"和"上游给了 0 分"混为一谈。
+func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
+	kbRepo := &mockKBRepo{
+		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
+			return entity.KnowledgeBases{defaultKB()}, nil
+		},
+	}
+	docRepo := &mockDocRepo{
+		load: func(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
+			return entity.KnowledgeDocs{defaultDoc()}, nil
+		},
+	}
+	store := &mockVectorStore{
+		search: func(ctx context.Context, req repository.VectorSearchReq) (repository.SearchResult, error) {
+			return repository.SearchResult{
+				BM25: []repository.VectorHit{
+					{ChunkID: "c1", DocID: 100, KBID: 1, Score: 10.0, Content: "content 1"},
+					{ChunkID: "c2", DocID: 100, KBID: 1, Score: 5.0, Content: "content 2"},
+				},
+				KNN: []repository.VectorHit{},
+			}, nil
+		},
+	}
+	reranker := &mockRerank{order: []interfaces.ScoredIndex{
+		{Index: 0, Score: interfaces.NoRerankScore},
+		{Index: 1, Score: interfaces.NoRerankScore},
+	}}
+	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
+
+	res, err := svc.Search(context.Background(), &dto.SearchDTO{
+		Account:      "demo",
+		KBNos:        []string{"demo-kb"},
+		Query:        "test",
+		Limit:        5,
+		DenseWeight:  floatPtr(0.5),
+		RerankSwitch: true,
+	})
+	if err != nil {
+		t.Fatalf("Search 不应失败: %v", err)
+	}
+	for i, it := range res.Items {
+		if it.Score <= 0 {
+			t.Errorf("第 %d 条的融合分应被保留（>0），得到 %v——哨兵分不该写进展示字段", i, it.Score)
+		}
 	}
 }
 
@@ -346,7 +405,7 @@ func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 			return repository.SearchResult{BM25: hits, KNN: []repository.VectorHit{}}, nil
 		},
 	}
-	reranker := &mockRerank{order: []int{0}}
+	reranker := &mockRerank{order: []interfaces.ScoredIndex{{Index: 0}}}
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	retrieveCount := 30
@@ -407,7 +466,7 @@ func TestService_Search_RetrieveCount_Default(t *testing.T) {
 }
 
 func TestService_Search_RerankItems_CandidateComposition(t *testing.T) {
-	reranker := &mockRerank{order: []int{0}}
+	reranker := &mockRerank{order: []interfaces.ScoredIndex{{Index: 0}}}
 	svc := NewService(nil, nil, nil, nil, mockRerankRegistry{impl: reranker}, SearchTuning{})
 
 	items := []*vo.SearchItemVO{
