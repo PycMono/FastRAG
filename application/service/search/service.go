@@ -139,6 +139,24 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	if len(items) > opts.Limit {
 		items = items[:opts.Limit]
 	}
+
+	// ⑦ 分数阈值过滤。MinScore<=0 表示不启用。
+	//
+	//    为什么排在截断之后：Limit 是"最多要几条"、MinScore 是"太差的不要"，
+	//    先截断再筛，返回的条数可能不足 Limit——这是有意的，跟
+	//    go-ai-knowledge 的行为一致（那边也是重排完再 filter）。
+	//
+	//    ⚠️ 比的是最终 Score，量纲随 rerank_switch 变（精排分 0~1 / RRF 分 0.01~0.02），
+	//    详见 dto.SearchDTO.MinScore 的注释。
+	if opts.MinScore > 0 {
+		kept := make([]*vo.SearchItemVO, 0, len(items))
+		for _, it := range items {
+			if it.Score >= opts.MinScore {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
 	return &vo.SearchResultVO{Items: items}, nil
 }
 
@@ -161,6 +179,7 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 		RetrieveCount: retrieveCount,
 		BizTags:       in.BizTags,
 		DenseWeight:   weight,
+		MinScore:      in.MinScore,
 		Rerank:        in.RerankSwitch,
 	}.normalize()
 }

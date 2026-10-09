@@ -247,10 +247,14 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
 # retrieve_count 控制精排前召回多少候选（默认 limit*2，上限 200）
 # embed_model / rerank_model 分别选两路用哪家，省略则各用各的 default；
 # 名字不存在返回 code=10001 并列出可用的名字，不会悄悄回落到默认那家
+#
+# min_score 是**最终分**的阈值，>0 才启用，筛完可能不足 limit 条；
+# 注意量纲随 rerank_switch 变：开精排时是模型分（0~1），关时是 RRF 融合分（0.01 量级），
+# 所以关掉精排还填 0.9 会把结果全筛光
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
-       "limit":5,"dense_weight":0.5,"rerank_switch":false,
+       "limit":5,"dense_weight":0.5,"min_score":0,"rerank_switch":false,
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
 
 # 探针

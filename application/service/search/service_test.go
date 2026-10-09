@@ -280,6 +280,89 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 	}
 }
 
+// min_score 比的是**最终** Score。这里用精排分（0.93 / 0.21）喂进去，
+// min_score=0.5 就该只留下 0.93 那条。
+//
+// 顺带盯住两件事：过滤排在截断之后（Limit=5 但只回 1 条，不足 Limit 是有意的），
+// 以及全筛光时返回的是空切片而不是 nil（JSON 里是 [] 不是 null）。
+func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
+	newSvc := func() (*Service, *mockRerank) {
+		kbRepo := &mockKBRepo{
+			load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
+				return entity.KnowledgeBases{defaultKB()}, nil
+			},
+		}
+		docRepo := &mockDocRepo{
+			load: func(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
+				return entity.KnowledgeDocs{defaultDoc()}, nil
+			},
+		}
+		store := &mockVectorStore{
+			search: func(ctx context.Context, req repository.VectorSearchReq) (repository.SearchResult, error) {
+				return repository.SearchResult{
+					BM25: []repository.VectorHit{
+						{ChunkID: "c1", DocID: 100, KBID: 1, Score: 10.0, Content: "content 1"},
+						{ChunkID: "c2", DocID: 100, KBID: 1, Score: 5.0, Content: "content 2"},
+					},
+					KNN: []repository.VectorHit{
+						{ChunkID: "c2", DocID: 100, KBID: 1, Score: 0.8, Content: "content 2"},
+						{ChunkID: "c1", DocID: 100, KBID: 1, Score: 0.6, Content: "content 1"},
+					},
+				}, nil
+			},
+		}
+		reranker := &mockRerank{order: []interfaces.ScoredIndex{
+			{Index: 1, Score: 0.93}, // c2
+			{Index: 0, Score: 0.21}, // c1
+		}}
+		return newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker), reranker
+	}
+
+	search := func(t *testing.T, minScore float64) []*vo.SearchItemVO {
+		t.Helper()
+		svc, _ := newSvc()
+		res, err := svc.Search(context.Background(), &dto.SearchDTO{
+			Account:      "demo",
+			KBNos:        []string{"demo-kb"},
+			Query:        "test",
+			Limit:        5,
+			DenseWeight:  floatPtr(0.5),
+			MinScore:     minScore,
+			RerankSwitch: true,
+		})
+		if err != nil {
+			t.Fatalf("Search 不应失败: %v", err)
+		}
+		return res.Items
+	}
+
+	t.Run("0 表示不启用", func(t *testing.T) {
+		if got := search(t, 0); len(got) != 2 {
+			t.Errorf("min_score=0 不该过滤，期望 2 条，得到 %d 条", len(got))
+		}
+	})
+
+	t.Run("按最终分筛掉低分", func(t *testing.T) {
+		got := search(t, 0.5)
+		if len(got) != 1 {
+			t.Fatalf("期望只留 1 条（不足 Limit=5 是有意的），得到 %d 条", len(got))
+		}
+		if got[0].ChunkID != "c2" {
+			t.Errorf("留下的应是高分那条 c2，得到 %s", got[0].ChunkID)
+		}
+	})
+
+	t.Run("全筛光时是空切片不是 nil", func(t *testing.T) {
+		got := search(t, 0.99)
+		if len(got) != 0 {
+			t.Fatalf("阈值高于所有分，期望 0 条，得到 %d 条", len(got))
+		}
+		if got == nil {
+			t.Error("应为空切片（JSON 里是 []），不能是 nil（会序列化成 null）")
+		}
+	})
+}
+
 // 哨兵分（空内容 / 未启用精排）不得覆盖融合分——否则展示层会突然出现一条 0 分，
 // 把"没上游分"和"上游给了 0 分"混为一谈。
 func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {

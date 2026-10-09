@@ -88,8 +88,8 @@
   }
   input:focus, textarea:focus, select:focus { border-color: var(--accent-dim); }
   textarea { resize: vertical; min-height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-  .row { display: flex; gap: 10px; }
-  .row > * { flex: 1; min-width: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 130px; min-width: 0; }
 
   .dropzone {
     border: 1.5px dashed var(--border);
@@ -308,6 +308,15 @@
             <span>dense_weight（0 = 纯 BM25，1 = 纯 kNN）</span>
             <input type="number" id="dense_weight" value="0.5" min="0" max="1" step="0.05">
           </label>
+          <label class="field">
+            <span>min_score（0 = 不过滤）</span>
+            <input type="number" id="min_score" value="0" min="0" step="0.05">
+          </label>
+        </div>
+        <div class="msg warn" style="margin:0 0 10px">
+          <code>min_score</code> 比的是<b>最终</b>分数，量纲跟着 <code>rerank_switch</code> 走：
+          勾上精排时是模型给的相关性分（0~1 量级），没勾时是 RRF 融合分（0.01 量级）。
+          所以在没勾精排时填 0.9 会把结果全筛光。
         </div>
         <div class="check">
           <input type="checkbox" id="rerank_switch" checked>
@@ -501,6 +510,7 @@
       query: query,
       limit: parseInt($('limit').value, 10) || 10,
       dense_weight: parseFloat($('dense_weight').value),
+      min_score: parseFloat($('min_score').value) || 0,
       rerank_switch: $('rerank_switch').checked,
     };
 

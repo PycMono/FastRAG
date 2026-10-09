@@ -22,6 +22,15 @@ type SearchDTO struct {
 	// nil 表示用配置里的默认值。
 	DenseWeight *float64 `json:"dense_weight" binding:"omitempty,gte=0,lte=1"`
 
+	// MinScore 分数阈值：>0 时只返回 Score >= MinScore 的结果，0（默认）不过滤。
+	//
+	// ⚠️ 这里比的分数，量纲随 rerank_switch 走：
+	//   精排开启 → 精排模型给的相关性分，大致 0~1；
+	//   精排关闭 → 应用层 RRF 融合分 Σ w/(rank_constant+rank)，恒在 0.01~0.02
+	//              这个量级（见 rrf.go），给个 0.9 会把结果全筛光。
+	// 所以这个参数是**给精排那一路用的**，别在 rerank_switch=false 时指望它。
+	MinScore float64 `json:"min_score" binding:"omitempty,gte=0"`
+
 	RerankSwitch bool `json:"rerank_switch"`
 
 	// EmbedModel 查询向量用哪家算，取 config.embedding.models 里的 key。

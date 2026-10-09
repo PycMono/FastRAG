@@ -22,6 +22,7 @@ type searchOptions struct {
 	RetrieveCount int
 	BizTags       []string
 	DenseWeight   float64
+	MinScore      float64
 	Rerank        bool
 }
 
@@ -43,6 +44,10 @@ func (o searchOptions) normalize() (searchOptions, error) {
 
 	if out.DenseWeight < 0 || out.DenseWeight > 1 {
 		return out, apperrors.NewParamError("dense_weight 必须在 [0, 1]")
+	}
+
+	if out.MinScore < 0 {
+		return out, apperrors.NewParamError("min_score 不能为负")
 	}
 
 	return out, nil
