@@ -30,32 +30,32 @@ const batchConcurrency = 4
 
 // Service 文档导入应用服务。
 type Service struct {
-	kbRepo   repository.IKnowledgeBaseRepo
-	docRepo  repository.IKnowledgeDocRepo
-	store    repository.IVectorStore
-	embedder interfaces.IEmbedding
-	splitter *domainservice.Splitter
-	idGen    repository.IIDService
-	tm       transaction.Manager
+	kbRepo     repository.IKnowledgeBaseRepo
+	docRepo    repository.IKnowledgeDocRepo
+	store      repository.IVectorStore
+	embeddings interfaces.IEmbeddingRegistry
+	splitter   *domainservice.Splitter
+	idGen      repository.IIDService
+	tm         transaction.Manager
 }
 
 func NewService(
 	kbRepo repository.IKnowledgeBaseRepo,
 	docRepo repository.IKnowledgeDocRepo,
 	store repository.IVectorStore,
-	embedder interfaces.IEmbedding,
+	embeddings interfaces.IEmbeddingRegistry,
 	splitter *domainservice.Splitter,
 	idGen repository.IIDService,
 	tm transaction.Manager,
 ) *Service {
 	return &Service{
-		kbRepo:   kbRepo,
-		docRepo:  docRepo,
-		store:    store,
-		embedder: embedder,
-		splitter: splitter,
-		idGen:    idGen,
-		tm:       tm,
+		kbRepo:     kbRepo,
+		docRepo:    docRepo,
+		store:      store,
+		embeddings: embeddings,
+		splitter:   splitter,
+		idGen:      idGen,
+		tm:         tm,
 	}
 }
 
@@ -65,7 +65,7 @@ func NewService(
 //
 //	① ES 写新切片 → ② ES 删旧切片（_id 差集）→ ③ MySQL 写文档行 + 计数
 //
-// 「更新」这条语义的落点是 **doc_id 的复用**（第 ④ 步）：重导入必须先
+// 「更新」这条语义的落点是 **doc_id 的复用**（第 ⑤ 步）：重导入必须先
 // LoadByName 取回库里那一行的 id，而不是每次都分配新雪花。切片、删差集、
 // 存活校验三处都以 doc_id 为轴，id 一换就全盘失效，且失败是静默的——
 // 接口返回成功，用户搜到的还是旧内容（§5.3）。
@@ -84,7 +84,20 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		return nil, err
 	}
 
-	// ② 切片参数：KB 快照 → 请求覆盖 → 归一化
+	// ② 定这次用哪家算向量。
+	//
+	//    放在切片和任何写操作之前是刻意的：名字写错在这里就返回，
+	//    不会白切一遍、白算一遍、白写一次 ES 才告诉调用方名字不存在。
+	//
+	//    解出来的实现是**逐请求**传给 embedChunks 的，不能存回 Service 的字段——
+	//    Service 是单例，把逐请求的东西写进去就是数据竞争。BatchIngest 的
+	//    4 个 goroutine 各自解各自的，互不影响。
+	embedder, err := s.embeddings.Get(in.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	// ③ 切片参数：KB 快照 → 请求覆盖 → 归一化
 	opts, err := s.resolveOptions(kb, in.SplitOptions)
 	if err != nil {
 		return nil, err
@@ -99,9 +112,9 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 			"切片数 %d 超过上限 %d，请检查切片参数或文档格式", len(chunks), constants.MaxIngestChunks))
 	}
 
-	// ③ 向量化。放在任何写操作之前——失败时什么都没动，重试是干净的。
+	// ④ 向量化。放在任何写操作之前——失败时什么都没动，重试是干净的。
 	//    索引的创建**不在这里**，那是启动期做一次的事（§9.4）。
-	titleVecs, contentVecs, err := s.embedChunks(ctx, chunks)
+	titleVecs, contentVecs, err := s.embedChunks(ctx, embedder, chunks)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +131,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	// 两头都够不着，而且不报错（§7.2）。
 	bizTag := kb.BizTag
 
-	// ④ 定 doc_id。**同名重导入必须沿用库里那一行的 id。**
+	// ⑤ 定 doc_id。**同名重导入必须沿用库里那一行的 id。**
 	//
 	//    切片、DeleteExcept、存活校验全都以 doc_id 为轴。换一个新 id 的后果是
 	//    双向失效：新内容变成一批没有文档行的孤儿（存活校验全丢掉），
@@ -139,7 +152,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 
 	vectors := factory.BuildVectorDocs(kb, docID, bizTag, chunks, titleVecs, contentVecs, now)
 
-	// ⑤ 【第一写】ES 写新切片（§5.2 ①）
+	// ⑥ 【第一写】ES 写新切片（§5.2 ①）
 	//
 	//    新内容先进去，旧切片原地不动——所以这一步失败时这篇文档仍然可查
 	//    （只是内容还是旧的），重试导入即可。
@@ -153,12 +166,12 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		return nil, err
 	}
 
-	// ⑥ 【刷新】把「刚写进去的」和「可能还没刷出来的旧切片」推进可检索视图
+	// ⑦ 【刷新】把「刚写进去的」和「可能还没刷出来的旧切片」推进可检索视图
 	//
 	//    delete_by_query 只能作用在**已刷新的段**上，而 ES 默认 30s 才刷新一次
 	//    （§4.2）。不刷新会在两处踩空：
 	//
-	//      · 重导入间隔 < 一个刷新周期时，上一批旧切片还没进段 → ⑦ 根本看不见
+	//      · 重导入间隔 < 一个刷新周期时，上一批旧切片还没进段 → ⑧ 根本看不见
 	//        它们，于是删了个寂寞，旧切片一直留到再下一次重导入才被清掉。
 	//        也就是说 §12.1 那条「重导入后旧切片被清掉」的验收会**时灵时不灵**；
 	//      · 调用方要「导入即可搜」时（§4.2），新切片同样还没进段。
@@ -176,7 +189,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		}
 	}
 
-	// ⑦ 【第二写】ES 清掉这篇文档里 _id 不在新集合中的旧切片（§5.2 ②）
+	// ⑧ 【第二写】ES 清掉这篇文档里 _id 不在新集合中的旧切片（§5.2 ②）
 	//
 	//    只删差集，不 DeleteByQuery(doc_id) 全删：内容没变的切片 _id 不变，
 	//    留着即可，全删再写回来是白放大一次写入。
@@ -192,7 +205,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		)
 	}
 
-	// ⑧ 【第三写】MySQL 写文档行 + 回写 KB 计数（§5.2 ③）
+	// ⑨ 【第三写】MySQL 写文档行 + 回写 KB 计数（§5.2 ③）
 	//
 	//    实体到这里才构造：所有字段都已定稿，不存在"先建行、后填内容"的中间态，
 	//    也就不会出现"ES 写失败但库里已经记了新计数"的谎报（A2.6）。
@@ -447,19 +460,21 @@ func (s *Service) split(
 	return s.splitter.Split(in.Content, in.Format, opts)
 }
 
-// embedChunks 算两路向量。
+// embedChunks 用指定实现算两路向量。
+//
+// 实现是参数而不是 Service 的字段：Service 是单例，逐请求的东西不能往里写。
 //
 // title_vec 与 content_vec 分开存：标题短、噪声低，适合精排；
 // 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路（§7.2）。
 func (s *Service) embedChunks(
-	ctx context.Context, chunks entity.Chunks,
+	ctx context.Context, e interfaces.IEmbedding, chunks entity.Chunks,
 ) (titleVecs, contentVecs [][]float32, err error) {
-	titleVecs, err = s.embedder.EmbedDocs(ctx, chunks.Titles())
+	titleVecs, err = e.EmbedDocs(ctx, chunks.Titles())
 	if err != nil {
 		return nil, nil, apperrors.ErrEmbeddingFailed.Wrap(err)
 	}
 
-	contentVecs, err = s.embedder.EmbedDocs(ctx, factory.EmbeddingTexts(chunks))
+	contentVecs, err = e.EmbedDocs(ctx, factory.EmbeddingTexts(chunks))
 	if err != nil {
 		return nil, nil, apperrors.ErrEmbeddingFailed.Wrap(err)
 	}
