@@ -61,7 +61,7 @@ func (ctl *Controller) Ready(c *gin.Context) {
 	}
 
 	// ES 检查
-	if len(ctl.conf.Elasticsearch.Addrs) == 0 || ctl.conf.Elasticsearch.Addrs[0] == "" {
+	if len(ctl.conf.ES.Addrs) == 0 || ctl.conf.ES.Addrs[0] == "" {
 		checks["elasticsearch"] = "not_configured"
 		allHealthy = false
 	} else if ctl.es == nil {

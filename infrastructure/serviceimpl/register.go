@@ -26,6 +26,6 @@ var Register = fx.Options(
 
 // 编译期断言：实现必须满足端口。
 var (
-	_ interfaces.IEmbeddingService = (*OpenAIEmbedding)(nil)
-	_ interfaces.IRerankService    = (*RerankStub)(nil)
+	_ interfaces.IEmbedding = (*OpenAIEmbedding)(nil)
+	_ interfaces.IRerank    = (*RerankStub)(nil)
 )

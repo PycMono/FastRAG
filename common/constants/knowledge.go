@@ -33,5 +33,5 @@ const (
 	MaxIngestChunks    = 5000 // 单文档切片数上限，超过基本可以断定是切错了
 )
 
-// MaxVectorDim 向量维度上限，与 IndexSpec.Validate 保持一致
-const MaxVectorDim = 4096
+// 注：向量维度的上限常量（MaxVectorDim）随索引规格一起删掉了。
+// 维度现在是 scripts/create-es-index.sh 的 DIM 参数；越界由 ES 自己报错。

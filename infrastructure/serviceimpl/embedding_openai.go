@@ -36,7 +36,7 @@ type OpenAIEmbedding struct {
 	queryPrefix string
 }
 
-func NewOpenAIEmbedding(conf *config.Config) interfaces.IEmbeddingService {
+func NewOpenAIEmbedding(conf *config.Config) interfaces.IEmbedding {
 	c := conf.Embedding
 
 	timeout := time.Duration(c.TimeoutMS) * time.Millisecond

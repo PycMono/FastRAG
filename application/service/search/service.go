@@ -6,30 +6,29 @@ import (
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/common/vo"
-	knowledgeentity "github.com/PycMono/FastRAG/domain/entity/knowledge"
+	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
-	knowledgerepo "github.com/PycMono/FastRAG/domain/repository/knowledge"
-	"github.com/PycMono/FastRAG/domain/value_object"
+	"github.com/PycMono/FastRAG/domain/repository"
 	logsdk "github.com/PycMono/go-logger-sdk"
 )
 
 // Service 检索应用服务。
 type Service struct {
-	kbRepo   knowledgerepo.IKnowledgeBaseRepo
-	docRepo  knowledgerepo.IKnowledgeDocRepo
-	store    knowledgerepo.IVectorStore
-	embedder interfaces.IEmbeddingService
-	rerank   interfaces.IRerankService // P2，可为 nil
-	tuning   value_object.SearchTuning
+	kbRepo   repository.IKnowledgeBaseRepo
+	docRepo  repository.IKnowledgeDocRepo
+	store    repository.IVectorStore
+	embedder interfaces.IEmbedding
+	rerank   interfaces.IRerank // P2，可为 nil
+	tuning   SearchTuning
 }
 
 func NewService(
-	kbRepo knowledgerepo.IKnowledgeBaseRepo,
-	docRepo knowledgerepo.IKnowledgeDocRepo,
-	store knowledgerepo.IVectorStore,
-	embedder interfaces.IEmbeddingService,
-	rerank interfaces.IRerankService,
-	tuning value_object.SearchTuning,
+	kbRepo repository.IKnowledgeBaseRepo,
+	docRepo repository.IKnowledgeDocRepo,
+	store repository.IVectorStore,
+	embedder interfaces.IEmbedding,
+	rerank interfaces.IRerank,
+	tuning SearchTuning,
 ) *Service {
 	return &Service{
 		kbRepo:   kbRepo,
@@ -61,7 +60,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 
 	// ② 查询向量。dense_weight 为 0 时不发这一路，也就不必花这次调用
 	var queryVec []float32
-	if opts.UseKNN() {
+	if opts.useKNN() {
 		queryVec, err = s.embedder.EmbedQuery(ctx, opts.Query)
 		if err != nil {
 			return nil, apperrors.ErrEmbeddingFailed.Wrap(err)
@@ -73,7 +72,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义（§7.2）。
 	//    最多两组，组内字段一致所以能合成一次请求。
 	groups := groupBySearchMode(kbs)
-	pool := make([]knowledgerepo.SearchResult, 0, len(groups))
+	pool := make([]repository.SearchResult, 0, len(groups))
 	for _, g := range groups {
 		r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec))
 		if err != nil {
@@ -119,24 +118,24 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	return &vo.SearchResultVO{Items: items}, nil
 }
 
-func (s *Service) resolveOptions(in *dto.SearchDTO) (value_object.SearchOptions, error) {
+func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 	weight := s.tuning.DenseWeight
 	if in.DenseWeight != nil {
 		weight = *in.DenseWeight
 	}
-	return value_object.SearchOptions{
+	return searchOptions{
 		Query:       in.Query,
 		Limit:       in.Limit,
 		BizTags:     in.BizTags,
 		DenseWeight: weight,
 		Rerank:      in.RerankSwitch,
-	}.Normalize()
+	}.normalize()
 }
 
 // searchModeGroup 一组 search_mode 相同的库。
 type searchModeGroup struct {
 	titleOnly bool
-	kbs       knowledgeentity.KnowledgeBases
+	kbs       entity.KnowledgeBases
 }
 
 // groupBySearchMode 按「是否只查标题」把库分组。
@@ -144,8 +143,8 @@ type searchModeGroup struct {
 // 为什么不取并集：只要有一个库开了正文检索，就全局按正文检索的话，
 // 那些建库时明确声明「只用标题」的库就被按正文搜了——召回里会冒出
 // 一堆标题对不上、正文里却有这个词的切片。那是静默改写语义（§7.2）。
-func groupBySearchMode(kbs knowledgeentity.KnowledgeBases) []searchModeGroup {
-	var contentSearch, titleSearch knowledgeentity.KnowledgeBases
+func groupBySearchMode(kbs entity.KnowledgeBases) []searchModeGroup {
+	var contentSearch, titleSearch entity.KnowledgeBases
 	for _, kb := range kbs {
 		if kb.UsesTitleOnly() {
 			titleSearch = append(titleSearch, kb)
@@ -166,15 +165,15 @@ func groupBySearchMode(kbs knowledgeentity.KnowledgeBases) []searchModeGroup {
 
 func (s *Service) buildReq(
 	g searchModeGroup,
-	opts value_object.SearchOptions,
+	opts searchOptions,
 	queryVec []float32,
-) knowledgerepo.VectorSearchReq {
+) repository.VectorSearchReq {
 	ids := make([]uint64, 0, len(g.kbs))
 	for _, kb := range g.kbs {
 		ids = append(ids, kb.ID)
 	}
 
-	return knowledgerepo.VectorSearchReq{
+	return repository.VectorSearchReq{
 		// 组内必然同 account：LoadByNos 加载时已按 account 过滤过（§6）
 		Account:       g.kbs[0].Account,
 		KBIDs:         ids,
@@ -208,8 +207,8 @@ func (s *Service) buildReq(
 // 存活校验看不出差别（§11 场景 3/4）。写侧一致性本期不做（§13 待定 9）。
 func (s *Service) filterAlive(
 	ctx context.Context,
-	hits []knowledgerepo.VectorHit,
-	kbs knowledgeentity.KnowledgeBases,
+	hits []repository.VectorHit,
+	kbs entity.KnowledgeBases,
 ) ([]*vo.SearchItemVO, error) {
 	if len(hits) == 0 {
 		return []*vo.SearchItemVO{}, nil

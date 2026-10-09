@@ -13,13 +13,11 @@ import (
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/common/vo"
-	knowledgeentity "github.com/PycMono/FastRAG/domain/entity/knowledge"
+	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/factory"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/repository"
-	knowledgerepo "github.com/PycMono/FastRAG/domain/repository/knowledge"
 	domainservice "github.com/PycMono/FastRAG/domain/service"
-	"github.com/PycMono/FastRAG/domain/value_object"
 	logsdk "github.com/PycMono/go-logger-sdk"
 	"github.com/PycMono/go-mysql-sdk/transaction"
 )
@@ -32,20 +30,20 @@ const batchConcurrency = 4
 
 // Service 文档导入应用服务。
 type Service struct {
-	kbRepo   knowledgerepo.IKnowledgeBaseRepo
-	docRepo  knowledgerepo.IKnowledgeDocRepo
-	store    knowledgerepo.IVectorStore
-	embedder interfaces.IEmbeddingService
+	kbRepo   repository.IKnowledgeBaseRepo
+	docRepo  repository.IKnowledgeDocRepo
+	store    repository.IVectorStore
+	embedder interfaces.IEmbedding
 	splitter *domainservice.Splitter
 	idGen    repository.IIDService
 	tm       transaction.Manager
 }
 
 func NewService(
-	kbRepo knowledgerepo.IKnowledgeBaseRepo,
-	docRepo knowledgerepo.IKnowledgeDocRepo,
-	store knowledgerepo.IVectorStore,
-	embedder interfaces.IEmbeddingService,
+	kbRepo repository.IKnowledgeBaseRepo,
+	docRepo repository.IKnowledgeDocRepo,
+	store repository.IVectorStore,
+	embedder interfaces.IEmbedding,
 	splitter *domainservice.Splitter,
 	idGen repository.IIDService,
 	tm transaction.Manager,
@@ -185,7 +183,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	//
 	//    失败不影响正确性：旧切片多留一会儿，下次重导入会再清一遍。
 	//    代价是这篇文档可能短暂地返回新旧两份内容（§11 场景 3）。
-	if _, err := s.store.DeleteExcept(ctx, knowledgerepo.VectorFilter{
+	if _, err := s.store.DeleteExcept(ctx, repository.VectorFilter{
 		Account: kb.Account, DocID: docID,
 	}, factory.ChunkIDs(vectors)); err != nil {
 		logsdk.Warn(ctx, "清理旧切片失败，不影响检索正确性",
@@ -248,7 +246,7 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 
 	now := time.Now().UnixMilli()
 
-	var doc *knowledgeentity.KnowledgeDoc
+	var doc *entity.KnowledgeDoc
 	if err := s.tm.Transaction(ctx, func(txCtx context.Context) error {
 		d, err := s.docRepo.SoftDelete(txCtx, kb.ID, in.DocName, now)
 		if err != nil {
@@ -265,7 +263,7 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 
 	// ES 清理放到事务之后：MySQL 是权威且即时的，ES 可以迟、可以重试。
 	// 这一步失败只会留下幽灵切片，被存活校验按 doc.Deleted() 过滤掉（§5.4）
-	deleted, err := s.store.DeleteByQuery(ctx, knowledgerepo.VectorFilter{
+	deleted, err := s.store.DeleteByQuery(ctx, repository.VectorFilter{
 		Account: kb.Account, DocID: doc.ID,
 	})
 	if err != nil {
@@ -295,7 +293,7 @@ func (s *Service) DeleteKB(ctx context.Context, in *dto.KBDeleteDTO) error {
 		return err
 	}
 
-	if _, err := s.store.DeleteByQuery(ctx, knowledgerepo.VectorFilter{
+	if _, err := s.store.DeleteByQuery(ctx, repository.VectorFilter{
 		Account: kb.Account, KBID: kb.ID,
 	}); err != nil {
 		logsdk.Error(ctx, "清理 ES 切片失败", logsdk.Any("kb_id", kb.ID), logsdk.Err(err))
@@ -423,11 +421,11 @@ func (s *Service) BatchIngest(ctx context.Context, items []*dto.DocIngestDTO) *B
 // ─── 内部 ────────────────────────────────────────────────────────────────────
 
 func (s *Service) resolveOptions(
-	kb *knowledgeentity.KnowledgeBase, override *dto.SplitOptionsDTO,
-) (value_object.ChunkOptions, error) {
-	opts := value_object.ParseSplitOptions(kb.SplitOptions)
+	kb *entity.KnowledgeBase, override *dto.SplitOptionsDTO,
+) (domainservice.ChunkOptions, error) {
+	opts := domainservice.ParseSplitOptions(kb.SplitOptions)
 	if override != nil {
-		opts = opts.Override(&value_object.ChunkOptions{
+		opts = opts.Override(&domainservice.ChunkOptions{
 			ChunkSize:  override.ChunkSize,
 			SplitLevel: override.SplitLevel,
 			MinChunk:   override.MinChunk,
@@ -437,12 +435,12 @@ func (s *Service) resolveOptions(
 }
 
 func (s *Service) split(
-	in *dto.DocIngestDTO, opts value_object.ChunkOptions,
-) (knowledgeentity.Chunks, error) {
+	in *dto.DocIngestDTO, opts domainservice.ChunkOptions,
+) (entity.Chunks, error) {
 	if in.Format == constants.FormatChunks {
-		inputs := make([]value_object.ChunkInput, 0, len(in.Chunks))
+		inputs := make([]domainservice.ChunkInput, 0, len(in.Chunks))
 		for _, c := range in.Chunks {
-			inputs = append(inputs, value_object.ChunkInput{Title: c.Title, Content: c.Content})
+			inputs = append(inputs, domainservice.ChunkInput{Title: c.Title, Content: c.Content})
 		}
 		return s.splitter.Normalize(inputs)
 	}
@@ -454,7 +452,7 @@ func (s *Service) split(
 // title_vec 与 content_vec 分开存：标题短、噪声低，适合精排；
 // 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路（§7.2）。
 func (s *Service) embedChunks(
-	ctx context.Context, chunks knowledgeentity.Chunks,
+	ctx context.Context, chunks entity.Chunks,
 ) (titleVecs, contentVecs [][]float32, err error) {
 	titleVecs, err = s.embedder.EmbedDocs(ctx, chunks.Titles())
 	if err != nil {
@@ -480,7 +478,7 @@ func (s *Service) embedChunks(
 //
 // 判断依据应该是「最终索引内容有没有变」：原文改了排版、空白但切出来一样，
 // 重灌一遍纯属浪费 embedding 调用。
-func contentHash(chunks knowledgeentity.Chunks) string {
+func contentHash(chunks entity.Chunks) string {
 	h := sha256.New()
 	for _, c := range chunks {
 		h.Write([]byte(c.Content))

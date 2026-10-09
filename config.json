@@ -27,25 +27,18 @@
     "pool_size": 5
   },
   "snowflake_node_id": 1,
-  "elasticsearch": {
+  "es": {
     "addrs": [
       "http://127.0.0.1:9200"
     ],
     "index": "fastrag",
     "username": "",
-    "password": "",
-    "dim": 1024,
-    "analyzer": "ik_max_word",
-    "search_analyzer": "ik_smart",
-    "shards": 1,
-    "replicas": 0,
-    "refresh_interval": "30s"
+    "password": ""
   },
   "embedding": {
     "base_url": "http://127.0.0.1:11434/v1",
     "api_key": "",
     "model": "bge-m3",
-    "dim": 1024,
     "batch_size": 16,
     "timeout_ms": 60000,
     "query_prefix": ""

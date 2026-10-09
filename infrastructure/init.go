@@ -7,21 +7,18 @@ import (
 	"time"
 
 	"github.com/PycMono/FastRAG/application/service"
+	"github.com/PycMono/FastRAG/application/service/search"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain"
-	knowledgerepo "github.com/PycMono/FastRAG/domain/repository/knowledge"
-	"github.com/PycMono/FastRAG/domain/value_object"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 	"github.com/PycMono/FastRAG/infrastructure/controller"
-	"github.com/PycMono/FastRAG/infrastructure/driver/es"
-	"github.com/PycMono/FastRAG/infrastructure/driver/gingext"
-	"github.com/PycMono/FastRAG/infrastructure/driver/mysql"
+	"github.com/PycMono/FastRAG/infrastructure/driver"
 	"github.com/PycMono/FastRAG/infrastructure/persistence"
 	"github.com/PycMono/FastRAG/infrastructure/serviceimpl"
 	ginsdk "github.com/PycMono/go-gin-sdk"
+	logsdk "github.com/PycMono/go-logger-sdk"
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
 	"github.com/PycMono/go-mysql-sdk/transaction"
-	logsdk "github.com/PycMono/go-logger-sdk"
 	"go.uber.org/fx"
 )
 
@@ -30,8 +27,8 @@ func Init(conf *config.Config) fx.Option {
 	return fx.Options(
 		core(conf),
 
-		fx.Provide(gingext.NewEngine),
-		fx.Provide(gingext.NewHTTPServer),
+		fx.Provide(driver.NewEngine),
+		fx.Provide(driver.NewHTTPServer),
 		controller.Register,
 
 		// 必须显式启动监听。ginsdk 的 HTTPServer 只是个 http.Server 的壳，
@@ -54,7 +51,7 @@ func core(conf *config.Config) fx.Option {
 	return fx.Options(
 		fx.Supply(conf),
 
-		fx.Provide(mysql.NewProvider),
+		fx.Provide(driver.NewProvider),
 
 		// TransProvider 同时满足两个接口，按接口分别暴露：
 		// 仓储要 sqlsdk.Provider（UseDB 是事务感知的，事务里自动用同一个连接），
@@ -63,12 +60,12 @@ func core(conf *config.Config) fx.Option {
 		fx.Provide(func(p *sqlsdk.TransProvider) sqlsdk.Provider { return p }),
 		fx.Provide(func(p *sqlsdk.TransProvider) transaction.Manager { return p }),
 
-		fx.Provide(es.NewClient),
+		fx.Provide(driver.NewESClient),
 
 		// 配置 → 领域调参。
 		// 在这里转一次手，application 层就不必 import infrastructure/config（§3）
-		fx.Provide(func(c *config.Config) value_object.SearchTuning {
-			return value_object.SearchTuning{
+		fx.Provide(func(c *config.Config) search.SearchTuning {
+			return search.SearchTuning{
 				BM25Top:       c.Search.BM25Top,
 				KNNTops:       c.Search.KNNTops,
 				NumCandidates: c.Search.NumCandidates,
@@ -83,7 +80,6 @@ func core(conf *config.Config) fx.Option {
 		service.Register,
 
 		fx.Invoke(checkTrustRequestAccount),
-		fx.Invoke(ensureIndexOnStart),
 	)
 }
 
@@ -108,27 +104,6 @@ func checkTrustRequestAccount(conf *config.Config) error {
 				"在配置里显式写上 true。")
 	}
 	return nil
-}
-
-// ensureIndexOnStart 启动期把 ES 索引建好（§9.4）。
-//
-// 为什么放在启动期而不是写入路径：详见 §9.4 那张表。一句话版本——
-// 写入路径建索引意味着「索引已存在」这个大前提下的代码从没在上线路径上跑过，
-// 而恰恰是那条路径承载全部真实流量。
-//
-// 用 OnStart 而不是直接 Invoke：OnStart 是 fx 的生命周期回调，
-// 失败会让 app.Run() 直接返回错误（进程起不来），正是我们要的——
-// 索引建不出来的服务，起来也是个只会报错的空壳。
-func ensureIndexOnStart(lc fx.Lifecycle, store knowledgerepo.IVectorStore) {
-	lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			if err := store.EnsureIndex(ctx); err != nil {
-				return fmt.Errorf("启动期建索引失败: %w", err)
-			}
-			logsdk.Info(ctx, "ES 索引就绪")
-			return nil
-		},
-	})
 }
 
 // startHTTPServer 真正把端口监听起来（§9.4 同款理由：起不来的服务不该假装起来了）。

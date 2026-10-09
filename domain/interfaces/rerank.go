@@ -8,7 +8,7 @@ type RerankCandidate struct {
 	Content string
 }
 
-// IRerankService 重排能力（P2，本期只留接口与空实现）。
-type IRerankService interface {
+// IRerank 重排能力（P2，本期只留接口与空实现）。
+type IRerank interface {
 	Rerank(ctx context.Context, query string, cands []RerankCandidate, topN int) ([]int, error)
 }

@@ -68,9 +68,11 @@ volumes:
 #
 # 注意：取消注释后，应用的 DSN 要相应改成 127.0.0.1:3307。
 #
-# DDL 挂在 infrastructure/persistence/migration/ —— 那是建表语句的单一事实源
-# （服务里用 go:embed 读的也是它），这样容器初始化和代码内建表不会各走各的。
-# 该目录下的 .go 文件会被 MySQL 入口脚本忽略，只执行 .sql。
+# 建表语句的单一事实源是 scripts/schema.sql，只挂这**一个文件**。
+#
+# ⚠️ 别改成挂整个 ./scripts/ —— MySQL 官方入口脚本会把
+# /docker-entrypoint-initdb.d 下所有 *.sh 和 *.sql 都执行一遍，
+# 那样连 create-es-index.sh 都会在 MySQL 容器里被跑起来。
 # ---------------------------------------------------------------------------
 #
 #   mysql:
@@ -83,7 +85,7 @@ volumes:
 #     ports:
 #       - "3307:3306"
 #     volumes:
-#       - ./infrastructure/persistence/migration:/docker-entrypoint-initdb.d:ro
+#       - ./scripts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
 #       - mysqldata:/var/lib/mysql
 #     healthcheck:
 #       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pfastrag"]

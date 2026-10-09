@@ -3,7 +3,7 @@ package search
 import (
 	"sort"
 
-	knowledgerepo "github.com/PycMono/FastRAG/domain/repository/knowledge"
+	"github.com/PycMono/FastRAG/domain/repository"
 )
 
 // fusionOversample 融合前先把候选放大若干倍。
@@ -17,7 +17,7 @@ const fusionOversample = 4
 // 「一路」= 一个分组的一条检索路径（BM25 或 kNN）。分组见 §7.2：
 // 不同 search_mode 的库不并集检索，所以多库查询会产生多路。
 type Route struct {
-	Hits   []knowledgerepo.VectorHit
+	Hits   []repository.VectorHit
 	Weight float64
 }
 
@@ -37,13 +37,13 @@ type Route struct {
 //
 // 不用 ES 原生的 rrf retriever：那是 basic license 下的付费特性，
 // 会直接报 non-compliant。核心检索不能绑在付费特性上。
-func Fuse(routes []Route, k, limit int) []knowledgerepo.VectorHit {
+func Fuse(routes []Route, k, limit int) []repository.VectorHit {
 	if k <= 0 {
 		k = 60 // RRF 论文的默认值
 	}
 
 	type entry struct {
-		hit   knowledgerepo.VectorHit
+		hit   repository.VectorHit
 		score float64
 	}
 
@@ -63,7 +63,7 @@ func Fuse(routes []Route, k, limit int) []knowledgerepo.VectorHit {
 		}
 	}
 
-	out := make([]knowledgerepo.VectorHit, 0, len(acc))
+	out := make([]repository.VectorHit, 0, len(acc))
 	for _, e := range acc {
 		e.hit.Score = e.score
 		out = append(out, e.hit)

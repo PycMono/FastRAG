@@ -1,4 +1,4 @@
-.PHONY: build run debug test test-pkg test-single lint es-vectors es-vector-full mysql clean tidy
+.PHONY: build run debug test test-pkg test-single es-index init-db clean tidy
 
 # 构建项目
 build:
@@ -24,22 +24,23 @@ test-pkg:
 test-single:
 	go test -v -run $(NAME) ./$(PKG)/...
 
-# 架构红线检查
-lint:
-	bash scripts/lint-architecture.sh
+# 建 ES 索引。索引**不由服务创建**（设计文档 §9.4），上线前先跑这个。
+# 已存在则只校验 mapping、不做改动；--print 只打印 JSON 不发送。
+es-index:
+	bash scripts/create-es-index.sh
 
-# 看 ES 里有没有向量（排查用：_source 里看不到 *_vec 是 ES 9 的正常行为）
-es-vectors:
-	bash scripts/es-inspect-vector.sh
-
-# 同上，但把 1024 维向量**全部**打出来（前 6 维看不够时用）
-es-vector-full:
-	bash scripts/es-inspect-vector.sh --full
-
-# 连 MySQL 改数据（**别用 docker exec mysql mysql**，那条连接客户端字符集是 latin1，
-# 手工插中文会变 æ¼”ç¤º... 这种双向编码错。详见 scripts/mysql.sh 头部注释）
-mysql:
-	bash scripts/mysql.sh
+# 建 MySQL 库表。同样不由服务创建（设计文档 §9.4），上线前先跑。
+# 可重复执行——DDL 全是 IF NOT EXISTS。schema.sql 里自带 CREATE DATABASE / USE，
+# 所以**不要**在 mysql 后面指定库名，否则库还不存在时连不上。
+#
+# ⚠️ --default-character-set=utf8mb4 不能省：容器里的 mysql 客户端默认 latin1，
+# 中文（表注释、字段注释）会被**双向编码错**存进去，而且列和连接字符串都查不出问题。
+# 本仓踩过：`演示知识库` 变成 `æ¼"ç¤ºçŸ¥è¯†åº“`。所以别直接 `mysql -uroot -p < scripts/schema.sql`。
+#
+# 本机装了 mysql 客户端、想直连的话，把 `docker exec -i mysql` 去掉即可。
+init-db:
+	docker exec -i mysql mysql -h127.0.0.1 -P3306 -uroot -p123456 \
+		--default-character-set=utf8mb4 < scripts/schema.sql
 
 # 清理构建产物
 clean:

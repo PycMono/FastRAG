@@ -12,7 +12,7 @@ import (
 // 只需要换掉 serviceimpl.Register 里的这一行，应用层一行都不用动。
 type RerankStub struct{}
 
-func NewRerankStub() interfaces.IRerankService { return &RerankStub{} }
+func NewRerankStub() interfaces.IRerank { return &RerankStub{} }
 
 func (RerankStub) Rerank(
 	_ context.Context, _ string, cands []interfaces.RerankCandidate, _ int,

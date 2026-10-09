@@ -153,68 +153,94 @@ MySQL 存知识库与文档（万级行）；切片的一切（内容、向量�
 ```text
 FastRAG/
 ├── cmd/
-│   └── server/main.go                     # fx 装配入口
+│   ├── server/main.go
+│   └── reconcile/main.go
 ├── application/
 │   └── service/
-│       ├── doc_ingest.go                  # 导入编排（切片→两写）
-│       └── search.go                      # 检索编排（两路→融合→重排）
+│       ├── ingest/service.go
+│       ├── ingest/reconcile.go
+│       ├── search/service.go
+│       ├── search/options.go
+│       ├── search/tuning.go
+│       ├── search/rrf.go
+│       └── register.go
 ├── domain/
 │   ├── entity/
-│   │   ├── knowledge_base.go              # KB 聚合根（只读）
-│   │   ├── knowledge_doc.go               # 文档聚合根
-│   │   └── chunk.go                       # 切片（不落 MySQL）
-│   ├── value_object/
-│   │   ├── chunk_options.go               # 切片参数 + Validate
-│   │   └── search_options.go              # 检索参数 + Validate
-│   ├── factory/
 │   │   ├── knowledge_base.go
-│   │   └── knowledge_doc.go
-│   ├── repository/                        # ← 存储端口（接口）
+│   │   ├── knowledge_doc.go
+│   │   ├── chunk.go
+│   │   └── collection.go
+│   ├── factory/
+│   │   ├── knowledge_doc.go
+│   │   └── vector_doc.go
+│   ├── repository/
 │   │   ├── id_service.go
-│   │   └── knowledge/
-│   │       ├── knowledge_base.go          # IKnowledgeBaseRepo
-│   │       ├── knowledge_doc.go           # IKnowledgeDocRepo
-│   │       └── vector_store.go            # IVectorStore：切片存 ES（D3）
-│   ├── interfaces/                        # ← 外部服务端口（接口）
-│   │   └── embedding_service.go           # IEmbeddingService
+│   │   ├── knowledge_base.go
+│   │   ├── knowledge_doc.go
+│   │   └── vector_store.go
+│   ├── interfaces/
+│   │   ├── embedding.go
+│   │   └── rerank.go
 │   ├── service/
-│   │   └── splitter.go                    # 切片领域服务
-│   └── event/
-│       └── doc_indexed.go
+│   │   ├── splitter.go
+│   │   ├── chunk_options.go
+│   │   ├── chunk_input.go
+│   │   └── register.go
+│   └── register.go
 ├── infrastructure/
-│   ├── controller/http/
-│   │   ├── register.go                    # 全部路由挂载点（A4.15）
-│   │   ├── doc/controller.go              # 导入 / 批量导入 / 删除（A4.13）
-│   │   ├── search/controller.go           # 检索（A4.14）
-│   │   ├── health/controller.go           # /health、/ready（A4.2）
-│   │   └── web/                           # 演示页（A4.18）
-│   │       ├── web.go                     # goembed，GET /
-│   │       └── index.html                 # 单文件前端，无构建步骤
-│   ├── persistence/                       # ← 端口实现
-│   │   ├── knowledge/
-│   │   │   ├── knowledge_base_repo.go     # IKnowledgeBaseRepo（GORM，只读）
-│   │   │   ├── knowledge_doc_repo.go      # IKnowledgeDocRepo（GORM）
-│   │   │   ├── vector_store_es.go         # IVectorStore（ES 实现）
-│   │   │   └── index_template.go          # ES mapping / settings
-│   │   ├── po/
-│   │   ├── mapper/                        # Entity <-> PO
-│   │   ├── migration/
+│   ├── controller/
+│   │   ├── http/
+│   │   │   ├── register.go
+│   │   │   ├── doc/controller.go
+│   │   │   ├── search/controller.go
+│   │   │   ├── health/controller.go
+│   │   │   └── web/
+│   │   │       ├── web.go
+│   │   │       └── index.html
+│   │   └── register.go
+│   ├── persistence/
+│   │   ├── knowledge_base_repo.go
+│   │   ├── knowledge_doc_repo.go
+│   │   ├── vector_store_es.go
+│   │   ├── field.go
 │   │   └── register.go
 │   ├── serviceimpl/
-│   │   └── embedding_openai.go            # IEmbeddingService（外部 API）
-│   ├── driver/                            # 只做连接 / 通用请求
-│   │   ├── mysql/
-│   │   ├── redis/
-│   │   └── es/
+│   │   ├── embedding_openai.go
+│   │   ├── rerank_stub.go
+│   │   ├── id_service.go
+│   │   └── register.go
+│   ├── driver/
+│   │   ├── es.go
+│   │   ├── gingext.go
+│   │   ├── mysql.go
+│   │   └── redis.go
+│   ├── middleware/
 │   ├── config/config.go
-│   └── init.go                            # fx 依赖装配
+│   └── init.go
 └── common/
-    ├── dto/
-    ├── bizerrors/
     ├── constants/
-    ├── utils/
-    └── mapper/
+    ├── dto/
+    ├── vo/
+    └── errors/
 ```
+
+> 建库 / 建索引的 SQL 与 mapping **不在代码树里**，在 `scripts/`（§9.4）：
+> `scripts/schema.sql`、`scripts/create-es-index.sh`。
+
+**实体就是持久化模型（2026-10-09 起）**：
+
+`knowledge_base.go` / `knowledge_doc.go` 上直接挂着 `gorm:"column:..."` 和 `TableName()`，
+**没有独立的 `po/` 与 `mapper/` 两层**——对齐 `micro-framework` 的做法（它的 `domain/entity/**`
+同样是 GORM 模型）。理由是这两层在本项目里只买到「实体不被 DDL 细节污染」这一个好处，
+代价却是加一列要改三个文件，而 `po.IsSystem int8` ↔ `entity.IsSystem bool` 这类不一致
+**编译期查不出来**——正是本项目最忌讳的那种静默偏差。
+
+两条随之而来的约束：
+
+- 实体上的 gorm tag 与 `scripts/schema.sql` 是**同一份列定义的两个写法**。它们之间没有
+  任何机制保证一致，改一边就得改另一边；不一致不会报错，只会静默查不到数据。
+- `chunk.go` / `collection.go` **不带 tag**——它们不是表（切片在 ES，集合类型不落库）。
+  「领域类型不一定对应一张表」这件事，靠这两个文件留在视野里。
 
 **接口归口的判据**：
 
@@ -223,7 +249,7 @@ FastRAG/
 | `domain/repository/` | **持久化端口** | 存 / 取领域对象 |
 | `domain/interfaces/` | **外部服务端口** | 无状态调用，不存东西 |
 
-所以 `IVectorStore` 在 `repository/`——切片持久化在 ES（D3），**ES 就是切片的仓储**；`IEmbeddingService` 在 `interfaces/`——它不存任何东西，是纯计算的外部 API 调用。
+所以 `IVectorStore` 在 `repository/`——切片持久化在 ES（D3），**ES 就是切片的仓储**；`IEmbedding` 在 `interfaces/`——它不存任何东西，是纯计算的外部 API 调用。
 
 > 反过来说：如果哪天 ES 退化成纯索引、另有权威存储，`IVectorStore` 就该挪到 `interfaces/`——判据是"它是权威存储还是外部服务"，不是"它叫什么"。FastRAG 当前没有这个前提（D3），所以它落在 `repository/`。
 
@@ -236,9 +262,9 @@ func core(conf *config.Config) fx.Option {
         fx.Supply(conf),
 
         // Redis 已从图上摘掉：它原本只服务限流器，而限流本期不做（§10.3）。
-        // 骨架里的 driver/redis 与 config.redis 保留不动，等真要限流时再接回来。
-        fx.Provide(mysql.NewProvider),   // 返回 *sqlsdk.TransProvider
-        fx.Provide(es.NewClient),
+        // 骨架里的 driver/redis.go 与 config.redis 保留不动，等真要限流时再接回来。
+        fx.Provide(driver.NewProvider),   // 返回 *sqlsdk.TransProvider
+        fx.Provide(driver.NewESClient),
 
         // TransProvider 一份实例按两个接口分别暴露：
         // 仓储要 sqlsdk.Provider，写编排要 transaction.Manager
@@ -250,23 +276,22 @@ func core(conf *config.Config) fx.Option {
         domain.Register,
         service.Register,        // application/service/register.go（A3.4）
 
-        // 两道启动期闸门：配置未显式声明"可信内网"就拒绝启动（§6.1）；
-        // 建 ES 索引只做这一次（§9.4）
+        // 唯一一道启动期闸门：配置未显式声明"可信内网"就拒绝启动（§6.1）。
+        // 启动期**不碰 ES**——索引由人先建好（§9.4），服务只在第一次用到时报错。
         fx.Invoke(checkTrustRequestAccount),
-        fx.Invoke(ensureIndexOnStart),
     )
 }
 ```
 
-> 三个入口的差别只在 `Init`（HTTP）多挂 `gingext.NewEngine` + `controller.Register`，
-> `InitCLI` 不加。`core` 是共用的，所以两道 `fx.Invoke` 闸门三个入口都过——
+> 三个入口的差别只在 `Init`（HTTP）多挂 `driver.NewEngine` + `controller.Register`，
+> `InitCLI` 不加。`core` 是共用的，所以这道 `fx.Invoke` 闸门三个入口都过——
 > 这正是把校验放这里、而不是放 `main` 里的原因。
 
 ```go
 // 各层的构造函数返回的就是接口，不需要 fx.Annotate/fx.As 包一层：
-repository 侧是 `knowledgerepo.IKnowledgeBaseRepo` / `IKnowledgeDocRepo` / `IVectorStore`，
-serviceimpl 侧是 `interfaces.IEmbeddingService`（`NewOpenAIEmbedding`）/
-`interfaces.IRerankService`（`NewRerankStub`）/ `repository.IIDService`。
+repository 侧是 `repository.IKnowledgeBaseRepo` / `IKnowledgeDocRepo` / `IVectorStore`，
+serviceimpl 侧是 `interfaces.IEmbedding`（`NewOpenAIEmbedding`）/
+`interfaces.IRerank`（`NewRerankStub`）/ `repository.IIDService`。
 ```
 
 ---
@@ -275,7 +300,11 @@ serviceimpl 侧是 `interfaces.IEmbeddingService`（`NewOpenAIEmbedding`）/
 
 ### 4.1 MySQL 表
 
-两张表，全部万级行。表名与 `infrastructure/persistence/migration/schema.sql` 保持单一事实源。
+两张表，全部万级行。DDL 的单一事实源是 `scripts/schema.sql`；下面这段是设计期的形状说明，
+与它不一致时以 `scripts/schema.sql` 为准（`make init-db`，服务不建表，见 §9.4）。
+
+> 列定义在代码侧**还有第二个写法**：两个实体的 gorm tag（`domain/entity/`，见 §3.1）。
+> 两边都得手工保持一致——加列时别只改一处。
 
 ```sql
 -- ① 知识库（外部预置；本服务只写 doc_count/chunk_count/update_ts 三列，见 §1 列所有权）
@@ -329,7 +358,12 @@ CREATE TABLE `knowledge_doc` (
 
 ### 4.2 ES 索引 mapping
 
-单索引 `fastrag`。`dims` / `analyzer` 是模板值，由配置注入（§10.3）。
+> **权威版本是 `scripts/create-es-index.sh`**，不是下面这段。下面保留的是设计期的形状说明；
+> 两者不一致时以脚本为准（`make es-index`，服务不建索引，见 §9.4）。
+> 脚本里逐字段写了「为什么是这个类型」的理由，改 mapping 前先读它。
+
+单索引 `fastrag`。`dims` / `analyzer` **不再是配置项**——它们是建索引那一刻的事实，
+写死在脚本里（§9.4）。
 
 ```json
 {
@@ -419,18 +453,11 @@ CREATE TABLE `knowledge_doc` (
 > 磁盘直接多出 §12.1 容量估算里那 8KB/切片——纯粹为了调试方便付的账不划算。
 > 真要排查，用上面那两条路，临时开着看就行。
 >
-> 手敲上面那些查询太麻烦，所以仓库里放了个脚本（`make es-vectors` 或直接跑）：
->
-> ```bash
-> make es-vectors                                  # 总数 + 抽一条切片
-> make es-vector-full                              # 把 1024 个数字**全部**打出来
-> bash scripts/es-inspect-vector.sh <chunk_id>     # 指定切片（chunk_id 就是 _id）
-> bash scripts/es-inspect-vector.sh --account demo # 某个租户
-> ```
->
-> 它做三件事：用 `exists` 聚合数一遍**有多少切片带向量**（而不是翻 `_source` 翻不到就下结论）；
-> 用 `fields` API 把某条切片的 `content_vec` / `title_vec` 打出来；
-> 最后**拿这条切片自己的向量去 kNN 搜它自己**，命中且 `score≈1.0` 才算数——
+> 仓库里曾经有个 `scripts/es-inspect-vector.sh` 把上面这些查询包起来（`make es-vectors`），
+> **已删除**（2026-10-09），连同 `make lint` / `make mysql` 一起。查的时候直接手敲：
+> 用 `exists` 聚合数一遍**有多少切片带向量**（而不是翻 `_source` 翻不到就下结论），
+> 再用 `fields` API 把某条切片的 `content_vec` / `title_vec` 打出来，最后
+> **拿这条切片自己的向量去 kNN 搜它自己**，命中且 `score≈1.0` 才算数——
 > 毕竟"看得见"不是目的，"能用它检索"才是。
 
 **可见性 SLA**：`refresh_interval: 30s` 是拿"导入后立即可搜"换写入吞吐。落地的口径是——
@@ -480,7 +507,7 @@ func (s *Service) Ingest(
 
     // 3) 向量化在应用层做（仓储不调外部 API），工厂只负责组装。
     //    放在任何写之前：失败就当这次导入没发生过。
-    //    注：索引的创建**不在这里**，在启动期做一次（见 §9.4）。
+    //    注：索引的创建**不在这里**，也不在服务里——索引是上线前就建好的外部前提（§9.4）。
     titleVecs, contentVecs, err := s.embedChunks(ctx, chunks)
     if err != nil {
         return nil, errors.WithStack(err)
@@ -527,7 +554,7 @@ func (s *Service) Ingest(
     //    留着就行，全删再写回来是白放大一次写入。
     //
     //    失败不影响正确性：旧切片多留一会儿，下次重导入会再清一遍（§5.2）。
-    if _, err := s.store.DeleteExcept(ctx, knowledgerepo.VectorFilter{
+    if _, err := s.store.DeleteExcept(ctx, repository.VectorFilter{
         Account: kb.Account, DocID: docID,
     }, factory.ChunkIDs(vectors)); err != nil {
         logsdk.Warn(ctx, "清理旧切片失败，不影响检索正确性", logsdk.Any("doc_id", docID))
@@ -782,7 +809,7 @@ func (s *Service) Search(
     // 3) 按 search_mode 分组检索：最多两组，组内字段一致所以能合成一次请求。
     //    不取并集——那会悄悄把「只查标题」的库按正文搜（§7.2）
     groups := groupBySearchMode(kbs)
-    pool := make([]knowledgerepo.SearchResult, 0, len(groups))
+    pool := make([]repository.SearchResult, 0, len(groups))
     for _, g := range groups {
         r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec))
         if err != nil {
@@ -937,7 +964,7 @@ kbs ──► 按 search_mode 分组 ──┬─► [title 组]             ─
 ```go
 // ↑ 本段是**编排示意**，按「已经融合完的 vo.SearchResult」写，
 //   为的是把「丢弃哪几类」讲清楚；真实签名收的是两路原始命中
-//   `[]knowledgerepo.VectorHit`，融合在过滤**之后**做（§7.2）。
+//   `[]repository.VectorHit`，融合在过滤**之后**做（§7.2）。
 //   完整可落盘的代码见 A3.3。
 func (s *SearchService) filterAlive(
     ctx context.Context,
@@ -1096,28 +1123,50 @@ routing=acc_1（数据在分片 1）去查 acc_6（数据在分片 2） → 0 �
 
 ### 9.4 索引的创建时机
 
-**`EnsureIndex` 只在启动时调一次，不在写入路径上。**
+> **本节结论已反转。** 曾定"服务在启动期建索引"，现已改为**服务完全不建索引**：
+> 索引和库表都是**上线前由人建好的外部前提**，建索引的语句在 `scripts/create-es-index.sh`。
+> A4.x 附录保留的是当时的推理存档，与当前实现不符时以本节为准。
+
+**服务不创建索引，也不在启动期校验它。**
 
 ```text
-cmd/server 启动 ──► fx OnStart ──► vectorStore.EnsureIndex(ctx) ──┬─ 成功 → 继续启动
-                                                                  └─ 失败 → 拒绝启动
+上线前（人）  ──► bash scripts/create-es-index.sh ──► 索引就绪
+运行时（服务）──► 第一次写入/检索时确认索引可用 ──┬─ 可用 → 继续，之后不再查
+                                                 └─ 不可用 → 报错，信息里带要跑的命令
 ```
-
-早先的写法是在每次 `Ingest` 里调一次（"这样部署时不用手工建索引"），这是把**部署期动作塞进了数据通路**，代价是：
 
 | 问题 | 说明 |
 |---|---|
-| 失败点错位 | 索引建不出来/配置错，应该在**启动**时炸（有运维看着），而不是在第一个用户导入时 |
-| 每请求一次往返 | `IndicesExists` 每个导入请求都发 |
-| 是个假保证 | `EnsureIndex` 只看"索引在不在"，**不校验 mapping**（dense_vector 的 dims 不可变，校验了也修不了）。给的是"索引存在"的安心感，不是"索引正确" |
-| 权限 | 运行时凭据因此需要建索引权限；挪到启动后，运行时可降为纯数据读写 |
-| 并发 | 多副本同时首次启动会并发 PUT，实现需容忍 `resource_already_exists_exception`（A4.6 有这个处理，保留） |
+| 权限 | 运行期凭据不再需要建索引权限，可降为纯数据读写。库表同理，不需要 DDL 权限 |
+| 启动不依赖 ES | 服务起得来与否不再取决于 ES 当时是否可达。ES 慢半拍不该让整个服务起不来 |
+| mapping 单一事实源 | 建索引的 JSON 现在只有一份（脚本里），不再是"Go 代码 + README 手抄版 + 线上实际生效版"三份各改各的 |
+| 维度与分词器不再是配置 | 它们是**建索引那一刻**的事实，运行期一次都不用。留在 `config.json` 里只会让人以为改它能生效 |
 
-**`EnsureIndex` 的端口方法保留**——启动期仍要调它，只是调用点从"每个请求"变成"进程一次"。
+**为什么不在启动期校验**：那是"起不来的服务"的另一种形态。索引没建好是个**部署遗漏**，
+不是进程该为此死掉的理由——尤其在滚动发布、多副本、ES 短暂不可达这些常见场景下。
 
-`deploy/README.md` 里那句手工建索引的 `curl` 于是只剩一个用途：**冒烟测试**——确认 mapping 能被集群接受、IK 分词器真的生效。它不是部署步骤。
+**改为"第一次用时报清楚"**。关键点是：前提不成立时最糟的结果不是报错，而是**静默**。
 
-> 启动期建索引意味着**服务启动前 ES 必须可达**。这是有意的 fail-fast：宁可起不来，也不要带着"索引其实不对"的状态服务请求。若编排上必须先起进程再等依赖，就在 `OnStart` 里做有限次退避重试，仍然失败则退出。
+```text
+ES 的 action.auto_create_index 默认为 true
+  └─► 一次写入打到不存在的索引 ──► ES 自己建一个**动态 mapping** 的索引
+        · 无 IK 分词 · 无 dense_vector · account 是 text
+        · bulk 返回成功，没有任何提示
+        · 检索时才以"字段不存在"这类面目全非的错误浮现
+        · account 变 text 尤其危险：term 查询会按分词匹配，
+          「demo」能命中「demo-other」的文档 —— 那是跨租户越权，不是召回变小
+```
+
+所以服务侧在第一次写入/检索前查一次 `_mapping`：索引不在、或不像本服务要的索引，
+都直接报错并附上要执行的命令（`code = 10207`）。查过就置位，之后只付一次原子读；
+**失败不置位**——运维补建完索引，下一次请求自动恢复，不必重启服务。
+
+冒烟检查只挑两个"类型本身就是语义"的字段（`account` 必须 keyword、`content_vec` 必须
+`dense_vector`），**不是** mapping 的权威校验——权威版本是脚本，那里逐字段比对。
+
+> 若要把"服务绝不建索引"变成集群层面的硬保证（本服务独占集群时），可关掉自动创建：
+> `PUT /_cluster/settings {"persistent":{"action.auto_create_index":"false"}}`。
+> 共用集群别这么干——会影响别的应用。
 
 ---
 
@@ -1126,12 +1175,11 @@ cmd/server 启动 ──► fx OnStart ──► vectorStore.EnsureIndex(ctx) �
 ### 10.1 向量存储
 
 ```go
-// domain/repository/knowledge/vector_store.go
+// domain/repository/vector_store.go
 type IVectorStore interface {
-    // 索引长什么样（维度、分片、分词器）是部署环境的事实，
-    // 由实现从配置读——端口里不该出现 Analyzer/Shards 这类 ES 概念
-    EnsureIndex(ctx context.Context) error
-
+    // 端口上**没有** EnsureIndex —— 服务不创建索引（§9.4）。
+    // 索引和库表都是上线前建好的外部前提，建索引用 scripts/create-es-index.sh。
+    // 实现里那个「第一次用到时确认索引可用」的检查是内部细节，不进端口。
     Save(ctx context.Context, docs []VectorDoc) error
 
     // Refresh 强制刷新索引，让刚写入的切片立刻可检索。
@@ -1155,18 +1203,18 @@ type IVectorStore interface {
 }
 ```
 
-端口类型（`VectorDoc` / `VectorFilter` / `VectorSearchReq` / `VectorHit` / `SearchResult`）与接口同包，定义在 `domain/repository/knowledge/vector_store.go`——
+端口类型（`VectorDoc` / `VectorFilter` / `VectorSearchReq` / `VectorHit` / `SearchResult`）与接口同包，定义在 `domain/repository/vector_store.go`——
 基础设施只认这些，不认 `entity`。向量化**不在仓储里做**（仓储不调外部 API），
-由应用层调 `IEmbeddingService` 算好后经 `factory.BuildVectorDocs` 组装（§5.1）。
-实现：`infrastructure/persistence/knowledge/vector_store_es.go`。
+由应用层调 `IEmbedding` 算好后经 `factory.BuildVectorDocs` 组装（§5.1）。
+实现：`infrastructure/persistence/vector_store_es.go`。
 
 关键字段（完整定义见 A2.10）：`VectorDoc.ChunkID` 既是 ES 的 `_id`，也是 §5.2 第 ② 步差集清理的「保留集合」；`VectorHit.DocID` 由 `Search` 原样带回来，供 §7.3 做存活校验。
 
 ### 10.2 Embedding
 
 ```go
-// domain/interfaces/embedding_service.go
-type IEmbeddingService interface {
+// domain/interfaces/embedding.go
+type IEmbedding interface {
     // 非对称编码：query 与 doc 可能用不同前缀/指令
     EmbedDocs(ctx context.Context, texts []string) ([][]float32, error)
     EmbedQuery(ctx context.Context, text string) ([]float32, error)
@@ -1190,12 +1238,13 @@ type IEmbeddingService interface {
 
 ```jsonc
 {
-  "elasticsearch": {
+  // ES 配置**只有「怎么连 + 读写哪个索引」**：维度 / 分词器 / 分片 / 副本 /
+  // 刷新间隔都是建索引那一刻的事实，运行期一次都不用，已搬去
+  // scripts/create-es-index.sh（§9.4）。留在这里只会让人以为改它能生效。
+  "es": {
     "addrs": ["http://127.0.0.1:9200"],
     "index": "fastrag",
-    "username": "", "password": "",
-    "dim": 1024, "analyzer": "ik_max_word", "search_analyzer": "ik_smart",
-    "shards": 3, "replicas": 1, "refresh_interval": "30s"
+    "username": "", "password": ""
   },
   "embedding": {
     "base_url": "", "api_key": "", "model": "", "dim": 1024,
@@ -1280,7 +1329,7 @@ type IEmbeddingService interface {
 - [ ] 骨架：fx 装配 + 配置 + MySQL / ES 驱动
 - [ ] 领域模型：`KnowledgeBase` / `KnowledgeDoc` / `Chunk` + 工厂
 - [ ] 切片：结构感知（markdown 标题树）
-- [ ] ES 单索引 + 启动期 `EnsureIndex`（幂等，§9.4）
+- [ ] ES 单索引 `fastrag`，由 `scripts/create-es-index.sh` 预先建好（服务不建，§9.4）
 - [ ] 导入：`POST /api/v1/docs`（ES 切片 → ES 清旧切片差集 → MySQL 文档行 + 计数，§5.2）
 - [ ] 检索：混合检索（kNN + BM25，应用层 RRF 融合）——`term(account)` 在 ES 侧过滤，存活校验在应用层（§7.3）
 - [ ] **验收**：给一篇 markdown，导入后**在一个刷新周期内**（默认 30s）检索到，且内容与源文一致
@@ -1439,6 +1488,12 @@ P0/P1 的"验收"如果不写数，就只是"跑通了"。下面这一节的意�
 > 演示页路由、以及 `ginsdk.HTTPServer` 不会自启——都已回写进对应小节，
 > 但**不敢保证没有别的出入**：这一节最初是按记忆写的，不是照着源码抄的
 > （详见 A6 第 1 条）。
+>
+> ⚠️ **2026-10-09 追加：`po` / `mapper` 两层已被合并掉**（实体直接兼作 GORM 模型，见 §3.1）。
+> 本附录里 A2.3 / A2.4 的实体（无 tag）、A4.1～A4.6 的仓储实现与 A4.5 的
+> `mapper/knowledge.go`、A4.7（`index_template.go`）**都是合并前的样子**，
+> 保留作历次修订的存档，不再逐行更新。另：建表 / 建索引的 SQL 与 mapping 已从
+> 代码里移出到 `scripts/`（§9.4），附录中凡涉及 `migration/` 的部分同此。
 
 ## A0 · 前置说明
 

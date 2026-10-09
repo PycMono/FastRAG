@@ -24,15 +24,21 @@ docker compose --profile kibana up -d     # 需要 Kibana 时（额外 ~1.2GB �
 MySQL / Redis 本机已在跑（`3306` / `6379`），直接用，不用另起。
 需要完全独立的一套时，取消 `docker-compose.yml` 末尾注释块（端口故意错开成 `3307` / `6380`）。
 
-初始化业务库：
+初始化业务库与索引：
 
 ```bash
-mysql -uroot -p < infrastructure/persistence/migration/schema.sql
+make init-db     # 建 MySQL 库表，可重复执行（DDL 全是 IF NOT EXISTS）
+make es-index    # 建 ES 索引（已存在则只校验 mapping，不改动）
 ```
 
-建表语句的**单一事实源**是 `infrastructure/persistence/migration/schema.sql`——
-服务里通过 `go:embed` 读它，容器初始化也挂它。改表结构只改这一处，
-不会再出现「代码建的库和 docker 建的库不一致」。
+建表语句的**单一事实源**是 `scripts/schema.sql`，索引定义的单一事实源是
+`scripts/create-es-index.sh`。**两者都由人先建好，服务不建**（设计文档 §9.4）——
+运行期的连接账号因此也不需要 DDL 权限。改结构只改 `scripts/` 下这两处。
+
+> ⚠️ 别直接 `mysql -uroot -p < scripts/schema.sql`：容器里的 mysql 客户端
+> 默认字符集是 latin1，中文会被**双向编码错**存进库（`租户` 存成 `ç§Ÿæˆ·`），
+> 而且列和连接字符串都查不出问题。`make init-db` 带上了
+> `--default-character-set=utf8mb4`，用它。
 
 ---
 
@@ -70,35 +76,28 @@ curl -s localhost:9200 | grep -E '"number"|"build_flavor"'
 > 免费可用的替代是 **`knn` + `query` 单请求 + `boost` 加权**（已实测通过），
 > 或**两路独立检索 + 应用层 RRF 融合**。设计文档 §7.2 已按此修正。
 
-### ③ 按设计文档 §4.2 建一次索引
-
-把 mapping 里的 `ik_max_word` / `ik_smart` 换成第 ① 步验证过的分词器，建索引并确认字段全部被接受——尤其是两个 `dense_vector`：
+### ③ 建索引
 
 ```bash
-curl -s -XPUT "localhost:9200/fastrag" -H 'Content-Type: application/json' -d @- <<'JSON'
-{
-  "settings": { "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "30s" },
-  "mappings": { "properties": {
-    "account":     { "type": "keyword" },
-    "kb_id":       { "type": "long" },
-    "doc_id":      { "type": "long" },
-    "chunk_id":    { "type": "keyword" },
-    "order":       { "type": "integer" },
-    "biz_tag":     { "type": "keyword" },
-    "title":       { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
-    "content":     { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
-    "heading_path":{ "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
-    "title_vec":   { "type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine" },
-    "content_vec": { "type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine" },
-    "create_ts":   { "type": "long" }
-  }}
-}
-JSON
+make es-index              # 或 bash scripts/create-es-index.sh
 ```
 
-> 单索引多租户（设计文档 D2）：索引名固定 `fastrag`，所有租户共用一个物理索引，隔离靠 `account` 字段。本地验完记得删掉：`curl -XDELETE localhost:9200/fastrag`
+索引定义的**权威版本**就是这条 curl（mapping 里字段取值的理由也写在它上面的注释里）。
+已存在时 ES 会回 `resource_already_exists_exception`，**不会覆盖**。
 
-调 mapping 和 RRF 查询体时，用 Kibana 的 Dev Tools 会比 curl 顺手得多（直接贴设计文档 §7.2 的 JSON）。
+> 单索引多租户（设计文档 D2）：索引名固定 `fastrag`，所有租户共用一个物理索引，
+> 隔离靠 `account` 字段——所以它必须是 `keyword`。本地要重来一遍时先删：
+> `curl -XDELETE localhost:9200/fastrag`（**删索引 = 丢全部切片**，脚本故意不代劳这件事）
+
+> ⚠️ **ES 默认 `action.auto_create_index=true`**：万一服务在索引建好之前先写入，
+> ES 会**自己**建一个动态 mapping 的 `fastrag`（无 IK、无 `dense_vector`、
+> `account` 是 text），写入还返回成功。脚本下次运行会因 mapping 不符而报错，
+> 不会把它固化，但已经写进去的数据要重导。服务侧也会在第一次用到时直接报错。
+> 若要根治（本服务独占的集群才建议）：`curl -XPUT 'localhost:9200/_cluster/settings'
+> -H 'Content-Type: application/json'
+> -d '{"persistent":{"action.auto_create_index":"false"}}'`
+
+调查询体时，用 Kibana 的 Dev Tools 会比 curl 顺手得多（直接贴设计文档 §7.2 的 JSON）。
 
 ---
 
@@ -181,6 +180,7 @@ ES_VERSION=9.6.0 docker compose up -d --build
 |---|---|
 | `docker-compose.yml` | ES + Kibana（含可选的独立 MySQL/Redis 注释块） |
 | `deploy/es/Dockerfile` | 基于官方 ES 镜像，装 analysis-ik 插件 |
-| `../infrastructure/persistence/migration/schema.sql` | 业务库 DDL，单一事实源（设计文档 §4.1 的两张表） |
-| `../infrastructure/persistence/knowledge/index_template.go` | ES 索引 mapping / 命名规则所在（设计文档 §4.2、§9） |
+| `../scripts/schema.sql` | 业务库 DDL，单一事实源（设计文档 §4.1 的两张表）。执行见 `make init-db` |
+| `../scripts/create-es-index.sh` | ES 索引 mapping / settings，单一事实源（设计文档 §4.2、§9）。执行见 `make es-index` |
+| `../infrastructure/persistence/knowledge/field.go` | 查询/写入用的字段名常量（mapping 的另一半） |
 | `../docs/superpowers/specs/2026-10-08-fastrag-design.md` | 设计文档 |

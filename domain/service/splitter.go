@@ -7,8 +7,7 @@ import (
 
 	"github.com/PycMono/FastRAG/common/constants"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
-	knowledgeentity "github.com/PycMono/FastRAG/domain/entity/knowledge"
-	"github.com/PycMono/FastRAG/domain/value_object"
+	"github.com/PycMono/FastRAG/domain/entity"
 )
 
 // Splitter 切片领域服务。
@@ -20,7 +19,7 @@ type Splitter struct{}
 func NewSplitter() *Splitter { return &Splitter{} }
 
 // Split 按形态切分。format = chunks 不走这里——调用方已经切好了，走 Normalize。
-func (s *Splitter) Split(content, format string, opts value_object.ChunkOptions) (knowledgeentity.Chunks, error) {
+func (s *Splitter) Split(content, format string, opts ChunkOptions) (entity.Chunks, error) {
 	nOpts, err := opts.Normalize()
 	if err != nil {
 		return nil, err
@@ -31,7 +30,7 @@ func (s *Splitter) Split(content, format string, opts value_object.ChunkOptions)
 		return nil, apperrors.NewParamError("content 不能为空")
 	}
 
-	var chunks knowledgeentity.Chunks
+	var chunks entity.Chunks
 	switch format {
 	case constants.FormatMarkdown:
 		chunks = splitMarkdown(content, nOpts)
@@ -46,15 +45,15 @@ func (s *Splitter) Split(content, format string, opts value_object.ChunkOptions)
 
 // Normalize 归一化调用方直接给出的切片（format = chunks）。
 // 不重切，只做三件事：滤空、补标题链、重新编号。
-func (s *Splitter) Normalize(in []value_object.ChunkInput) (knowledgeentity.Chunks, error) {
-	out := make(knowledgeentity.Chunks, 0, len(in))
+func (s *Splitter) Normalize(in []ChunkInput) (entity.Chunks, error) {
+	out := make(entity.Chunks, 0, len(in))
 	for _, c := range in {
 		body := strings.TrimSpace(c.Content)
 		if body == "" {
 			continue
 		}
 		title := strings.TrimSpace(c.Title)
-		out = append(out, &knowledgeentity.Chunk{
+		out = append(out, &entity.Chunk{
 			Title:       title,
 			HeadingPath: title,
 			Content:     renderPiece(title, body),
@@ -178,9 +177,9 @@ func renderPiece(path, body string) string {
 }
 
 // splitMarkdown 结构感知切分：小节点合并，超长节点降级递归。
-func splitMarkdown(content string, opts value_object.ChunkOptions) knowledgeentity.Chunks {
+func splitMarkdown(content string, opts ChunkOptions) entity.Chunks {
 	var (
-		chunks  knowledgeentity.Chunks
+		chunks  entity.Chunks
 		buf     strings.Builder
 		bufPath string
 		bufLen  int
@@ -189,7 +188,7 @@ func splitMarkdown(content string, opts value_object.ChunkOptions) knowledgeenti
 	flush := func() {
 		text := strings.TrimSpace(buf.String())
 		if text != "" {
-			chunks = append(chunks, &knowledgeentity.Chunk{
+			chunks = append(chunks, &entity.Chunk{
 				Title:       lastSegment(bufPath),
 				HeadingPath: bufPath,
 				Content:     text,
@@ -251,7 +250,7 @@ var separators = []string{
 // 先拿最强的分隔符切；段还是超长就换更弱的分隔符再切，
 // 直到切得动、或者分隔符用尽只能硬切。
 // 比「按固定长度硬切」强的地方在于：它优先在语义边界断开。
-func splitBySeparators(text, title, path string, size int) knowledgeentity.Chunks {
+func splitBySeparators(text, title, path string, size int) entity.Chunks {
 	prefix := ""
 	if path != "" {
 		prefix = path + "\n"
@@ -266,14 +265,14 @@ func splitBySeparators(text, title, path string, size int) knowledgeentity.Chunk
 	return splitRec(strings.TrimSpace(text), prefix, title, path, budget, 0)
 }
 
-func splitRec(text, prefix, title, path string, budget, depth int) knowledgeentity.Chunks {
+func splitRec(text, prefix, title, path string, budget, depth int) entity.Chunks {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}
 
 	if runeLen(text) <= budget {
-		return knowledgeentity.Chunks{{
+		return entity.Chunks{{
 			Title: title, HeadingPath: path, Content: prefix + text,
 		}}
 	}
@@ -286,7 +285,7 @@ func splitRec(text, prefix, title, path string, budget, depth int) knowledgeenti
 	sep := separators[depth]
 
 	var (
-		out    knowledgeentity.Chunks
+		out    entity.Chunks
 		cur    strings.Builder
 		curLen int
 	)
@@ -294,7 +293,7 @@ func splitRec(text, prefix, title, path string, budget, depth int) knowledgeenti
 	flush := func() {
 		s := strings.TrimSpace(cur.String())
 		if s != "" {
-			out = append(out, &knowledgeentity.Chunk{
+			out = append(out, &entity.Chunk{
 				Title: title, HeadingPath: path, Content: prefix + s,
 			})
 		}
@@ -333,19 +332,19 @@ func splitRec(text, prefix, title, path string, budget, depth int) knowledgeenti
 // hardCut 兜底中的兜底：按 rune 硬切。
 // 走到这一步说明文本里连一个空格都没有（base64、无空格长串），
 // 切碎了也比丢了强。
-func hardCut(text, prefix, title, path string, budget int) knowledgeentity.Chunks {
+func hardCut(text, prefix, title, path string, budget int) entity.Chunks {
 	if budget < 1 {
 		budget = 1
 	}
 
 	runes := []rune(text)
-	out := make(knowledgeentity.Chunks, 0, len(runes)/budget+1)
+	out := make(entity.Chunks, 0, len(runes)/budget+1)
 	for len(runes) > 0 {
 		n := budget
 		if n > len(runes) {
 			n = len(runes)
 		}
-		out = append(out, &knowledgeentity.Chunk{
+		out = append(out, &entity.Chunk{
 			Title: title, HeadingPath: path, Content: prefix + string(runes[:n]),
 		})
 		runes = runes[n:]
@@ -357,8 +356,8 @@ func hardCut(text, prefix, title, path string, budget int) knowledgeentity.Chunk
 //
 // 过短切片（比如只有一行标题、结论只有三个字的节点）在向量检索里
 // 几乎必然是噪声：它的向量不携带判别信息，却要占掉一个 topK 名额。
-func finalize(chunks knowledgeentity.Chunks, opts value_object.ChunkOptions) knowledgeentity.Chunks {
-	out := make(knowledgeentity.Chunks, 0, len(chunks))
+func finalize(chunks entity.Chunks, opts ChunkOptions) entity.Chunks {
+	out := make(entity.Chunks, 0, len(chunks))
 
 	for _, c := range chunks {
 		if len(out) > 0 && runeLen(c.Content) < opts.MinChunk {

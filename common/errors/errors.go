@@ -182,7 +182,6 @@ var (
 	ErrDocDeleteFailed   = NewSysError(CodeDocDeleteFail, "doc delete failed")
 	ErrEmbeddingFailed   = NewSysError(CodeEmbeddingFail, "embedding service failed")
 	ErrVectorStoreFailed = NewSysError(CodeVectorStoreFail, "vector store failed")
-	ErrIndexInitFailed   = NewSysError(CodeIndexInitFail, "index init failed")
 	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
 )
 

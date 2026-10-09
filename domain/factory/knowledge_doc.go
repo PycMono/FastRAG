@@ -3,7 +3,7 @@ package factory
 import (
 	"time"
 
-	knowledgeentity "github.com/PycMono/FastRAG/domain/entity/knowledge"
+	"github.com/PycMono/FastRAG/domain/entity"
 )
 
 // NewDoc 建一个文档聚合。
@@ -15,13 +15,13 @@ import (
 // 禁止在别处直接 &KnowledgeDoc{}——CreateTs / DeleteTs 漏填就是脏数据。
 func NewDoc(
 	docID uint64,
-	kb *knowledgeentity.KnowledgeBase,
+	kb *entity.KnowledgeBase,
 	name, contentHash string,
 	chunkCount int,
 	now time.Time,
-) *knowledgeentity.KnowledgeDoc {
+) *entity.KnowledgeDoc {
 	ts := now.UnixMilli()
-	return &knowledgeentity.KnowledgeDoc{
+	return &entity.KnowledgeDoc{
 		ID:          docID,
 		KBID:        kb.ID,
 		Account:     kb.Account,
