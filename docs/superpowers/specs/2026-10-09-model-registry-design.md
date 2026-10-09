@@ -36,9 +36,8 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 - **维度相同、向量空间不同**（bge-m3 1024 → qwen 也配 1024）→ **完全静默**。余弦相似度
   照样算得出来，只是排出来的顺序是噪声，接口不报错、日志不报警。
 
-**已决定：第二种不管。** 不落痕、不校验、`knowledge_doc` 不加列。换 embedding 服务商时，
-由使用方自行重导该库的全部文档（或另建索引 + 另起实例）。这是明确接受的代价，
-在第 9 节记录下来，落地后同步写进 README。
+**已决定：第二种不管。** 不落痕、不校验、`knowledge_doc` 不加列，旧数据不做任何特殊处理。
+这是明确接受的代价，记在第 8 节。
 
 因此本方案里：
 
@@ -47,56 +46,118 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 
 ## 3. 配置形状
 
-`embedding` 和 `rerank` 都改成 `{default, models}` 结构，`models` 是 map：
+`embedding` 和 `rerank` 都改成 `{default, models}` 结构，`models` 是 map。
+下面是完整的 config.json，可以直接抄成 `config.json` 用：
 
 ```jsonc
-"embedding": {
-  "default": "bge-m3",
-  "models": {
-    // key 是暴露给调用方的别名；上游真名写在 model 里，留空则等于 key
-    "bge-m3": {
-      "protocol": "openai",
-      "url": "http://127.0.0.1:11434/v1/embeddings",
-      "api_key": "",
-      "model": "",
-      "dim": 1024,
-      "batch_size": 16,
-      "timeout_ms": 60000,
-      "query_prefix": ""
-    },
-    "qwen": {
-      "protocol": "dashscope",
-      "url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
-      "api_key": "sk-xxx",
-      "model": "text-embedding-v4",
-      "dim": 1024,
-      "batch_size": 10,
-      "timeout_ms": 30000,
-      "parameters": { "dimension": 1024 }   // 原样并入请求的 parameters 块
+{
+  "app": "fastrag",
+  "debug": true,
+  "http": { "host": "", "port": "8080", "read_timeout": 120, "write_timeout": 120 },
+  "mysql": {
+    "host": "127.0.0.1", "port": 3306, "database": "fastrag",
+    "user": "root", "password": "123456",
+    "max_open": 100, "max_idle": 10, "conn_lifetime": 3600,
+    "conn_timeout": 3, "log_level": 3, "slow_threshold": 500
+  },
+  "redis": { "addr": [], "password": "", "db": 0, "pool_size": 5 },
+  "snowflake_node_id": 1,
+  "es": {
+    "addrs": ["http://127.0.0.1:9200"],
+    "index": "fastrag", "username": "", "password": ""
+  },
+
+  // ────────────────── 这一块从「一家」变成「一组」 ──────────────────
+  "embedding": {
+    // 请求里没带 model 时用哪个。必须命中下面某个 key，否则启动报错
+    "default": "bge-m3",
+
+    // key = 你给这家起的名（调用方就用这个名字），随便起，短一点好写
+    "models": {
+
+      // ── 本机 Ollama，OpenAI 兼容，不需要 key ──
+      "bge-m3": {
+        "protocol": "openai",                              // 可省略，默认就是 openai
+        "url": "http://127.0.0.1:11434/v1/embeddings",     // 完整地址，后缀也要写
+        "api_key": "",                                     // Ollama 不用
+        "model": "",                                       // 留空 = 用 key，即 "bge-m3"
+        "dim": 1024,                                       // 可省略；写上有错早报
+        "batch_size": 16,
+        "timeout_ms": 60000,
+        "query_prefix": ""                                 // bge-m3 不加前缀
+      },
+
+      // ── 通义，原生协议 ──
+      "qwen": {
+        "protocol": "dashscope",
+        "url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
+        "api_key": "sk-你的key",
+        "model": "text-embedding-v4",                      // 上游真名，和 key 不一样没关系
+        "dim": 1024,
+        "batch_size": 10,                                  // 通义单次上限 10 条
+        "timeout_ms": 30000,
+        "parameters": { "dimension": 1024 }                // 原样塞进请求的 parameters 块
+      }
+
+      // 再加一家？在这里再加一段就行，代码一个字都不用改
     }
-  }
-},
-"rerank": {
-  "enabled": true,
-  "default": "qwen3-rerank",
-  "models": {
-    "bge": {
-      "protocol": "openai",
-      "url": "https://api.siliconflow.cn/v1/rerank",
-      "api_key": "sk-xxx",
-      "model": "BAAI/bge-reranker-v2-m3",
-      "batch_size": 32, "concurrency": 4, "timeout_ms": 10000, "top_n": 0
-    },
-    "qwen3-rerank": {
-      "protocol": "dashscope",
-      "url": "https://ws-xxxx.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-      "api_key": "sk-xxx",
-      "model": "qwen3-rerank",
-      "batch_size": 32, "concurrency": 4, "timeout_ms": 10000, "top_n": 0
+  },
+
+  // ────────────────── 同样从「一家」变成「一组」 ──────────────────
+  "rerank": {
+    "enabled": true,              // false = 整个实例不重排，下面 models 可以为空
+    "default": "qwen3-rerank",
+
+    "models": {
+      "bge-reranker": {
+        "protocol": "openai",
+        "url": "https://api.siliconflow.cn/v1/rerank",
+        "api_key": "sk-你的key",
+        "model": "BAAI/bge-reranker-v2-m3",
+        "batch_size": 32,
+        "concurrency": 4,
+        "timeout_ms": 10000,
+        "top_n": 0                // 0 = 全部返回，最后按 limit 截断；别改成 5
+      },
+      "qwen3-rerank": {
+        "protocol": "dashscope",
+        "url": "https://ws-s5iiibr6uezast8b.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+        "api_key": "sk-你的key",
+        "model": "qwen3.7-text-rerank",
+        "batch_size": 32,
+        "concurrency": 4,
+        "timeout_ms": 10000,
+        "top_n": 0
+      }
     }
-  }
+  },
+
+  "search": {
+    "bm25_top": 50, "knn_top": 50, "num_candidates": 200,
+    "rank_constant": 60, "dense_weight": 0.5, "default_retrieve_count": 0
+  },
+  "security": { "trust_request_account": true }
 }
 ```
+
+调用方怎么用（导入和检索各指定一次，不指定就走上面的 `default`）：
+
+```bash
+# 导入：这篇文档的向量用 bge-m3 算
+curl -X POST http://localhost:8080/api/v1/docs \
+  -H 'Content-Type: application/json' \
+  -d '{"account":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text",
+       "model":"bge-m3","content":"……正文……"}'
+
+# 检索：查询向量用 bge-m3 算，精排用 qwen3-rerank
+curl -X POST http://localhost:8080/api/v1/search \
+  -H 'Content-Type: application/json' \
+  -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
+       "embed_model":"bge-m3","rerank_model":"qwen3-rerank","rerank_switch":true}'
+```
+
+`"model":"qwen-not-exist"` 这种拼错的名字 → 返回 `code=10001`，消息里列出可用的名字，
+**不会**悄悄用默认那家。
 
 三条约定：
 
@@ -310,40 +371,21 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 4. **所有 embedding entry 的 `dim` 必须一致**（`dim > 0` 的那些之间）。
    ES 只有一个 `content_vec`，`dims` 建索引时就定死了（§9.4）；两个不同维度的 entry
    同时存在，其中至少一个必然写不进去。
-5. 旧形状（`embedding.base_url` 这类扁平键）解析后 `models` 为空 → 命中第 1 条报错。
-   这是刻意的：静默把 `base_url` 当默认，会让一次漏改的配置看起来在正常工作。
+消息里给出当前可用的名字列表。
 
-消息里直接给出该改哪个文件（`config.example.json`）、以及当前可用的名字列表。
-
-## 8. 兼容与迁移
-
-- `config.json` 已被 gitignore，本地那份由使用方按 `config.example.json` 自己改。
-- `config.example.json` 换新形状，留一个本机 Ollama 的 embedding 示例 +
-  一个 OpenAI 兼容 rerank 示例，并在注释里说明"再加一家 = 再复制一段"。
-- 旧的扁平键在解析后会被忽略（`json.Unmarshal` 没有 `DisallowUnknownFields`），
-  但因为第 7 节第 5 条，服务不会带着一份没生效的配置起来。
-
-## 9. 已接受的代价
+## 8. 已接受的代价
 
 **换 embedding 服务商后，用旧模型生成的库检索会退化成噪声排序，并且不报错。**
 
 维度和向量空间都不匹配时，只有维度这一层会被 ES 拦住；维度恰好一致的情况（比如
 1024 → 1024）没有任何信号。这是本方案明确选择的：接口提供 `model` 让调用方切换，
-不落痕、不比对、不在 `knowledge_doc` 上加列。
+不落痕、不比对、不在 `knowledge_doc` 上加列，旧数据不做任何特殊处理。
 
-缓解手段只有两条，都靠使用方自觉：
-
-- 换服务商时**同步重导该库全部文档**，让整个库的向量出自同一家；
-- 或者**另建索引 + 另起实例**，两套并存、各查各的。
-
-这一条要写进 README 和设计文档，让下一个人在做"换个便宜的 embedding"这个决定时
-知道自己在换什么。
-
-## 10. 验证
+## 9. 验证
 
 1. **配置校验的单元测试**：`default` 指向不存在的 key / `models` 为空 /
-   `rerank.enabled=true` 但 `models` 为空 / 两个 embedding entry 维度不同 /
-   旧的扁平配置——五种都必须启动报错，且消息里带可用名字。
+   `rerank.enabled=true` 但 `models` 为空 / 两个 embedding entry 维度不同
+   ——四种都必须启动报错，且消息里带可用名字。
 2. **协议构造与解析的单元测试**（纯函数，照 `rerank_test.go` 的路子）：
    - dashscope rerank 的请求体含 `input.{query,documents}` 与 `parameters.top_n`，
      且**分批时 `top_n` 等于本批长度**；
@@ -354,18 +396,18 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
    `code=10001` 且消息里列出可用名字。
 4. **回归**：`go build ./... && go vet ./... && go test ./...` 全绿；`gofmt -l` 不新增脏文件。
 
-## 11. 不做的事
+## 10. 不做的事
 
-- **不给 embedding 落痕、不做一致性校验**（第 2、9 节的明确决定）。
+- **不给 embedding 落痕、不做一致性校验、旧数据不做任何处理**（第 2、8 节的明确决定）。
 - **不支持一个索引里混不同维度的 embedding 模型**。`content_vec` 是一列，`dims` 建好
-  改不了（§9.4）。真要用 768 维的便宜模型，那是另一个索引 + 另一个服务实例。
+  改不了（§9.4），配了两个不同维度的 entry 至少一个必然写不进去。
 - **不做配置热加载**。改配置仍然要重启。
 - **不给 openai 协议补 `parameters` 逃生口以外的可选项**。真需要塞额外字段时用
   `parameters`，不为此再加字段。
 - **不合并 `enabled` 与 `models` 为空**：`enabled` 是"这个实例要不要做重排"的部署决定，
   与"有哪几家可选"无关，语义不同，保留。
 
-## 12. 落地顺序与文件清单
+## 11. 落地顺序与文件清单
 
 按依赖顺序：
 
@@ -378,7 +420,7 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 5. `common/dto/doc.go`、`search.go` — 三个新字段。
 6. `application/service/ingest/service.go`、`search/service.go` — 换成按名字解析。
 7. `README.md` — 「API 示例」补 `model` / `embed_model` / `rerank_model`；
-   「后续规划」或配置一节写明第 9 节的代价。
+   配置一节写明第 8 节的代价。
 8. `docs/superpowers/specs/2026-10-09-rerank-implementation-plan.md` — 它是单服务商版本，
    本方案是它的超集；在其开头加一句指向本文，内容不动。
 
