@@ -90,6 +90,11 @@ type IVectorStore interface {
 
 	// DeleteByQuery 按条件删除**命中的全部**切片，返回删除条数。
 	// 用于文档删除 / 整库删除（§5.4）。
+	//
+	// 调用方**不需要**先调 Refresh：实现负责让这次删除看得见「刚写入、
+	// 还没进段」的切片（ES 的 delete_by_query 只作用在已刷新的段上，
+	// §4.2）。把它留给调用方，漏调一次的后果是接口报 deleted_chunks=0
+	// 但切片仍在——静默且难查。
 	DeleteByQuery(ctx context.Context, filter VectorFilter) (int64, error)
 
 	// DeleteExcept 删除 filter 命中的切片里 _id **不在** keepIDs 中的那些，返回删除条数。

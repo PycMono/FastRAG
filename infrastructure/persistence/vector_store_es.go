@@ -249,9 +249,40 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 }
 
 // DeleteByQuery 按条件删除。
+//
+// 开头这两步不是可选的铺垫，这个方法的正确性依赖它们。
+//
+// checkIndex 让「索引不在」报成「索引不存在、请先跑脚本」，而不是让下面那次刷新
+// 抛出一句没人看得懂的 index_not_found。
+//
+// Refresh 则是**让这次删除真的删得掉**。ES 的 delete_by_query 只作用在已刷新的段上，
+// 而写入默认要等 30s 才刷新（§4.2）——一条切片如果在删除前 30s 内刚写进去，
+// 对这次删除就是「不存在」的：MySQL 那边文档已经软删，接口却回 deleted_chunks=0，
+// 切片原样留在 ES 里占着召回位。最容易撞上的正是这条路：导入完发现不对，马上删。
+//
+// 刷新放在这里、而不是交给调用方，因为这是 ES 的段可见性规则，不是调用方的意图——
+// 调用方说「删掉这篇文档的切片」，就该删掉，不该知道刷新周期这回事。
+// 对照 §5.2 ② 里那次 Refresh 由 ingest 调用方发起：那次带策略（重导入必刷、
+// 首次导入看 Refresh 参数），仓储层推断不出来，所以留在外面。
+//
+// 与 DeleteExcept 里那个 WithRefresh(true) 是方向相反的一对，别只堵一头：
+// 这里的 Refresh 让删除**看得见**要删的东西，那里的 WithRefresh(true) 让删除的
+// **结果**被检索看见。DeleteByQuery 不需要后者——命中的文档在 MySQL 侧也已经
+// 软删了，检索侧的存活校验会把残留切片过滤掉（§7.3），删除结果早一步还是晚一步
+// 对检索可见，都不影响返回给用户的内容。
+//
+// 代价是整个索引刷新一次。删除不是热路径（一次调用对应一次用户动作），
+// 而漏删的后果是幽灵切片长期占着召回位，这笔钱值得付。
 func (s *ESVectorStore) DeleteByQuery(
 	ctx context.Context, f repository.VectorFilter,
 ) (int64, error) {
+	if err := s.checkIndex(ctx); err != nil {
+		return 0, err
+	}
+	if err := s.Refresh(ctx); err != nil {
+		return 0, err
+	}
+
 	query, ok := buildFilter(f)
 	if !ok {
 		// 三个条件全空 = 删全库。这几乎一定是调用方漏传了参数，
