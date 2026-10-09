@@ -42,8 +42,8 @@ func (s *Service) Reconcile(ctx context.Context, kbNo, account string) (*Reconci
 	}
 
 	return &ReconcileResult{
-		KBNo:             kb.No,
-		DocCountBefore:   kb.DocCount, DocCountAfter: docCount,
+		KBNo:           kb.No,
+		DocCountBefore: kb.DocCount, DocCountAfter: docCount,
 		ChunkCountBefore: kb.ChunkCount, ChunkCountAfter: chunkCount,
 	}, nil
 }
