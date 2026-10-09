@@ -11,6 +11,9 @@ import (
 
 // Register 注册 serviceimpl 层组件。
 //
+// embedding 与 rerank 都注册成"注册表"而不是单个实现：配置里可以同时存在
+// 多组服务商，应用层在请求入口按名字取用。
+//
 // 没有限流装饰器。本期不做限流（A4.9），embedding 直接暴露给调用方，
 // 唯一的背压是批量导入那个固定 4 并发的工作池（§5.5）。
 var Register = fx.Options(
@@ -22,20 +25,9 @@ var Register = fx.Options(
 		return svc, nil
 	}),
 
-	fx.Provide(NewEmbedding),
-	fx.Provide(NewRerank),
+	fx.Provide(NewEmbeddingRegistry),
+	fx.Provide(NewRerankRegistry),
 )
-
-// NewRerank 根据配置决定返回真实 rerank 实现还是空实现。
-//
-// enabled=false 时保持向后兼容：未配置 rerank 服务的服务器仍能启动，
-// 搜索接口只是不执行重排，行为与升级前一致。
-func NewRerank(conf *config.Config) interfaces.IRerank {
-	if !conf.Rerank.Enabled {
-		return nopRerank{}
-	}
-	return NewRerankImpl(conf)
-}
 
 // nopRerank 未启用 rerank 时的空实现：原样返回候选顺序。
 type nopRerank struct{}
@@ -50,7 +42,9 @@ func (nopRerank) Rerank(ctx context.Context, query string, cands []interfaces.Re
 
 // 编译期断言：实现必须满足端口。
 var (
-	_ interfaces.IEmbedding = (*Embedding)(nil)
-	_ interfaces.IRerank    = (*nopRerank)(nil)
-	_ interfaces.IRerank    = (*Rerank)(nil)
+	_ interfaces.IEmbedding         = (*Embedding)(nil)
+	_ interfaces.IEmbeddingRegistry = (*embeddingRegistry)(nil)
+	_ interfaces.IRerank            = (*Rerank)(nil)
+	_ interfaces.IRerank            = (*nopRerank)(nil)
+	_ interfaces.IRerankRegistry    = (*rerankRegistry)(nil)
 )

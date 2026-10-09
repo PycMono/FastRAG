@@ -17,3 +17,13 @@ type RerankCandidate struct {
 type IRerank interface {
 	Rerank(ctx context.Context, query string, cands []RerankCandidate, topN int) ([]int, error)
 }
+
+// IRerankRegistry 按名字取重排序实现。
+//
+// 与 IEmbeddingRegistry 的差别只有一处：配置里 enabled=false 时，
+// 对**任何**名字都返回空实现且永不出错——保持"没配 rerank 服务也能正常启动
+// 和检索"这个既有语义。
+type IRerankRegistry interface {
+	Get(name string) (IRerank, error)
+	Names() []string
+}
