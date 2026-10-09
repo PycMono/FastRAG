@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/PycMono/FastRAG/domain/interfaces"
+	"github.com/PycMono/FastRAG/infrastructure/config"
 )
 
 // newRerankTestServer 创建一个 mock /rerank 服务。
@@ -23,10 +25,13 @@ func newRerankTestServer(t *testing.T, handler func(w http.ResponseWriter, r *ht
 }
 
 // newTestRerank 用 mock server 构造 Rerank。
+//
+// url 存的是完整端点，所以要自己带上 /rerank 后缀——
+// 这正是新配置形状的要求（不再由实现拼后缀）。
 func newTestRerank(server *httptest.Server, batchSize, concurrency int) *Rerank {
 	return &Rerank{
 		client:      http.DefaultClient,
-		baseURL:     server.URL,
+		url:         server.URL + "/rerank",
 		model:       "test-model",
 		batchSize:   batchSize,
 		concurrency: concurrency,
@@ -55,8 +60,8 @@ func TestRerank_Rerank_Basic(t *testing.T) {
 		for i := range docs {
 			// index 0 最高分，越往后越低
 			results[i] = map[string]any{
-				"index":            i,
-				"relevance_score":  float64(len(docs)-i) / float64(len(docs)),
+				"index":           i,
+				"relevance_score": float64(len(docs)-i) / float64(len(docs)),
 			}
 		}
 		json.NewEncoder(w).Encode(map[string]any{"results": results})
@@ -342,5 +347,152 @@ func TestRerank_CandidateText(t *testing.T) {
 				t.Errorf("candidateText() = %q，期望 %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// ─── dashscope 协议 ─────────────────────────────────────────────────────────
+
+func TestRerank_BuildBody_OpenAI(t *testing.T) {
+	body, err := json.Marshal((&Rerank{model: "test-model"}).buildBody("q", []string{"d1", "d2"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	if got["query"] != "q" {
+		t.Errorf("query 应原样带上，得到 %v", got["query"])
+	}
+	docs, ok := got["documents"].([]any)
+	if !ok || len(docs) != 2 {
+		t.Fatalf("openai 的 documents 应是裸数组，得到 %#v", got["documents"])
+	}
+	if _, has := got["parameters"]; has {
+		t.Error("openai 这一路不发 parameters，也就不该有 top_n")
+	}
+}
+
+func TestRerank_BuildBody_DashScope(t *testing.T) {
+	r := &Rerank{model: "test-model"}
+	r.protocol = config.ProtocolDashScope
+
+	body, err := json.Marshal(r.buildBody("q", []string{"d1", "d2", "d3"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	input, ok := got["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("dashscope 的 input 应是 {query, documents}，得到 %#v", got["input"])
+	}
+	if input["query"] != "q" {
+		t.Errorf("input.query 应原样带上，得到 %v", input["query"])
+	}
+	if docs, ok := input["documents"].([]any); !ok || len(docs) != 3 {
+		t.Errorf("input.documents 应是 3 条，得到 %#v", input["documents"])
+	}
+
+	params, ok := got["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("dashscope 这一路必须带 parameters，得到 %#v", got["parameters"])
+	}
+	// top_n 必须是本批长度，不是业务上的 topN
+	if params["top_n"] != float64(3) {
+		t.Errorf("top_n 应等于本批文档数 3，得到 %v", params["top_n"])
+	}
+}
+
+// 实测响应：{"output":{"results":[{"index":..,"relevance_score":..}]},...}
+func TestRerank_ParseScores_DashScope(t *testing.T) {
+	var parsed rerankResponse
+	if err := json.Unmarshal([]byte(
+		`{"output":{"results":[{"index":1,"relevance_score":0.1},`+
+			`{"index":0,"relevance_score":0.9}]},"usage":{},"request_id":"x"}`,
+	), &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Rerank{model: "test-model"}
+	r.protocol = config.ProtocolDashScope
+	got := r.parseScores(&parsed, 2)
+
+	if len(got) != 2 || got[0] != 0.9 || got[1] != 0.1 {
+		t.Errorf("应按 index 回填 output.results，得到 %v", got)
+	}
+}
+
+// §4.3 那条坑：dashscope 的 parameters.top_n 是"只返回前 N 条"，
+// 写小了这一批剩下的候选就没分，批与批之间的分数不再可比，合并后顺序是乱的——
+// 而且不报错。所以分批时它必须恒等于本批长度。
+func TestRerank_DashScope_TopNEqualsBatchSize(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		seen []int
+	)
+
+	server, _ := newRerankTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Parameters struct {
+				TopN int `json:"top_n"`
+			} `json:"parameters"`
+			Input struct {
+				Documents []string `json:"documents"`
+			} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		seen = append(seen, req.Parameters.TopN)
+		if req.Parameters.TopN != len(req.Input.Documents) {
+			t.Errorf("top_n=%d 与本批 documents=%d 不等", req.Parameters.TopN, len(req.Input.Documents))
+		}
+		mu.Unlock()
+
+		results := make([]map[string]any, len(req.Input.Documents))
+		for i := range req.Input.Documents {
+			results[i] = map[string]any{"index": i, "relevance_score": 1.0 - float64(i)*0.1}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"output": map[string]any{"results": results},
+		})
+	})
+	defer server.Close()
+
+	r := newTestRerank(server, 2, 1)
+	r.protocol = config.ProtocolDashScope
+	r.url = server.URL // dashscope 用完整端点，不拼后缀
+
+	cands := make([]interfaces.RerankCandidate, 5)
+	for i := range cands {
+		cands[i] = interfaces.RerankCandidate{ChunkID: fmt.Sprintf("c%d", i), Content: "内容"}
+	}
+
+	order, err := r.Rerank(context.Background(), "q", cands, 0)
+	if err != nil {
+		t.Fatalf("Rerank 失败: %v", err)
+	}
+	if len(order) != 5 {
+		t.Fatalf("应返回 5 个下标，得到 %d", len(order))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 3 {
+		t.Fatalf("5 条候选按 batchSize=2 应发 3 批，实际 %d 批", len(seen))
+	}
+	for _, n := range seen {
+		if n != 2 && n != 1 { // 最后一批只剩 1 条
+			t.Errorf("top_n 只能是本批长度（2 或 1），得到 %d", n)
+		}
 	}
 }

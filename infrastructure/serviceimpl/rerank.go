@@ -1,8 +1,15 @@
-// 本文件基于 OpenAI 兼容 /rerank 协议实现重排序。
+// 本文件实现重排序：一个实现，两处形状开关。
 //
-// 兼容面较宽：SiliconFlow / Jina / Cohere / 火山 / 通义 / vLLM rerank 扩展等
-// 都支持 POST {base_url}/rerank，请求体 {model, query, documents, return_documents}，
-// 响应 {results: [{index, relevance_score}]}。实现只依赖这个最小公约数。
+// 分批、errgroup 并发、retry-go 重试、空内容沉底、按分数稳定排序全部共用；
+// 随协议变的只有"请求体怎么拼"（buildBody）和"响应从哪取分数"（parseScores）。
+//
+//	openai    POST {url}  body {model, query, documents, return_documents}
+//	                      响应 results[].{index, relevance_score}
+//	dashscope POST {url}（原生 /api/v1/services/rerank/text-rerank/text-rerank）
+//	                      body {model, input:{query, documents}, parameters:{top_n, return_documents}}
+//	                      响应 output.results[].{index, relevance_score}
+//
+// ⚠️ dashscope 的 parameters.top_n 必须等于本批 documents 数量，见 buildBody 的注释。
 
 package serviceimpl
 
@@ -26,27 +33,16 @@ import (
 // rerank 响应很小（通常几 KB），16MB 已经非常宽裕；无上限 ReadAll 会被畸形响应打爆内存。
 const maxRerankResponseBytes = 16 << 20
 
-// defaultRerankBatchSize 单次调用最大 documents 数。
-// 取 32 是为了兼容多数平台限制（SiliconFlow 64、Jina 32、Cohere 96），保守且够用。
-const defaultRerankBatchSize = 32
-
-// defaultRerankConcurrency 分批最大并发数。
-// 与 go-ai-knowledge 的 4 对齐，控制对上游服务的压力。
-const defaultRerankConcurrency = 4
-
-// defaultRerankTimeout 单批调用默认超时。
-const defaultRerankTimeout = 10 * time.Second
-
 // defaultRerankRetryDelay 重试基础退避。
 const defaultRerankRetryDelay = 100 * time.Millisecond
 
-// Rerank 基于 OpenAI 兼容 /rerank 协议的重排序实现。
+// Rerank 重排序实现。
 //
-// 文件名与类型名不带厂商名：同一实现可对接 SiliconFlow / Jina / Cohere / 火山 / 通义 / vLLM 等
-// 所有支持 POST {base_url}/rerank 的服务，只需改配置即可切换。
+// 文件名与类型名不带厂商名：同一个实现靠 protocol 开关对接所有服务商。
 type Rerank struct {
 	client      *http.Client
-	baseURL     string
+	protocol    string
+	url         string // 完整端点，不再拼 /rerank 后缀
 	apiKey      string
 	model       string
 	batchSize   int
@@ -54,31 +50,19 @@ type Rerank struct {
 	defaultTopN int
 }
 
-// NewRerankImpl 从配置构造 rerank 客户端。
-func NewRerankImpl(conf *config.Config) interfaces.IRerank {
-	c := conf.Rerank
-
-	timeout := time.Duration(c.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultRerankTimeout
-	}
-	batch := c.BatchSize
-	if batch <= 0 {
-		batch = defaultRerankBatchSize
-	}
-	concurrency := c.Concurrency
-	if concurrency <= 0 {
-		concurrency = defaultRerankConcurrency
-	}
-
+// newRerank 从一份已合并好的参数构造实现。
+//
+// 只有注册表调它——"继承外层"在 Params() 里就填完了，这里不再判 0。
+func newRerank(p config.RerankParams) *Rerank {
 	return &Rerank{
-		client:      &http.Client{Timeout: timeout},
-		baseURL:     strings.TrimRight(c.BaseURL, "/"),
-		apiKey:      c.APIKey,
-		model:       c.Model,
-		batchSize:   batch,
-		concurrency: concurrency,
-		defaultTopN: c.TopN,
+		client:      &http.Client{Timeout: time.Duration(p.TimeoutMS) * time.Millisecond},
+		protocol:    p.Protocol,
+		url:         p.URL,
+		apiKey:      p.APIKey,
+		model:       p.Model,
+		batchSize:   p.BatchSize,
+		concurrency: p.Concurrency,
+		defaultTopN: p.TopN,
 	}
 }
 
@@ -248,8 +232,8 @@ func (r *Rerank) scoreBatch(
 			scores, err = r.score(ctx, query, docs)
 			return err
 		},
-		retry.Context(ctx),                // ctx 取消时立即放弃，不再发起下一次
-		retry.Attempts(2),                 // 初次 + 重试一次，与原实现一致
+		retry.Context(ctx), // ctx 取消时立即放弃，不再发起下一次
+		retry.Attempts(2),  // 初次 + 重试一次，与原实现一致
 		retry.Delay(defaultRerankRetryDelay),
 		retry.DelayType(retry.FixedDelay), // 固定间隔退避，不用默认的指数+抖动
 		retry.LastErrorOnly(true),         // 只透传最后一次的错误，不层层包装
@@ -260,31 +244,84 @@ func (r *Rerank) scoreBatch(
 	return scores, nil
 }
 
-type rerankResponse struct {
-	apiError
-	Results []struct {
-		Index          int     `json:"index"`
-		RelevanceScore float64 `json:"relevance_score"`
-	} `json:"results"`
+// rerankResult 一条候选的分数。两个协议的这个结构完全一样，
+// 区别只在外层：openai 挂在 results，dashscope 挂在 output.results。
+type rerankResult struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevance_score"`
 }
 
-// score 单次调用 /rerank，返回每条文档的相关性分数（不含重试）。
+// rerankResponse 两种协议的响应。按协议只认其中一个，另一个留空。
+type rerankResponse struct {
+	apiError
+	Results []rerankResult `json:"results"`
+	Output  *struct {
+		Results []rerankResult `json:"results"`
+	} `json:"output"`
+}
+
+// buildBody 按协议拼请求体。
+//
+// ⚠️ dashscope 的 parameters.top_n 是"只返回前 N 条"，而我们**需要每一批的完整
+// 分数**才能合并排序。示例里写 top_n: 5 照抄进分批逻辑，每批就只有 5 条候选拿到
+// 分数，其余全部落回 0 分，批与批之间的分数不再可比，合并后顺序是乱的——而且不报错。
+// 所以这里恒等于本批长度，业务上的 topN 永远只在最后自己截断（设计文档 §4.3）。
+func (r *Rerank) buildBody(query string, docs []string) any {
+	if r.protocol == config.ProtocolDashScope {
+		return map[string]any{
+			"model": r.model,
+			"input": map[string]any{
+				"query":     query,
+				"documents": docs,
+			},
+			"parameters": map[string]any{
+				"top_n":            len(docs),
+				"return_documents": false,
+			},
+		}
+	}
+	return map[string]any{
+		"model":            r.model,
+		"query":            query,
+		"documents":        docs,
+		"return_documents": false,
+	}
+}
+
+// parseScores 按协议取分数并按 index 回填，缺的留 0。
+func (r *Rerank) parseScores(parsed *rerankResponse, n int) []float64 {
+	results := parsed.Results
+	if r.protocol == config.ProtocolDashScope && parsed.Output != nil {
+		results = parsed.Output.Results
+	}
+
+	scores := make([]float64, n)
+	seen := make(map[int]struct{}, len(results))
+	for _, res := range results {
+		if res.Index < 0 || res.Index >= n {
+			continue
+		}
+		if _, ok := seen[res.Index]; ok {
+			continue
+		}
+		seen[res.Index] = struct{}{}
+		scores[res.Index] = res.RelevanceScore
+	}
+	return scores
+}
+
+// score 单次调用，返回每条文档的相关性分数（不含重试）。
 func (r *Rerank) score(
 	ctx context.Context,
 	query string,
 	docs []string,
 ) ([]float64, error) {
-	payload, err := json.Marshal(map[string]any{
-		"model":            r.model,
-		"query":            query,
-		"documents":        docs,
-		"return_documents": false,
-	})
+	payload, err := json.Marshal(r.buildBody(query, docs))
 	if err != nil {
 		return nil, apperrors.ErrRerankFailed.Wrap(err)
 	}
 
-	body, status, err := postJSON(ctx, r.client, r.baseURL+"/rerank", r.apiKey,
+	body, status, err := postJSON(ctx, r.client, r.url, r.apiKey,
 		payload, maxRerankResponseBytes, apperrors.ErrRerankFailed)
 	if err != nil {
 		return nil, err
@@ -299,17 +336,5 @@ func (r *Rerank) score(
 		return nil, err
 	}
 
-	scores := make([]float64, len(docs))
-	seen := make(map[int]struct{}, len(parsed.Results))
-	for _, res := range parsed.Results {
-		if res.Index < 0 || res.Index >= len(docs) {
-			continue
-		}
-		if _, ok := seen[res.Index]; ok {
-			continue
-		}
-		seen[res.Index] = struct{}{}
-		scores[res.Index] = res.RelevanceScore
-	}
-	return scores, nil
+	return r.parseScores(&parsed, len(docs)), nil
 }
