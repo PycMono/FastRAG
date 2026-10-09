@@ -35,24 +35,29 @@
     "username": "",
     "password": ""
   },
+
   "embedding": {
-    "base_url": "http://127.0.0.1:11434/v1",
-    "api_key": "",
-    "model": "bge-m3",
+    "default": "bge-m3",
+    "dim": 1024,
     "batch_size": 16,
     "timeout_ms": 60000,
-    "query_prefix": ""
+    "models": {
+      "bge-m3": {
+        "url": "http://127.0.0.1:11434/v1/embeddings"
+      }
+    }
   },
+
   "rerank": {
     "enabled": false,
-    "base_url": "",
-    "api_key": "",
-    "model": "",
-    "timeout_ms": 10000,
+    "default": "",
     "batch_size": 32,
     "concurrency": 4,
-    "top_n": 0
+    "timeout_ms": 10000,
+    "top_n": 0,
+    "models": {}
   },
+
   "search": {
     "bm25_top": 50,
     "knn_top": 50,
