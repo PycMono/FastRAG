@@ -49,6 +49,6 @@ type DocIngestVO struct {
 
 // DocDeleteVO 删除响应
 type DocDeleteVO struct {
-	DocName      string `json:"doc_name"`
-	DeletedChunks int64 `json:"deleted_chunks"`
+	DocName       string `json:"doc_name"`
+	DeletedChunks int64  `json:"deleted_chunks"`
 }

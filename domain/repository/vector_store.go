@@ -35,12 +35,12 @@ type VectorFilter struct {
 
 // VectorSearchReq 检索请求。
 type VectorSearchReq struct {
-	Account    string
-	KBIDs      []uint64
-	BizTags    []string
-	Query      string
-	QueryVec   []float32
-	TitleOnly  bool // search_mode = title 时为 true
+	Account     string
+	KBIDs       []uint64
+	BizTags     []string
+	Query       string
+	QueryVec    []float32
+	TitleOnly   bool // search_mode = title 时为 true
 	DenseWeight float64
 
 	BM25Top       int
