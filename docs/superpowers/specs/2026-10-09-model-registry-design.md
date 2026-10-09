@@ -33,8 +33,9 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 
 - **维度不同** → 会响。写入时 ES 的 bulk 逐条报 `dense_vector` 维度错误（`Save` 已经在
   查 `items[].status`），查询时 ES 直接 400。
-- **维度相同、向量空间不同**（bge-m3 1024 → qwen 也配 1024）→ **完全静默**。余弦相似度
-  照样算得出来，只是排出来的顺序是噪声，接口不报错、日志不报警。
+- **维度相同、向量空间不同**（bge-m3 是 1024 维，换到 qwen 后两家维度恰好一样，
+  外层的 `dim` 都不用改）→ **完全静默**。余弦相似度照样算得出来，只是排出来的
+  顺序是噪声，接口不报错、日志不报警。
 
 **已决定：第二种不管。** 不落痕、不校验、`knowledge_doc` 不加列，旧数据不做任何特殊处理。
 这是明确接受的代价，记在第 8 节。
@@ -46,8 +47,12 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 
 ## 3. 配置形状
 
-`embedding` 和 `rerank` 都改成 `{default, models}` 结构，`models` 是 map。
-下面是完整的 config.json，可以直接抄成 `config.json` 用：
+`embedding` 和 `rerank` 都分成**外层**和 `models` 两层。规则一句话：
+
+> **共用的字段放在外层，大家一起持有；只有逐家不同、或者要单独调的，才放进 `models`。**
+
+外层就是默认值，entry 里写了就盖掉外层的。下面是完整的 config.json，可以直接抄成
+`config.json` 用：
 
 ```jsonc
 {
@@ -69,64 +74,54 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 
   // ────────────────── 这一块从「一家」变成「一组」 ──────────────────
   "embedding": {
-    // 请求里没带 model 时用哪个。必须命中下面某个 key，否则启动报错
-    "default": "bge-m3",
+    // ── 外层：整个服务共用。entry 里没写的就从这儿取 ──
+    "default": "bge-m3",          // 请求没带 model 时用哪个；必须命中下面某个 key
+    "dim": 1024,                  // 索引的性质（content_vec 是 dims:1024），不是某家的性质
+    "batch_size": 16,
+    "timeout_ms": 60000,
 
     // key = 你给这家起的名（调用方就用这个名字），随便起，短一点好写
     "models": {
 
-      // ── 本机 Ollama，OpenAI 兼容，不需要 key ──
+      // ── 本机 Ollama：只要一个地址，其余全继承外层 ──
       "bge-m3": {
-        "protocol": "openai",                              // 可省略，默认就是 openai
-        "url": "http://127.0.0.1:11434/v1/embeddings",     // 完整地址，后缀也要写
-        "api_key": "",                                     // Ollama 不用
-        "model": "",                                       // 留空 = 用 key，即 "bge-m3"
-        "dim": 1024,                                       // 可省略；写上有错早报
-        "batch_size": 16,
-        "timeout_ms": 60000,
-        "query_prefix": ""                                 // bge-m3 不加前缀
+        "url": "http://127.0.0.1:11434/v1/embeddings"    // 完整地址，后缀也要写
       },
 
       // ── 通义，原生协议 ──
       "qwen": {
         "protocol": "dashscope",
-        "url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
+        "url": "https://ws-….maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
         "api_key": "sk-你的key",
-        "model": "text-embedding-v4",                      // 上游真名，和 key 不一样没关系
-        "dim": 1024,
-        "batch_size": 10,                                  // 通义单次上限 10 条
-        "timeout_ms": 30000
+        "model": "qwen3.7-text-embedding",   // 上游真名，和 key 不一样没关系
+        "batch_size": 10                     // 通义单次上限 10 条，盖掉外层的 16
       }
 
-      // 再加一家？在这里再加一段就行，代码一个字都不用改
+      // 再加一家？在这儿再加一段，代码一个字都不用改
     }
   },
 
   // ────────────────── 同样从「一家」变成「一组」 ──────────────────
   "rerank": {
+    // ── 外层 ──
     "enabled": true,              // false = 整个实例不重排，下面 models 可以为空
     "default": "qwen3-rerank",
+    "batch_size": 32,
+    "concurrency": 4,
+    "timeout_ms": 10000,
+    "top_n": 0,                   // 0 = 全部返回，最后按 limit 截断；别改成 5
 
     "models": {
       "bge-reranker": {
-        "protocol": "openai",
         "url": "https://api.siliconflow.cn/v1/rerank",
         "api_key": "sk-你的key",
-        "model": "BAAI/bge-reranker-v2-m3",
-        "batch_size": 32,
-        "concurrency": 4,
-        "timeout_ms": 10000,
-        "top_n": 0                // 0 = 全部返回，最后按 limit 截断；别改成 5
+        "model": "BAAI/bge-reranker-v2-m3"
       },
       "qwen3-rerank": {
         "protocol": "dashscope",
-        "url": "https://ws-s5iiibr6uezast8b.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+        "url": "https://ws-….maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
         "api_key": "sk-你的key",
-        "model": "qwen3.7-text-rerank",
-        "batch_size": 32,
-        "concurrency": 4,
-        "timeout_ms": 10000,
-        "top_n": 0
+        "model": "qwen3.7-text-rerank"
       }
     }
   },
@@ -138,6 +133,8 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
   "security": { "trust_request_account": true }
 }
 ```
+
+加一家服务商现在只要 4–5 行，其余全继承。
 
 调用方怎么用（导入和检索各指定一次，不指定就走上面的 `default`）：
 
@@ -158,7 +155,7 @@ curl -X POST http://localhost:8080/api/v1/search \
 `"model":"qwen-not-exist"` 这种拼错的名字 → 返回 `code=10001`，消息里列出可用的名字，
 **不会**悄悄用默认那家。
 
-三条约定：
+四条约定：
 
 1. **`models` 的 key 是别名，`model` 是发给上游的真名**，`model` 留空时取 key。
    这样上游叫 `BAAI/bge-reranker-v2-m3` 也不影响你在请求里写 `"model": "bge"`。
@@ -168,6 +165,15 @@ curl -X POST http://localhost:8080/api/v1/search \
    压根不在任何 base 之下；保留"base + 固定后缀"只会逼出一个 `path_override` 之类的例外字段。
 3. **`default` 是请求没带 model 时的兜底**。它必须命中 `models` 里的一个 key，否则启动报错。
    `enabled=false` 时 `rerank.models` 允许为空。
+4. **"没写" = `int` 的 0 / `string` 的空串**，这时取外层的值；外层也没写就用代码里的兜底。
+   批大小 / 超时 / 并发这三个的 0 都不是合法取值，所以不会歧义。
+
+**哪些字段不给 entry 覆盖**：`dim` 和 `top_n` 只在外层。这两个是**服务级的策略**，不是
+某家的性质——`dim` 由 ES 索引定死，`top_n` 是"先全量拿分再截断"的约定（见 4.3），
+任何一家单独改了都不成立。
+
+`query_prefix` 反过来，**只在 entry 里**：它是模型自身的性质（E5/GTE 要 `"query: "`，
+bge-m3 不要），不是共用的东西。不写就是不加前缀，没有继承这回事。
 
 Go 侧结构：
 
@@ -179,42 +185,49 @@ type Config struct {
 }
 
 type EmbeddingConfig struct {
-    Default string                    `json:"default"`
-    Models  map[string]EmbeddingEntry `json:"models"`
+    Default   string                    `json:"default"`
+    Dim       int                       `json:"dim"`
+    BatchSize int                       `json:"batch_size"`
+    TimeoutMS int                       `json:"timeout_ms"`
+    Models    map[string]EmbeddingEntry `json:"models"`
 }
 
+// EmbeddingEntry 只放"逐家不同"的字段，共用的在上面外层。
 type EmbeddingEntry struct {
-    Protocol    string         `json:"protocol"`     // openai（默认）| dashscope
-    URL         string         `json:"url"`          // 完整端点
-    APIKey      string         `json:"api_key"`
-    Model       string         `json:"model"`        // 留空 = 用 map 的 key
-    Dim         int            `json:"dim"`
-    BatchSize   int            `json:"batch_size"`
-    TimeoutMS   int    `json:"timeout_ms"`
-    QueryPrefix string `json:"query_prefix"`
+    Protocol    string `json:"protocol"` // "" 或 "openai" | "dashscope"
+    URL         string `json:"url"`      // 完整端点，后缀也要写
+    APIKey      string `json:"api_key"`
+    Model       string `json:"model"`        // 发给上游的真名；留空 = 用 map 的 key
+    BatchSize   int    `json:"batch_size"`   // 0 = 继承外层
+    TimeoutMS   int    `json:"timeout_ms"`   // 0 = 继承外层
+    QueryPrefix string `json:"query_prefix"` // 不写 = 不加前缀
 }
 
 type RerankConfig struct {
-    Enabled bool                 `json:"enabled"`
-    Default string               `json:"default"`
-    Models  map[string]RerankEntry `json:"models"`
+    Enabled     bool                   `json:"enabled"`
+    Default     string                 `json:"default"`
+    BatchSize   int                    `json:"batch_size"`
+    Concurrency int                    `json:"concurrency"`
+    TimeoutMS   int                    `json:"timeout_ms"`
+    TopN        int                    `json:"top_n"`
+    Models      map[string]RerankEntry `json:"models"`
 }
 
 type RerankEntry struct {
-    Protocol    string         `json:"protocol"`
-    URL         string         `json:"url"`
-    APIKey      string         `json:"api_key"`
-    Model       string         `json:"model"`
-    TimeoutMS   int            `json:"timeout_ms"`
-    BatchSize   int            `json:"batch_size"`
-    Concurrency int `json:"concurrency"`
-    TopN        int `json:"top_n"`
+    Protocol    string `json:"protocol"`
+    URL         string `json:"url"`
+    APIKey      string `json:"api_key"`
+    Model       string `json:"model"`
+    BatchSize   int    `json:"batch_size"`  // 0 = 继承外层
+    Concurrency int    `json:"concurrency"` // 0 = 继承外层
+    TimeoutMS   int    `json:"timeout_ms"`  // 0 = 继承外层
 }
 ```
 
-各 entry 的字段就是原来那份扁平配置的字段，只是从"整个服务一份"变成"每家一份"。
-`NewEmbedding(conf)` → `NewEmbedding(entry)`、`NewRerankImpl(conf)` → `NewRerankImpl(entry)`，
-两个实现体只改构造签名和入口，内部逻辑不动。
+**"继承"发生在构造注册表的时候，不是每次调用**：启动时把每个 entry 和外层合并成一份
+完整的、没有零值的参数，再拿去造实现。所以实现体里 `e.batchSize` 一定是个有效值，
+内部逻辑一行不用改——`NewEmbedding(conf)` → `NewEmbedding(entry)`、
+`NewRerankImpl(conf)` → `NewRerankImpl(entry)`，只换构造输入。
 
 ## 4. 协议：一个实现，两处形状开关
 
@@ -321,7 +334,8 @@ type embeddingRegistry struct {
 }
 ```
 
-- **启动时一次性建好**，把每个 entry 造成一个实现塞进 map。不连网、不懒加载、
+- **启动时一次性建好**：先把每个 entry 和外层合并成一份完整参数（§3），
+  再拿去造成一个实现塞进 map。不连网、不懒加载、
   **没有锁**——建好之后再没写过，只读 map 天然并发安全（批量导入的 4 个 goroutine
   各自 `Get` 互不干扰）。
 - `Get("")` 用 `def`；名字不在 map 里返回 `NewParamError`，消息里带可用名单。
@@ -401,10 +415,13 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 1. `embedding.models` 非空；`rerank.enabled=true` 时 `rerank.models` 非空。
 2. `default` 非空，且必须命中对应的一个 key。
 3. 每个 entry 的 `url` 非空；`protocol` ∈ {`""`, `openai`, `dashscope`}。
-4. **所有 embedding entry 的 `dim` 必须一致**（`dim > 0` 的那些之间）。
-   ES 只有一个 `content_vec`，`dims` 建索引时就定死了（§9.4）；两个不同维度的 entry
-   同时存在，其中至少一个必然写不进去。
+4. 外层的 `batch_size` / `timeout_ms`（rerank 再加 `concurrency`）必须 > 0。
+   这几个没有"0 = 不限制"的语义，0 只可能是漏配；entry 里写了就查 entry 的。
+
 消息里给出当前可用的名字列表。
+
+**维度一致性不再需要校验**：`dim` 只在外层，全服务一个值，`content_vec` 也只有一个
+（§9.4），结构上就配不出两个维度来。
 
 ## 8. 已接受的代价
 
@@ -417,7 +434,7 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 ## 9. 验证
 
 1. **配置校验的单元测试**：`default` 指向不存在的 key / `models` 为空 /
-   `rerank.enabled=true` 但 `models` 为空 / 两个 embedding entry 维度不同
+   `rerank.enabled=true` 但 `models` 为空 / 外层 `batch_size` 为 0
    ——四种都必须启动报错，且消息里带可用名字。
 2. **协议构造与解析的单元测试**（纯函数，照 `rerank_test.go` 的路子）：
    - dashscope rerank 的请求体含 `input.{query,documents}` 与 `parameters.top_n`，
@@ -434,8 +451,9 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 ## 10. 不做的事
 
 - **不给 embedding 落痕、不做一致性校验、旧数据不做任何处理**（第 2、8 节的明确决定）。
-- **不支持一个索引里混不同维度的 embedding 模型**。`content_vec` 是一列，`dims` 建好
-  改不了（§9.4），配了两个不同维度的 entry 至少一个必然写不进去。
+- **不给 entry 覆盖 `dim`**。`content_vec` 是一列、`dims` 建好改不了（§9.4），
+  维度是索引的性质不是服务商的性质，所以它只在外层（§3）。这同时意味着
+  "一个索引里混不同维度的 embedding 模型"在配置层面就不存在。
 - **不做配置热加载**。改配置仍然要重启。
 - **不合并 `enabled` 与 `models` 为空**：`enabled` 是"这个实例要不要做重排"的部署决定，
   与"有哪几家可选"无关，语义不同，保留。
@@ -452,7 +470,8 @@ RerankModel string `json:"rerank_model" binding:"omitempty,max=64"`
 2. `domain/interfaces/embedding.go`、`rerank.go` — 加两个注册表端口。
 3. `infrastructure/serviceimpl/embedding.go`、`rerank.go` — 构造改收 entry；
    rerank 加 protocol 分支；embedding 加 protocol 分支。
-4. `infrastructure/serviceimpl/registry.go`（新）+ `register.go` — 注册表实现与装配。
+4. `infrastructure/serviceimpl/registry.go`（新）+ `register.go` — 注册表实现与装配，
+   含"外层 + entry 合并"这一步（§3 末）。
 5. `common/dto/doc.go`、`search.go` — 三个新字段。
 6. `application/service/ingest/service.go`、`search/service.go` — 换成按名字解析。
 7. `README.md` — 「API 示例」补 `model` / `embed_model` / `rerank_model`；
