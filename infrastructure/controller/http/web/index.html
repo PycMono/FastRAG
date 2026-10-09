@@ -40,12 +40,18 @@
 
   main {
     display: grid;
-    grid-template-columns: minmax(360px, 420px) 1fr;
+    grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
     gap: 16px;
-    padding: 16px 24px 40px;
+    /* 左右留白跟着视口走：窄屏自动收，宽屏不无限撑 */
+    padding: 16px clamp(12px, 2.5vw, 28px) 40px;
     align-items: start;
   }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  /* 超宽屏别让正文横成一行，读起来费眼 */
+  main > .col:last-child { max-width: 1100px; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    main > .col:last-child { max-width: none; }
+  }
 
   .col { display: flex; flex-direction: column; gap: 16px; }
 
@@ -163,6 +169,37 @@
     font-family: ui-monospace, Menlo, monospace; color: #9aa7b6;
   }
   .empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 26px 0; }
+
+  .pager {
+    display: none;
+    margin-top: 14px; padding-top: 12px;
+    border-top: 1px solid var(--border);
+    align-items: center; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .pager.show { display: flex; }
+  .pager .info { font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  .pager .btns { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .pager button {
+    padding: 4px 10px; font-size: 12px; font-weight: 400;
+    min-width: 30px; text-align: center;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  }
+  .pager button:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--text); background: var(--panel-2); }
+  .pager button.cur { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
+  .pager button.cur:hover { background: var(--accent-dim); }
+  .pager .gap { color: var(--muted); font-size: 12px; padding: 0 2px; }
+
+  /* 手机：收字号与内边距，标题竖排，结果卡片别太挤 */
+  @media (max-width: 640px) {
+    header { padding: 14px clamp(12px, 4vw, 24px); flex-wrap: wrap; gap: 4px 10px; }
+    header h1 { font-size: 15px; }
+    header .sub { flex-basis: 100%; font-size: 11.5px; }
+    header .health { margin-left: 0; }
+    .hit { padding: 10px 11px; }
+    .hit .content { max-height: 180px; }
+    .pager { justify-content: center; }
+  }
   .spinner {
     display: inline-block; width: 12px; height: 12px; vertical-align: -1px;
     border: 2px solid rgba(255,255,255,.28); border-top-color: #fff;
@@ -290,6 +327,7 @@
         <div class="results" id="results">
           <div class="empty">还没有结果。先在左边导入一篇，再检索。</div>
         </div>
+        <div class="pager" id="pager"></div>
         <details class="raw" id="searchRawWrap" style="display:none">
           <summary>原始响应</summary><pre id="searchRaw"></pre>
         </details>
@@ -474,41 +512,67 @@
     try {
       const data = await call('/api/v1/search', body);
       const ms = Math.round(performance.now() - t0);
-      const items = (data && data.items) || [];
       hideMsg($('searchMsg'));
       $('searchHint').textContent = `${ms} ms`;
       $('searchRawWrap').style.display = '';
       $('searchRaw').textContent = JSON.stringify(data, null, 2);
-      renderResults(items, query);
+      allItems = (data && data.items) || [];
+      lastQuery = query;
+      curPage = 1;
+      renderPage();
     } catch (e) {
       showMsg($('searchMsg'), 'err', '检索失败：' + escapeHTML(e.message));
+      allItems = [];
+      curPage = 1;
       $('results').innerHTML = '<div class="empty">检索失败。</div>';
       $('resultCount').textContent = '0 条';
+      $('pager').className = 'pager';
     } finally {
       btn.disabled = false;
     }
   }
 
-  function renderResults(items, query) {
-    const box = $('results');
-    $('resultCount').textContent = items.length + ' 条';
+  // ── 结果分页 ────────────────────────────────────────────────────────────
+  //
+  // 纯前端分页。后端一次就把 limit 条全给了（SearchResultVO 里没有 total/page），
+  // 这里只是别让 100 条一口气铺满屏幕——翻页不产生新请求。
+  //
+  // 注意 rank 编号要按全量算（start + i + 1），不能从每页的第 1 名重新数：
+  // 排序是跨页连续的，第二页的头条是第 11 名，不是第 1 名。
+  const PAGE_SIZE = 10;
+  let allItems = [];
+  let lastQuery = '';
+  let curPage = 1;
 
-    if (!items.length) {
+  const pageCount = () => Math.max(1, Math.ceil(allItems.length / PAGE_SIZE));
+
+  function renderPage() {
+    const box = $('results');
+    const total = allItems.length;
+    $('resultCount').textContent = total + ' 条';
+
+    if (!total) {
       box.innerHTML = '<div class="empty">没有命中。' +
         '可能是：刚导入还没刷新（勾上 refresh 重导一次）、' +
         '或这条 query 的词确实不在语料里。</div>';
+      $('pager').className = 'pager';
       return;
     }
 
-    box.innerHTML = items.map((it, i) => `
+    const pages = pageCount();
+    if (curPage > pages) curPage = pages;
+    const start = (curPage - 1) * PAGE_SIZE;
+    const slice = allItems.slice(start, start + PAGE_SIZE);
+
+    box.innerHTML = slice.map((it, i) => `
       <div class="hit">
         <div class="top">
-          <span class="rank">${i + 1}</span>
-          <span class="title${it.title ? '' : ' empty'}">${it.title ? highlight(it.title, query) : '（无标题）'}</span>
+          <span class="rank">${start + i + 1}</span>
+          <span class="title${it.title ? '' : ' empty'}">${it.title ? highlight(it.title, lastQuery) : '（无标题）'}</span>
           <span class="score">${Number(it.score).toFixed(4)}</span>
         </div>
-        ${it.heading_path ? `<div class="path">${highlight(it.heading_path, query)}</div>` : ''}
-        <div class="content">${highlight(it.content, query)}</div>
+        ${it.heading_path ? `<div class="path">${highlight(it.heading_path, lastQuery)}</div>` : ''}
+        <div class="content">${highlight(it.content, lastQuery)}</div>
         <div class="meta">
           <span>文档 <code>${escapeHTML(it.doc_name)}</code></span>
           <span>库 <code>${escapeHTML(it.kb_no || it.kb_id)}</code></span>
@@ -516,6 +580,58 @@
           <span>chunk_id <code>${escapeHTML(String(it.chunk_id).slice(0, 12))}…</code></span>
         </div>
       </div>`).join('');
+
+    renderPager(pages, start, slice.length, total);
+  }
+
+  // 页码窗口：首尾各保一个，当前页左右各留一格，中间断开处用省略号。
+  // 现在 limit 上限 100、每页 10 条，最多也就 10 个数字；窗口是给以后放大 limit 留的。
+  function pageList(cur, pages) {
+    const wanted = [...new Set([1, pages, cur - 1, cur, cur + 1])]
+      .filter((p) => p >= 1 && p <= pages)
+      .sort((a, b) => a - b);
+
+    const out = [];
+    let prev = 0;
+    for (const p of wanted) {
+      if (prev && p - prev > 1) out.push('…');
+      out.push(p);
+      prev = p;
+    }
+    return out;
+  }
+
+  function renderPager(pages, start, shown, total) {
+    const el = $('pager');
+    if (pages <= 1) { el.className = 'pager'; return; } // 只有一页就别摆翻页器
+    el.className = 'pager show';
+
+    const nums = pageList(curPage, pages).map((p) =>
+      p === '…'
+        ? '<span class="gap">…</span>'
+        : `<button type="button" data-page="${p}"${p === curPage ? ' class="cur"' : ''}>${p}</button>`
+    ).join('');
+
+    el.innerHTML =
+      `<span class="info">第 ${start + 1}–${start + shown} 条 / 共 ${total} 条</span>
+       <span class="btns">
+         <button type="button" data-page="${curPage - 1}"${curPage === 1 ? ' disabled' : ''}>上一页</button>
+         ${nums}
+         <button type="button" data-page="${curPage + 1}"${curPage === pages ? ' disabled' : ''}>下一页</button>
+       </span>`;
+
+    el.querySelectorAll('button[data-page]').forEach((b) => {
+      b.addEventListener('click', () => goPage(parseInt(b.dataset.page, 10)));
+    });
+  }
+
+  function goPage(p) {
+    const next = Math.min(Math.max(p, 1), pageCount());
+    if (next === curPage) return;
+    curPage = next;
+    renderPage();
+    // 翻页后要把视线带回结果顶部，否则停在上一页底部，像是什么都没发生
+    $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 })();
 </script>
