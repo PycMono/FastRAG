@@ -17,11 +17,12 @@ import (
 // 里挨着 Splitter——因为 splitter.go 的函数签名要它们，而领域层够不着
 // （也不该够着）common/dto。
 type searchOptions struct {
-	Query       string
-	Limit       int
-	BizTags     []string
-	DenseWeight float64
-	Rerank      bool
+	Query         string
+	Limit         int
+	RetrieveCount int
+	BizTags       []string
+	DenseWeight   float64
+	Rerank        bool
 }
 
 // normalize 补齐默认值并校验。
@@ -45,6 +46,23 @@ func (o searchOptions) normalize() (searchOptions, error) {
 	}
 
 	return out, nil
+}
+
+// effectiveRetrieveCount 计算 rerank 前实际召回数量。
+//
+// 未指定时默认 Limit*2，但不超过 200；总不会小于 Limit。
+func (o searchOptions) effectiveRetrieveCount() int {
+	n := o.RetrieveCount
+	if n <= 0 {
+		n = o.Limit * 2
+	}
+	if n > 200 {
+		n = 200
+	}
+	if n < o.Limit {
+		n = o.Limit
+	}
+	return n
 }
 
 // useKNN 判断向量路要不要发。不发就省下这次 embedding 调用（见 Service.Search ②）。

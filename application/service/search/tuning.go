@@ -6,11 +6,12 @@ package search
 // （§3 的分层铁律）。让 infrastructure 读配置、构造这个中立结构再注入，
 // 应用层就只依赖 domain。
 type SearchTuning struct {
-	BM25Top       int     // 每路召回条数
-	KNNTops       int
-	NumCandidates int     // kNN 的候选池，越大越准越慢
-	RankConstant  int     // RRF 的 k，论文默认 60
-	DenseWeight   float64 // 默认向量路权重
+	BM25Top              int     // 每路召回条数
+	KNNTops              int
+	NumCandidates        int     // kNN 的候选池，越大越准越慢
+	RankConstant         int     // RRF 的 k，论文默认 60
+	DenseWeight          float64 // 默认向量路权重
+	DefaultRetrieveCount int     // rerank 开启时默认召回池；0 表示按 Limit*2 处理
 }
 
 // WithDefaults 补齐零值，避免配置漏填导致召回为 0。
@@ -30,6 +31,9 @@ func (t SearchTuning) WithDefaults() SearchTuning {
 	}
 	if out.DenseWeight <= 0 {
 		out.DenseWeight = 0.5
+	}
+	if out.DefaultRetrieveCount < 0 {
+		out.DefaultRetrieveCount = 0
 	}
 	return out
 }

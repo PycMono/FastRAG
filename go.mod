@@ -7,11 +7,13 @@ require (
 	github.com/PycMono/go-gin-sdk v0.0.11
 	github.com/PycMono/go-logger-sdk v1.0.6
 	github.com/PycMono/go-mysql-sdk v1.0.2
+	github.com/avast/retry-go/v4 v4.7.0
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/elastic/go-elasticsearch/v9 v9.4.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/redis/go-redis/v9 v9.23.0
 	go.uber.org/fx v1.23.0
+	golang.org/x/sync v0.23.0
 	gorm.io/gorm v1.25.1
 )
 
@@ -63,7 +65,6 @@ require (
 	golang.org/x/arch v0.31.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

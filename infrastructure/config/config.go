@@ -18,6 +18,7 @@ type Config struct {
 
 	ES        ESConfig        `json:"es"` // Elasticsearch
 	Embedding EmbeddingConfig `json:"embedding"`
+	Rerank    RerankConfig    `json:"rerank"`
 	Search    SearchConfig    `json:"search"`
 	Security  SecurityConfig  `json:"security"`
 }
@@ -53,19 +54,34 @@ type EmbeddingConfig struct {
 	QueryPrefix string `json:"query_prefix"` // 非对称编码前缀，如 "query: "；多数模型留空
 }
 
+// RerankConfig 重排序服务配置（OpenAI 兼容 /rerank 协议）。
+//
+// enabled=false 时回退到 Stub 实现，未配置 rerank 服务也能正常启动。
+type RerankConfig struct {
+	Enabled     bool   `json:"enabled"`      // 是否启用真实 rerank
+	BaseURL     string `json:"base_url"`     // 如 https://api.siliconflow.cn/v1
+	APIKey      string `json:"api_key"`      // 访问密钥
+	Model       string `json:"model"`        // 如 BAAI/bge-reranker-v2-m3
+	TimeoutMS   int    `json:"timeout_ms"`   // 单批调用超时（毫秒）
+	BatchSize   int    `json:"batch_size"`   // 单次最大 documents 数
+	Concurrency int    `json:"concurrency"`  // 分批最大并发数
+	TopN        int    `json:"top_n"`        // 默认重排后取多少条；0 表示全部
+}
+
 // SearchConfig 检索调参
 type SearchConfig struct {
-	BM25Top       int     `json:"bm25_top"`
-	KNNTops       int     `json:"knn_top"`
-	NumCandidates int     `json:"num_candidates"`
-	RankConstant  int     `json:"rank_constant"`
-	DenseWeight   float64 `json:"dense_weight"`
+	BM25Top              int     `json:"bm25_top"`
+	KNNTops              int     `json:"knn_top"`
+	NumCandidates        int     `json:"num_candidates"`
+	RankConstant         int     `json:"rank_constant"`
+	DenseWeight          float64 `json:"dense_weight"`
+	DefaultRetrieveCount int     `json:"default_retrieve_count"` // rerank 开启时默认召回池，0 表示 limit*2
 }
 
 // HTTPConfig HTTP 配置
 type HTTPConfig struct {
 	Host         string `json:"host"`          // 监听主机，空字符串表示监听 0.0.0.0
-	Port         string `json:"port"`          // 监听端口
+	Port         string `json:"port"`           // 监听端口
 	ReadTimeout  int    `json:"read_timeout"`  // 读取超时（秒）
 	WriteTimeout int    `json:"write_timeout"` // 写入超时（秒）
 }

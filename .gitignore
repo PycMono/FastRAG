@@ -32,6 +32,8 @@ dist/
 Thumbs.db
 
 # Config (local overrides)
+# config.json 由 config.example.json 复制而来，带本机连接信息，不入库
+config.json
 config.local.json
 config.dev.json
 config.prod.json

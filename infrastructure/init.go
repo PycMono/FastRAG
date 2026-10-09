@@ -66,11 +66,12 @@ func core(conf *config.Config) fx.Option {
 		// 在这里转一次手，application 层就不必 import infrastructure/config（§3）
 		fx.Provide(func(c *config.Config) search.SearchTuning {
 			return search.SearchTuning{
-				BM25Top:       c.Search.BM25Top,
-				KNNTops:       c.Search.KNNTops,
-				NumCandidates: c.Search.NumCandidates,
-				RankConstant:  c.Search.RankConstant,
-				DenseWeight:   c.Search.DenseWeight,
+				BM25Top:              c.Search.BM25Top,
+				KNNTops:              c.Search.KNNTops,
+				NumCandidates:        c.Search.NumCandidates,
+				RankConstant:         c.Search.RankConstant,
+				DenseWeight:          c.Search.DenseWeight,
+				DefaultRetrieveCount: c.Search.DefaultRetrieveCount,
 			}
 		}),
 

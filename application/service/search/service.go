@@ -67,14 +67,17 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		}
 	}
 
-	// ③ 分组检索：按 search_mode 把库分组，每组各发一次请求
+	// ③ 分组检索：按 search_mode 把库分组，每组各发一次请求。
 	//
 	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义（§7.2）。
 	//    最多两组，组内字段一致所以能合成一次请求。
+	//
+	//    fetchSize 在 rerank 开启时大于 limit，让 ES 多召回一些候选交给 rerank 精排。
+	fetchSize := opts.effectiveRetrieveCount()
 	groups := groupBySearchMode(kbs)
 	pool := make([]repository.SearchResult, 0, len(groups))
 	for _, g := range groups {
-		r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec))
+		r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec, fetchSize))
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +99,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 			routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
 		}
 	}
-	merged := Fuse(routes, s.tuning.RankConstant, opts.Limit*fusionOversample)
+	merged := Fuse(routes, s.tuning.RankConstant, fetchSize*fusionOversample)
 
 	// ⑤ 存活校验 + 补展示字段（1 次批量 SQL，不取内容——D1）
 	items, err := s.filterAlive(ctx, merged, kbs)
@@ -104,11 +107,13 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		return nil, err
 	}
 
-	// ⑥ 可选重排（P2）。未实现时接口返回原序，不阻断检索
-	if opts.Rerank && s.rerank != nil {
-		items, err = s.rerankItems(ctx, opts.Query, items)
+	// ⑥ 可选重排。失败时退回融合原序，不阻断检索。
+	if opts.Rerank && s.rerank != nil && len(items) > 1 {
+		reranked, err := s.rerankItems(ctx, opts.Query, items)
 		if err != nil {
 			logsdk.Warn(ctx, "重排失败，退回融合原序", logsdk.Err(err))
+		} else {
+			items = reranked
 		}
 	}
 
@@ -123,12 +128,21 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 	if in.DenseWeight != nil {
 		weight = *in.DenseWeight
 	}
+
+	retrieveCount := 0
+	if in.RetrieveCount != nil {
+		retrieveCount = *in.RetrieveCount
+	} else if s.tuning.DefaultRetrieveCount > 0 {
+		retrieveCount = s.tuning.DefaultRetrieveCount
+	}
+
 	return searchOptions{
-		Query:       in.Query,
-		Limit:       in.Limit,
-		BizTags:     in.BizTags,
-		DenseWeight: weight,
-		Rerank:      in.RerankSwitch,
+		Query:         in.Query,
+		Limit:         in.Limit,
+		RetrieveCount: retrieveCount,
+		BizTags:       in.BizTags,
+		DenseWeight:   weight,
+		Rerank:        in.RerankSwitch,
 	}.normalize()
 }
 
@@ -167,6 +181,7 @@ func (s *Service) buildReq(
 	g searchModeGroup,
 	opts searchOptions,
 	queryVec []float32,
+	fetchSize int,
 ) repository.VectorSearchReq {
 	ids := make([]uint64, 0, len(g.kbs))
 	for _, kb := range g.kbs {
@@ -182,9 +197,9 @@ func (s *Service) buildReq(
 		QueryVec:      queryVec,
 		TitleOnly:     g.titleOnly,
 		DenseWeight:   opts.DenseWeight,
-		BM25Top:       s.tuning.BM25Top,
-		KNNTops:       s.tuning.KNNTops,
-		NumCandidates: s.tuning.NumCandidates,
+		BM25Top:       fetchSize,
+		KNNTops:       fetchSize,
+		NumCandidates: fetchSize * 5,
 	}
 }
 
@@ -261,7 +276,12 @@ func (s *Service) rerankItems(
 ) ([]*vo.SearchItemVO, error) {
 	cands := make([]interfaces.RerankCandidate, len(items))
 	for i, it := range items {
-		cands[i] = interfaces.RerankCandidate{ChunkID: it.ChunkID, Content: it.Content}
+		cands[i] = interfaces.RerankCandidate{
+			ChunkID:     it.ChunkID,
+			Title:       it.Title,
+			HeadingPath: it.HeadingPath,
+			Content:     it.Content,
+		}
 	}
 
 	order, err := s.rerank.Rerank(ctx, query, cands, len(items))

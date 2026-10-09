@@ -79,7 +79,8 @@ make es-index    # ES 建索引
 # 下载依赖
 go mod download
 
-# 调整 config.json 中的 MySQL 连接信息，然后运行
+# 首次运行先复制示例配置，再按本机环境调整 MySQL 等连接信息
+cp config.example.json config.json
 go run ./cmd/server
 # 或
 make run
@@ -148,7 +149,7 @@ make clean        # 清理构建产物
 | `10001`–`10007` | 通用：参数错误 / 未登录 / 无权限 / 不存在 / 冲突 / 限流 / 内部错误 |
 | `10101`–`10106` | knowledge：不存在 / 名称重复 / 创建失败 / 更新失败 / 删除失败 / 检索未实现 |
 | `10201`–`10207` | 文档：切片为空 / 切片过长 / 导入失败 / 删除失败 / embedding 异常 / 向量库异常 / 索引缺失 |
-| `10301` | 检索失败 |
+| `10301`–`10302` | 检索失败 / rerank 服务失败 |
 
 `10101`–`10106` 是脚手架时期的遗留，现在**没有一个会由 HTTP 请求返回**：
 知识库的 CRUD 全在外部系统里（设计文档 §1.2），本服务只读写 `knowledge_base` 表、
@@ -205,6 +206,8 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
   -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md"}'
 
 # 检索。dense_weight 省略则用配置默认值；<=0.01 只走 BM25，>=0.99 只走 kNN
+# rerank_switch=true 且 config.rerank.enabled=true 时会调用 /rerank 精排；
+# retrieve_count 控制 rerank 前召回多少候选（默认 limit*2，上限 200）
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",

@@ -43,12 +43,23 @@
     "timeout_ms": 60000,
     "query_prefix": ""
   },
+  "rerank": {
+    "enabled": false,
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "timeout_ms": 10000,
+    "batch_size": 32,
+    "concurrency": 4,
+    "top_n": 0
+  },
   "search": {
     "bm25_top": 50,
     "knn_top": 50,
     "num_candidates": 200,
     "rank_constant": 60,
-    "dense_weight": 0.5
+    "dense_weight": 0.5,
+    "default_retrieve_count": 0
   },
   "security": {
     "trust_request_account": true

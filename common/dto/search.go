@@ -13,6 +13,11 @@ type SearchDTO struct {
 
 	Limit int `json:"limit" binding:"omitempty,gte=1,lte=100"`
 
+	// RetrieveCount rerank 开启时，ES 召回多少条交给 rerank 精排。
+	// nil 表示用 search.default_retrieve_count，再缺省则 limit*2。
+	// 取值范围 [1, 200]；返回给用户的结果仍由 Limit 截断。
+	RetrieveCount *int `json:"retrieve_count" binding:"omitempty,gte=1,lte=200"`
+
 	// DenseWeight 向量路权重：<=0.01 只走 BM25，>=0.99 只走 kNN，其余两路加权融合。
 	// nil 表示用配置里的默认值。
 	DenseWeight *float64 `json:"dense_weight" binding:"omitempty,gte=0,lte=1"`

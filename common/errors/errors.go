@@ -42,6 +42,7 @@ const (
 // 检索相关错误码
 const (
 	CodeSearchFail = 10301 // 检索失败
+	CodeRerankFail = 10302 // 重排序服务失败
 )
 
 // ─── CodeError 基础 ──────────────────────────────────────────────────────────
@@ -183,6 +184,7 @@ var (
 	ErrEmbeddingFailed   = NewSysError(CodeEmbeddingFail, "embedding service failed")
 	ErrVectorStoreFailed = NewSysError(CodeVectorStoreFail, "vector store failed")
 	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
+	ErrRerankFailed      = NewSysError(CodeRerankFail, "rerank service failed")
 )
 
 // NewParamError 生成带自定义文案的参数错误。
