@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PycMono/FastRAG/infrastructure/config"
@@ -233,5 +234,68 @@ func TestEmbedding_EmbedDocs_AllEmpty(t *testing.T) {
 	}
 	if len(*got) != 0 {
 		t.Errorf("全是空文本时一个请求都不该发，却发了 %d 次：%q", len(*got), *got)
+	}
+}
+
+// ─── 重试 ─────────────────────────────────────────────────────────────────────
+
+// newFlakyEmbedServer 起一个会抖的上游：前 failTimes 次请求返回 500，之后正常。
+// 返回 server 与调用计数器。
+func newFlakyEmbedServer(t *testing.T, failTimes int32) (*httptest.Server, *int32) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= failTimes {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{"message": "temporary"},
+			})
+			return
+		}
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		out := make([]map[string]any, len(req.Input))
+		for i := range req.Input {
+			out[i] = map[string]any{"index": i, "embedding": []float32{1, 2, 3}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
+	}))
+	t.Cleanup(server.Close)
+	return server, &calls
+}
+
+// 上游第一次 500、第二次成功：应重试一次后成功，而不是把整次导入带崩。
+//
+// 这就是这次改动的全部目的——EmbedDocs 逐批发送，任何一批抖一下，在加重试前
+// 整次导入都会失败，且前面已算好的批次全部作废，调用方只能从头再导。
+func TestEmbedding_EmbedDocs_RetryOnce(t *testing.T) {
+	server, calls := newFlakyEmbedServer(t, 1)
+	e := &Embedding{client: http.DefaultClient, url: server.URL, model: "m", dim: 3, batchSize: 10}
+
+	vecs, err := e.EmbedDocs(context.Background(), []string{"a"})
+	if err != nil {
+		t.Fatalf("重试后应成功: %v", err)
+	}
+	if got := int(atomic.LoadInt32(calls)); got != 2 {
+		t.Errorf("期望调用 2 次（初次失败 + 1 次重试），实际 %d 次", got)
+	}
+	if len(vecs) != 1 || len(vecs[0]) != 3 {
+		t.Errorf("应拿到上游向量，得到 %#v", vecs)
+	}
+}
+
+// 重试有上限：两次都失败就报错，绝不无限重试。
+func TestEmbedding_EmbedDocs_RetryExhausted(t *testing.T) {
+	server, calls := newFlakyEmbedServer(t, 100) // 永远失败
+	e := &Embedding{client: http.DefaultClient, url: server.URL, model: "m", dim: 3, batchSize: 10}
+
+	_, err := e.EmbedDocs(context.Background(), []string{"a"})
+	if err == nil {
+		t.Fatal("两次都失败时应报错")
+	}
+	if got := int(atomic.LoadInt32(calls)); got != 2 {
+		t.Errorf("重试次数必须是 2（初次 + 1），实际 %d", got)
 	}
 }

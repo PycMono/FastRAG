@@ -24,12 +24,16 @@ import (
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/infrastructure/config"
+	"github.com/avast/retry-go/v4"
 )
 
 // maxEmbedResponseBytes 响应体读取上限。
 // 一批 32 条 × 1024 维的 float32 JSON 大约 1MB，64MB 已经非常宽裕，
 // 但没有上限地 ReadAll 迟早会被一个畸形响应打爆内存。
 const maxEmbedResponseBytes = 64 << 20
+
+// defaultEmbedRetryDelay 重试基础退避。与 rerank 的 defaultRerankRetryDelay 一致。
+const defaultEmbedRetryDelay = 100 * time.Millisecond
 
 // text_type 是 dashscope 协议的一部分，不是可选装饰：它替代了 openai 那边
 // 靠字符串前缀实现的 query/doc 区分（§4.2）。
@@ -208,7 +212,37 @@ func (e *Embedding) parseVectors(parsed *embedResponse, n int) [][]float32 {
 	return out
 }
 
+// embed 单次调用 + 失败重试一次。
+//
+// 与 rerank 的 scoreBatch 一一对应：初次 + 重试一次、固定 100ms 退避、
+// 只透传最后一次的错误。
+//
+// 为什么要重试：EmbedDocs 按 batch_size 分批，一篇中等文档就是几十批，
+// 任何一批抖一下（连接被重置、上游 5xx/429）都会让整次导入失败——前面已经
+// 算好的批次全部作废，调用方只能从头再导一遍。检索侧同理：EmbedQuery 抖一次
+// 就是整个请求失败。
 func (e *Embedding) embed(ctx context.Context, texts []string, textType string) ([][]float32, error) {
+	var vecs [][]float32
+	err := retry.Do(
+		func() error {
+			var err error
+			vecs, err = e.embedOnce(ctx, texts, textType)
+			return err
+		},
+		retry.Context(ctx), // ctx 取消时立即放弃，不再发起下一次
+		retry.Attempts(2),  // 初次 + 重试一次，与 rerank 一致
+		retry.Delay(defaultEmbedRetryDelay),
+		retry.DelayType(retry.FixedDelay), // 固定间隔退避，不用默认的指数+抖动
+		retry.LastErrorOnly(true),         // 只透传最后一次的错误，不层层包装
+	)
+	if err != nil {
+		return nil, err
+	}
+	return vecs, nil
+}
+
+// embedOnce 单次调用，不含重试。
+func (e *Embedding) embedOnce(ctx context.Context, texts []string, textType string) ([][]float32, error) {
 	payload, err := json.Marshal(e.buildBody(texts, textType))
 	if err != nil {
 		return nil, apperrors.ErrEmbeddingFailed.Wrap(err)
