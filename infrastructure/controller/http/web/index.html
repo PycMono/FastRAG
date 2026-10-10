@@ -301,8 +301,8 @@
         </label>
         <div class="row">
           <label class="field">
-            <span>limit</span>
-            <input type="number" id="limit" value="10" min="1" max="100">
+            <span>limit（≤100。翻页只翻本次返回的这些，服务端不做深翻页）</span>
+            <input type="number" id="limit" value="30" min="1" max="100">
           </label>
           <label class="field">
             <span>dense_weight（0 = 纯 BM25，1 = 纯 kNN）</span>
@@ -412,6 +412,14 @@
     }
   }
   pingHealth();
+
+  // 支持 ?q=xxx 直达一次检索：填上 query 自动搜。分享演示链接和 README 截图用。
+  // 只认 q——演示态不该背着一堆隐藏配置，account/kb 这些还是用页面上的默认值。
+  const urlQ = new URLSearchParams(location.search).get('q');
+  if (urlQ) {
+    $('query').value = urlQ;
+    doSearch();
+  }
 
   // ── 文件选择 / 拖拽 ──────────────────────────────────────────────────────
   const dropzone = $('dropzone');

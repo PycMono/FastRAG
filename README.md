@@ -256,6 +256,23 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
 服务直接拒绝启动（`infrastructure/init.go` 的 `checkTrustRequestAccount`，§6.1）。
 这道闸门防的是「把服务顺手摆到公网上」这种改动，代码本身不会因此报任何错。
 
+## 演示页
+
+服务根路径挂着一个人肉验证用的单页（`infrastructure/controller/http/web/index.html`，
+`go:embed` 进二进制，不依赖前端构建）：
+
+> <http://localhost:8080/>
+
+覆盖主链路：上传 markdown → 切片入 ES → 混合检索（BM25 + kNN，权重可调）→ rerank 精排，
+结果区带纯前端分页。也支持带 query 的直达链接，比如：
+
+> <http://localhost:8080/?q=呼吸衰竭的病因和临床表现>
+
+![演示页](docs/demo.png)
+
+两点别误会：分页只翻**本次返回**的前 `limit`（≤100）条，服务端不做深翻页（§13 明确不做）；
+页面默认的 `account` / `kb` 是写死的演示值，它不读 URL、也不该读——演示态不该背隐藏配置。
+
 ## API 示例
 
 业务路由只有三个（`infrastructure/controller/http/register.go`）：写文档、删文档、检索。
