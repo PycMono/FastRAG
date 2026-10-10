@@ -12,7 +12,7 @@
     "port": 3306,
     "database": "fastrag",
     "user": "root",
-    "password": "123456",
+    "password": "",
     "max_open": 100,
     "max_idle": 10,
     "conn_lifetime": 3600,
@@ -35,29 +35,40 @@
     "username": "",
     "password": ""
   },
-
   "embedding": {
-    "default": "bge-m3",
+    "default": "qwen3-embedding",
     "dim": 1024,
     "batch_size": 16,
     "timeout_ms": 60000,
     "models": {
       "bge-m3": {
         "url": "http://127.0.0.1:11434/v1/embeddings"
+      },
+      "qwen3-embedding": {
+        "protocol": "dashscope",
+        "url": "https://ws-s5iiibr6uezast8b.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
+        "api_key": "",
+        "model": "qwen3.7-text-embedding",
+        "batch_size": 10
       }
     }
   },
-
   "rerank": {
-    "enabled": false,
-    "default": "",
+    "enabled": true,
+    "default": "qwen3-rerank",
     "batch_size": 32,
     "concurrency": 4,
     "timeout_ms": 10000,
     "top_n": 0,
-    "models": {}
+    "models": {
+      "qwen3-rerank": {
+        "protocol": "dashscope",
+        "url": "https://ws-s5iiibr6uezast8b.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+        "api_key": "",
+        "model": "qwen3.7-text-rerank"
+      }
+    }
   },
-
   "search": {
     "bm25_top": 50,
     "knn_top": 50,
