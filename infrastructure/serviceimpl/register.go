@@ -9,7 +9,7 @@ import (
 	"go.uber.org/fx"
 )
 
-// Register 注册 serviceimpl 层组件。
+// Register 注册 service impl 层组件。
 //
 // embedding 与 rerank 都注册成"注册表"而不是单个实现：配置里可以同时存在
 // 多组服务商，应用层在请求入口按名字取用。

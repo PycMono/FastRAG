@@ -38,15 +38,7 @@ func Init(conf *config.Config) fx.Option {
 	)
 }
 
-// InitCLI 只装配命令行任务需要的部分，不启 HTTP Server。
-//
-// 单独开一个而不是复用 Init：Init 里 controller.Register 会注册路由
-// 并把 HTTP 服务拉起来，批处理任务不需要、也不该占着端口。
-func InitCLI(conf *config.Config) fx.Option {
-	return core(conf)
-}
-
-// core 三种入口（HTTP / CLI / 测试）共用的装配。
+// core 各入口共用的装配；HTTP 监听由 Init 另加。
 func core(conf *config.Config) fx.Option {
 	return fx.Options(
 		fx.Supply(conf),
@@ -94,8 +86,7 @@ func core(conf *config.Config) fx.Option {
 // 而代码本身不会报任何错。所以这里把前提变成一个必须显式承认的开关：
 // 没配 trust_request_account = true 就拒绝启动。
 //
-// 用 fx.Invoke 而不是放在 main 里手写 if：这样 CLI 入口（InitCLI）也会过这道闸门，
-// 三个入口一个都漏不掉。
+// 用 fx.Invoke 而不是放在 main 里手写 if：这样入口都会过这道闸门，漏不掉。
 func checkTrustRequestAccount(conf *config.Config) error {
 	if !conf.Security.TrustRequestAccount {
 		return apperrors.NewSysError(apperrors.CodeInternal,

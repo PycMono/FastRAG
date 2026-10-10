@@ -3,7 +3,7 @@ package search
 // SearchTuning 检索调参。
 //
 // 单独抽出来是因为它来自配置，而 **application 层不能 import infrastructure/config**
-// （§3 的分层铁律）。让 infrastructure 读配置、构造这个中立结构再注入，
+// （分层铁律）。让 infrastructure 读配置、构造这个中立结构再注入，
 // 应用层就只依赖 domain。
 type SearchTuning struct {
 	BM25Top              int // 每路召回条数

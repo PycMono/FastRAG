@@ -15,7 +15,7 @@ import (
 // KnowledgeBaseRepo 知识库仓储（只读）。
 //
 // 这一层是租户隔离的最后一道闸：所有语句都带 account = ?，
-// 漏写在 code review 里能看出来，靠每个用例自己记得加则看不出来（§6）。
+// 漏写在 code review 里能看出来，靠每个用例自己记得加则看不出来。
 type KnowledgeBaseRepo struct {
 	provider sqlsdk.Provider
 }
@@ -28,7 +28,7 @@ func (r *KnowledgeBaseRepo) db(ctx context.Context) *gorm.DB {
 	return r.provider.UseDB(ctx).Model(&entity.KnowledgeBase{})
 }
 
-func (r *KnowledgeBaseRepo) LoadByNo(
+func (r *KnowledgeBaseRepo) FindByNo(
 	ctx context.Context, no, account string,
 ) (*entity.KnowledgeBase, error) {
 	var kb entity.KnowledgeBase
@@ -48,7 +48,7 @@ func (r *KnowledgeBaseRepo) LoadByNo(
 	return &kb, nil
 }
 
-func (r *KnowledgeBaseRepo) LoadByNos(
+func (r *KnowledgeBaseRepo) FindByNos(
 	ctx context.Context, nos []string, account string,
 ) (entity.KnowledgeBases, error) {
 	if len(nos) == 0 {
@@ -95,21 +95,6 @@ func (r *KnowledgeBaseRepo) applyDelta(ctx context.Context, kbID uint64, column 
 		Updates(map[string]any{
 			column:      gorm.Expr("GREATEST(CAST("+column+" AS SIGNED) + ?, 0)", delta),
 			"update_ts": time.Now().UnixMilli(),
-		}).Error
-	if err != nil {
-		return apperrors.ErrInternal.Wrap(err)
-	}
-	return nil
-}
-
-// SetCounts 用绝对值覆盖计数，供对账任务使用（§A3.5）。
-func (r *KnowledgeBaseRepo) SetCounts(ctx context.Context, kbID uint64, docCount, chunkCount int64) error {
-	err := r.db(ctx).
-		Where("id = ?", kbID).
-		Updates(map[string]any{
-			"doc_count":   docCount,
-			"chunk_count": chunkCount,
-			"update_ts":   time.Now().UnixMilli(),
 		}).Error
 	if err != nil {
 		return apperrors.ErrInternal.Wrap(err)

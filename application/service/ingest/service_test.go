@@ -11,14 +11,14 @@ import (
 	"github.com/PycMono/FastRAG/domain/repository"
 )
 
-// stubKBRepo 只实现 LoadByNo，其余方法靠内嵌的 nil 接口兜着——
+// stubKBRepo 只实现 FindByNo，其余方法靠内嵌的 nil 接口兜着——
 // 一旦被调到就 panic，正好说明用例走到了不该走的地方。
 type stubKBRepo struct {
 	repository.IKnowledgeBaseRepo
 	kb *entity.KnowledgeBase
 }
 
-func (s stubKBRepo) LoadByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
+func (s stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
 	return s.kb, nil
 }
 

@@ -19,26 +19,23 @@ type mockKBRepo struct {
 	load func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error)
 }
 
-func (m *mockKBRepo) LoadByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
+func (m *mockKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
 	return nil, nil
 }
-func (m *mockKBRepo) LoadByNos(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
+func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
 	return m.load(ctx, nos, account)
 }
 func (m *mockKBRepo) ApplyChunkDelta(ctx context.Context, kbID uint64, delta int64) error { return nil }
 func (m *mockKBRepo) ApplyDocDelta(ctx context.Context, kbID uint64, delta int64) error   { return nil }
-func (m *mockKBRepo) SetCounts(ctx context.Context, kbID uint64, docCount, chunkCount int64) error {
-	return nil
-}
 
 type mockDocRepo struct {
 	load func(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error)
 }
 
-func (m *mockDocRepo) LoadByName(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
+func (m *mockDocRepo) FindByName(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
 	return nil, nil
 }
-func (m *mockDocRepo) LoadByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
+func (m *mockDocRepo) FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
 	return m.load(ctx, ids)
 }
 func (m *mockDocRepo) Save(ctx context.Context, doc *entity.KnowledgeDoc) (oldChunkCount int, created bool, err error) {
@@ -48,10 +45,6 @@ func (m *mockDocRepo) SoftDelete(ctx context.Context, kbID uint64, name string, 
 	return nil, nil
 }
 func (m *mockDocRepo) SoftDeleteByKBID(ctx context.Context, kbID uint64, account string, now int64) (int64, error) {
-	return 0, nil
-}
-func (m *mockDocRepo) CountByKBID(ctx context.Context, kbID uint64) (int64, error) { return 0, nil }
-func (m *mockDocRepo) SumChunkCountByKBID(ctx context.Context, kbID uint64) (int64, error) {
 	return 0, nil
 }
 

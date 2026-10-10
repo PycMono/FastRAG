@@ -64,8 +64,8 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		return nil, err
 	}
 
-	// ① 加载 KB。不属于该 account 的库在仓储层就被丢掉了（§6）
-	kbs, err := s.kbRepo.LoadByNos(ctx, in.KBNos, in.Account)
+	// ① 加载 KB。不属于该 account 的库在仓储层就被丢掉了
+	kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 
 	// ③ 分组检索：按 search_mode 把库分组，每组各发一次请求。
 	//
-	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义（§7.2）。
+	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义。
 	//    最多两组，组内字段一致所以能合成一次请求。
 	//
 	//    fetchSize 在 rerank 开启时大于 limit，让 ES 多召回一些候选交给 rerank 精排。
@@ -104,7 +104,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	//
 	//    逐组逐路喂进去，**不先把各组拼成一个大列表**——那样后一组的
 	//    第一名会被排到前一组所有命中之后，等于按分组顺序给了个固定的偏置
-	//    （A3.2 的 Fuse 注释）。每组两路各自从 rank=1 起算就不偏。
+	//    （见 Fuse 的注释）。每组两路各自从 rank=1 起算就不偏。
 	routes := make([]Route, 0, 2*len(pool))
 	for _, r := range pool {
 		// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
@@ -117,7 +117,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	}
 	merged := Fuse(routes, s.tuning.RankConstant, fetchSize*fusionOversample)
 
-	// ⑤ 存活校验 + 补展示字段（1 次批量 SQL，不取内容——D1）
+	// ⑤ 存活校验 + 补展示字段（1 次批量 SQL，不取内容）
 	items, err := s.filterAlive(ctx, merged, kbs)
 	if err != nil {
 		return nil, err
@@ -194,7 +194,7 @@ type searchModeGroup struct {
 //
 // 为什么不取并集：只要有一个库开了正文检索，就全局按正文检索的话，
 // 那些建库时明确声明「只用标题」的库就被按正文搜了——召回里会冒出
-// 一堆标题对不上、正文里却有这个词的切片。那是静默改写语义（§7.2）。
+// 一堆标题对不上、正文里却有这个词的切片。那是静默改写语义。
 func groupBySearchMode(kbs entity.KnowledgeBases) []searchModeGroup {
 	var contentSearch, titleSearch entity.KnowledgeBases
 	for _, kb := range kbs {
@@ -227,7 +227,7 @@ func (s *Service) buildReq(
 	}
 
 	return repository.VectorSearchReq{
-		// 组内必然同 account：LoadByNos 加载时已按 account 过滤过（§6）
+		// 组内必然同 account：FindByNos 加载时已按 account 过滤过
 		Account:       g.kbs[0].Account,
 		KBIDs:         ids,
 		BizTags:       opts.BizTags,
@@ -241,23 +241,23 @@ func (s *Service) buildReq(
 	}
 }
 
-// filterAlive 丢掉孤儿与幽灵切片（§7.3）。
+// filterAlive 丢掉孤儿与幽灵切片。
 //
 // 两个要点：
 //  1. doc_id 先去重再查库——召回 200 条通常只落在几十个文档上，
 //     按召回条数去查数据库是纯浪费；
-//  2. 内容不回表取（D1），这里只补 doc_name / kb_name 两个展示字段。
+//  2. 内容不回表取，这里只补 doc_name / kb_name 两个展示字段。
 //
 // 它同时兜住了「写一半失败」和「删一半失败」两种残留：
-//   - 孤儿：切片写进 ES 了，但 MySQL 文档行没落（§5.2 ③ 失败）→ 查不到 doc，丢弃；
-//   - 幽灵：MySQL 已软删，ES 还没清完（§5.4）→ 查不到 doc，丢弃。
+//   - 孤儿：切片写进 ES 了，但 MySQL 文档行没落（第三写失败）→ 查不到 doc，丢弃；
+//   - 幽灵：MySQL 已软删，ES 还没清完 → 查不到 doc，丢弃。
 //
-// 它的前提是 doc_id 稳定：全靠切片带的 doc_id 去查行，所以 §5.1 第 ④ 步
-// 必须复用已有行的 id（§5.3）。若重导入换了新 id，新切片查不到行被全部丢掉，
+// 它的前提是 doc_id 稳定：全靠切片带的 doc_id 去查行，所以导入时必须
+// 复用已有行的 id。若重导入换了新 id，新切片查不到行被全部丢掉，
 // 旧切片反而一路通行——那正是"导入成功却还搜到旧内容"。
 //
 // 但它**兜不住**重导入时的重复召回：新旧切片 doc_id 相同、文档行是同一行，
-// 存活校验看不出差别（§11 场景 3/4）。写侧一致性本期不做（§13 待定 9）。
+// 存活校验看不出差别。写侧一致性本期不做。
 func (s *Service) filterAlive(
 	ctx context.Context,
 	hits []repository.VectorHit,
@@ -276,7 +276,7 @@ func (s *Service) filterAlive(
 		ids = append(ids, id)
 	}
 
-	docs, err := s.docRepo.LoadByIDs(ctx, ids)
+	docs, err := s.docRepo.FindByIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (s *Service) filterAlive(
 	for _, h := range hits {
 		doc, ok := alive[h.DocID]
 		if !ok {
-			continue // 孤儿 / 幽灵切片：静默丢弃，这正是 D4 想要的效果
+			continue // 孤儿 / 幽灵切片：静默丢弃，这正是存活校验想要的效果
 		}
 		item := &vo.SearchItemVO{
 			ChunkID:     h.ChunkID,

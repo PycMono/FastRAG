@@ -25,7 +25,7 @@ import (
 // batchConcurrency 批量导入的并发度。
 //
 // 压得很低是刻意的：真正的瓶颈在 embedding 服务，并发开大只会把下游打挂，
-// 结果整体更慢（§5.5）。
+// 结果整体更慢。
 const batchConcurrency = 4
 
 // Service 文档导入应用服务。
@@ -61,25 +61,25 @@ func NewService(
 
 // Ingest 导入一份文档。同名重导入视作「更新」。
 //
-// 编排见 §5.1，三步写入次序见 §5.2：
+// 编排分三步写入：
 //
 //	① ES 写新切片 → ② ES 删旧切片（_id 差集）→ ③ MySQL 写文档行 + 计数
 //
 // 「更新」这条语义的落点是 **doc_id 的复用**（第 ⑤ 步）：重导入必须先
-// LoadByName 取回库里那一行的 id，而不是每次都分配新雪花。切片、删差集、
+// FindByName 取回库里那一行的 id，而不是每次都分配新雪花。切片、删差集、
 // 存活校验三处都以 doc_id 为轴，id 一换就全盘失效，且失败是静默的——
-// 接口返回成功，用户搜到的还是旧内容（§5.3）。
+// 接口返回成功，用户搜到的还是旧内容。
 //
 // 顺序是"先写后删、MySQL 最后"：ES 里先有内容、再清旧的，所以中途失败时
 // 这篇文档总能查到点什么，不会因为一次失败的写入把内容清空。
-// MySQL 放最后是因为文档行是存活校验的依据（§7.3）——它没落，切片就算孤儿，
+// MySQL 放最后是因为文档行是存活校验的依据——它没落，切片就算孤儿，
 // 宁可查不到也不要返回错内容。
 //
-// **并发同名导入不在本方法的保护范围内**（§5.5）：两次并发调用可能互相删掉
+// **并发同名导入不在本方法的保护范围内**：两次并发调用可能互相删掉
 // 对方的切片，只剩交集。调用方必须按 doc_name 去重。
 func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocIngestVO, error) {
-	// ① 定位 KB。kb_no 指向的库 account 不等于传入值，在这里就被挡掉（§6）
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	// ① 定位 KB。kb_no 指向的库 account 不等于传入值，在这里就被挡掉
+	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	}
 
 	// ④ 向量化。放在任何写操作之前——失败时什么都没动，重试是干净的。
-	//    索引的创建**不在这里**，那是启动期做一次的事（§9.4）。
+	//    索引的创建**不在这里**，也不由本服务负责。
 	titleVecs, contentVecs, err := s.embedChunks(ctx, embedder, chunks)
 	if err != nil {
 		return nil, err
@@ -124,11 +124,11 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 
 	// biz_tag **只认 KB 上的那一个值**，文档级别不允许覆盖。
 	//
-	// 允许覆盖会让文档变得「谁都搜不到」：检索侧先用 KB 的 tag 筛库
-	// （§7.1 ①），再在 ES 里 terms(biz_tag) 过滤。一个把 tag 覆盖成 finance
+	// 允许覆盖会让文档变得「谁都搜不到」：检索侧先用 KB 的 tag 筛库，
+	// 再在 ES 里 terms(biz_tag) 过滤。一个把 tag 覆盖成 finance
 	// 的文档，落在 kb.biz_tag = sales 的库里——按 sales 搜，库进来了但这条被
 	// ES 过滤掉；按 finance 搜，库本身就被筛掉了，这条根本没机会。
-	// 两头都够不着，而且不报错（§7.2）。
+	// 两头都够不着，而且不报错。
 	bizTag := kb.BizTag
 
 	// ⑤ 定 doc_id。**同名重导入必须沿用库里那一行的 id。**
@@ -139,7 +139,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	//    表现出来就是「导入返回成功，用户却还搜到旧内容」。
 	//
 	//    只有库里确实没有这一行时才分配雪花 id。
-	existing, err := s.docRepo.LoadByName(ctx, kb.ID, in.DocName)
+	existing, err := s.docRepo.FindByName(ctx, kb.ID, in.DocName)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 
 	vectors := factory.BuildVectorDocs(kb, docID, bizTag, chunks, titleVecs, contentVecs, now)
 
-	// ⑥ 【第一写】ES 写新切片（§5.2 ①）
+	// ⑥ 【第一写】ES 写新切片
 	//
 	//    新内容先进去，旧切片原地不动——所以这一步失败时这篇文档仍然可查
 	//    （只是内容还是旧的），重试导入即可。
@@ -168,13 +168,13 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 
 	// ⑦ 【刷新】把「刚写进去的」和「可能还没刷出来的旧切片」推进可检索视图
 	//
-	//    delete_by_query 只能作用在**已刷新的段**上，而 ES 默认 30s 才刷新一次
-	//    （§4.2）。不刷新会在两处踩空：
+	//    delete_by_query 只能作用在**已刷新的段**上，而 ES 默认 30s 才刷新一次。
+	//    不刷新会在两处踩空：
 	//
 	//      · 重导入间隔 < 一个刷新周期时，上一批旧切片还没进段 → ⑧ 根本看不见
 	//        它们，于是删了个寂寞，旧切片一直留到再下一次重导入才被清掉。
-	//        也就是说 §12.1 那条「重导入后旧切片被清掉」的验收会**时灵时不灵**；
-	//      · 调用方要「导入即可搜」时（§4.2），新切片同样还没进段。
+	//        也就是说「重导入后旧切片被清掉」这条验收会**时灵时不灵**；
+	//      · 调用方要「导入即可搜」时，新切片同样还没进段。
 	//
 	//    两种触发条件对应这两种用途：重导入（existing != nil）必刷，
 	//    首次导入只在调用方显式要求时刷——常规首次导入没有旧切片要清，
@@ -189,13 +189,13 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		}
 	}
 
-	// ⑧ 【第二写】ES 清掉这篇文档里 _id 不在新集合中的旧切片（§5.2 ②）
+	// ⑧ 【第二写】ES 清掉这篇文档里 _id 不在新集合中的旧切片
 	//
 	//    只删差集，不 DeleteByQuery(doc_id) 全删：内容没变的切片 _id 不变，
 	//    留着即可，全删再写回来是白放大一次写入。
 	//
 	//    失败不影响正确性：旧切片多留一会儿，下次重导入会再清一遍。
-	//    代价是这篇文档可能短暂地返回新旧两份内容（§11 场景 3）。
+	//    代价是这篇文档可能短暂地返回新旧两份内容。
 	if _, err := s.store.DeleteExcept(ctx, repository.VectorFilter{
 		Account: kb.Account, DocID: docID,
 	}, factory.ChunkIDs(vectors)); err != nil {
@@ -205,13 +205,13 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		)
 	}
 
-	// ⑨ 【第三写】MySQL 写文档行 + 回写 KB 计数（§5.2 ③）
+	// ⑨ 【第三写】MySQL 写文档行 + 回写 KB 计数
 	//
 	//    实体到这里才构造：所有字段都已定稿，不存在"先建行、后填内容"的中间态，
-	//    也就不会出现"ES 写失败但库里已经记了新计数"的谎报（A2.6）。
+	//    也就不会出现"ES 写失败但库里已经记了新计数"的谎报。
 	//
 	//    重导入时这里传的 CreateTs 是本次的时间，但 Save 的 upsert 分支
-	//    只写 content_hash / chunk_count / update_ts 三列（A4.4），
+	//    只写 content_hash / chunk_count / update_ts 三列，
 	//    create_ts 保持库里原值——文档的创建时间不会因为重导入而漂移。
 	doc := factory.NewDoc(docID, kb, in.DocName, hash, len(chunks), now)
 
@@ -231,9 +231,9 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		return nil
 	}); err != nil {
 		// 刻意不吞这个错误。文档行没落 → 刚才写进 ES 的切片成了孤儿，
-		// 被 §7.3 的存活校验挡在检索之外。这是「可过滤」的一侧：
-		// 不会返回错内容，只是这篇暂时搜不到。等对账重算（§11 场景 2）
-		logsdk.Error(ctx, "写入文档行失败，该文档当前不可检索，等对账重算",
+		// 被存活校验挡在检索之外。这是「可过滤」的一侧：
+		// 不会返回错内容，只是这篇暂时搜不到。重新导入即可恢复
+		logsdk.Error(ctx, "写入文档行失败，该文档当前不可检索，需重新导入",
 			logsdk.Any("account", kb.Account),
 			logsdk.Any("kb_no", kb.No),
 			logsdk.Any("doc_id", docID),
@@ -250,9 +250,9 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	}, nil
 }
 
-// DeleteDoc 软删文档并清理 ES（§5.4：MySQL 必须在前）。
+// DeleteDoc 软删文档并清理 ES（MySQL 必须在前）。
 func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocDeleteVO, error) {
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +275,7 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 	}
 
 	// ES 清理放到事务之后：MySQL 是权威且即时的，ES 可以迟、可以重试。
-	// 这一步失败只会留下幽灵切片，被存活校验按 doc.Deleted() 过滤掉（§5.4）
+	// 这一步失败只会留下幽灵切片，被存活校验按 doc.Deleted() 过滤掉
 	deleted, err := s.store.DeleteByQuery(ctx, repository.VectorFilter{
 		Account: kb.Account, DocID: doc.ID,
 	})
@@ -290,10 +290,10 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 
 // DeleteKB 清理某个知识库在本服务里的全部派生数据。
 //
-// KB 行本身由外部系统维护（§1.2），这里只负责：本服务的文档软删 + ES 切片清理。
+// KB 行本身由外部系统维护，这里只负责：本服务的文档软删 + ES 切片清理。
 // 一旦引入删除动作就必须走这里——只删 MySQL 的话，ES 里会堆满查不到来源的幽灵切片。
 func (s *Service) DeleteKB(ctx context.Context, in *dto.KBDeleteDTO) error {
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
 	if err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func (s *Service) DeleteKB(ctx context.Context, in *dto.KBDeleteDTO) error {
 	return nil
 }
 
-// ─── 批量导入（P1，§5.5）─────────────────────────────────────────────────────
+// ─── 批量导入 ────────────────────────────────────────────────────────────────
 
 // BatchResult 批量导入结果。
 type BatchResult struct {
@@ -334,7 +334,7 @@ type BatchError struct {
 // docKey 文档的同一性，与 MySQL 的唯一键 (kb_id, name) 对齐。
 //
 // 用 kb_no 而不是 kb_id：这一层还没查库，拿不到自增主键。
-// kb_no 到 kb_id 是一对一（§4.1），所以在这里做去重等价。
+// kb_no 到 kb_id 是一对一，所以在这里做去重等价。
 type docKey struct {
 	Account string
 	KBNo    string
@@ -346,7 +346,7 @@ type docKey struct {
 // 为什么是拒绝而不是「后一条覆盖前一条」：同名两条该留哪一份是业务决策，
 // 服务端替调用方定夺，只会让「我明明传了正确的那份」变成无从解释。
 // 也不能靠并发写去碰运气——同一个 doc_id 上两路 DeleteExcept 会互相删掉
-// 对方刚写的切片，最终只剩两边集合的交集，内容被截断（§5.5）。
+// 对方刚写的切片，最终只剩两边集合的交集，内容被截断。
 //
 // 必须**同步**跑完再起工作池：放进 goroutine 里就回到竞态了。
 func duplicateDocNames(items []*dto.DocIngestDTO) map[docKey]struct{} {
@@ -371,7 +371,7 @@ func (s *Service) BatchIngest(ctx context.Context, items []*dto.DocIngestDTO) *B
 	res := &BatchResult{Total: len(items)}
 
 	// 批次内同名的先挑出来标记失败并排除。整批不因它们返回 400——
-	// 控制器已约定「恒返回 200 + 明细」（A4.13），合法的那几十条照常导。
+	// 控制器已约定「恒返回 200 + 明细」，合法的那几十条照常导。
 	dup := duplicateDocNames(items)
 
 	var (
@@ -465,7 +465,7 @@ func (s *Service) split(
 // 实现是参数而不是 Service 的字段：Service 是单例，逐请求的东西不能往里写。
 //
 // title_vec 与 content_vec 分开存：标题短、噪声低，适合精排；
-// 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路（§7.2）。
+// 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路。
 func (s *Service) embedChunks(
 	ctx context.Context, e interfaces.IEmbedding, chunks entity.Chunks,
 ) (titleVecs, contentVecs [][]float32, err error) {

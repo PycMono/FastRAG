@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -19,7 +18,7 @@ import (
 // 为什么还要注入 transaction.Manager：Save 是「锁行读旧值 → upsert」两步，
 // 必须整体在一个事务里（见 Save 注释）。sqlsdk.Provider 只暴露 UseDB，
 // 给不了事务，所以额外依赖 Manager。
-// TransProvider 本来就同时实现了这两个接口，fx 里各 provide 一份即可（A4.16）。
+// TransProvider 本来就同时实现了这两个接口，fx 里各 provide 一份即可。
 type KnowledgeDocRepo struct {
 	provider sqlsdk.Provider
 	tm       transaction.Manager
@@ -36,7 +35,7 @@ func (r *KnowledgeDocRepo) db(ctx context.Context) *gorm.DB {
 	return r.provider.UseDB(ctx).Model(&entity.KnowledgeDoc{})
 }
 
-func (r *KnowledgeDocRepo) LoadByName(
+func (r *KnowledgeDocRepo) FindByName(
 	ctx context.Context, kbID uint64, name string,
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
@@ -55,7 +54,7 @@ func (r *KnowledgeDocRepo) LoadByName(
 	return &doc, nil
 }
 
-func (r *KnowledgeDocRepo) LoadByIDs(
+func (r *KnowledgeDocRepo) FindByIDs(
 	ctx context.Context, ids []uint64,
 ) (entity.KnowledgeDocs, error) {
 	if len(ids) == 0 {
@@ -72,11 +71,11 @@ func (r *KnowledgeDocRepo) LoadByIDs(
 	return docs, nil
 }
 
-// Save 写入/更新文档行，返回**更新前**的切片数与「是否新建」（§5.2 ③）。
+// Save 写入/更新文档行，返回**更新前**的切片数与「是否新建」。
 //
 // 语义是 upsert，键 (kb_id, name)。刻意不复用 GORM 的 clause.OnConflict 一把梭，
 // 而是「先锁行读旧值 → 再 upsert」的两步——因为 oldChunkCount 必须和这次写入
-// 原子地取值，否则调用方拿它去算 KB 计数差值时会算错（§5.1 第 ⑧ 步）。
+// 原子地取值，否则调用方拿它去算 KB 计数差值时会算错。
 //
 //	SELECT ... FOR UPDATE  ← 拿行锁 + 旧 chunk_count
 //	INSERT ... ON DUPLICATE KEY UPDATE content_hash/chunk_count/update_ts
@@ -102,7 +101,7 @@ func (r *KnowledgeDocRepo) Save(
 			//
 			// 含「软删后同名重建」：软删那行 delete_ts != 0，不在这条查询的范围内，
 			// 唯一键 (kb_id, name, delete_ts) 因此被让了出来，落库的是一行**新 id**
-			// 的行。调用方那边 LoadByName 同样查不到，于是分配了新雪花——两边一致。
+			// 的行。调用方那边 FindByName 同样查不到，于是分配了新雪花——两边一致。
 			// 对调用方而言这确实是新建（doc_id 变了），报 created = true 是实话。
 			created = true
 		case e != nil:
@@ -112,7 +111,7 @@ func (r *KnowledgeDocRepo) Save(
 			// 查到了活着的同名行 → 本次是覆盖。
 			//
 			// 这里**不能**用「主键是不是我刚生成的那个」来判：重导入恰恰是
-			// 复用库里那一行的 id（§5.3），于是 cur.ID == doc.ID 恒成立，
+			// 复用库里那一行的 id，于是 cur.ID == doc.ID 恒成立，
 			// 条件退化成恒真，每次重导入都会报 created = true。
 			// 后果是 KB 的 doc_count 每重导入一次 +1，越滚越大。
 			created = false
@@ -182,27 +181,4 @@ func (r *KnowledgeDocRepo) SoftDeleteByKBID(
 		return 0, apperrors.ErrInternal.Wrap(tx.Error)
 	}
 	return tx.RowsAffected, nil
-}
-
-func (r *KnowledgeDocRepo) CountByKBID(ctx context.Context, kbID uint64) (int64, error) {
-	var n int64
-	if err := r.db(ctx).
-		Where("kb_id = ? AND delete_ts = 0", kbID).
-		Count(&n).Error; err != nil {
-		return 0, apperrors.ErrInternal.Wrap(err)
-	}
-	return n, nil
-}
-
-func (r *KnowledgeDocRepo) SumChunkCountByKBID(ctx context.Context, kbID uint64) (int64, error) {
-	// COALESCE 不能省：一个文档都没有时 SUM 返回 NULL，
-	// 扫进 int64 会直接报 "converting NULL to int64 is unsupported"
-	var sum sql.NullInt64
-	if err := r.db(ctx).
-		Select("COALESCE(SUM(chunk_count), 0) AS total").
-		Where("kb_id = ? AND delete_ts = 0", kbID).
-		Scan(&sum).Error; err != nil {
-		return 0, apperrors.ErrInternal.Wrap(err)
-	}
-	return sum.Int64, nil
 }
