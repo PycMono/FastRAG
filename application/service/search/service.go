@@ -19,7 +19,7 @@ type Service struct {
 	store      repository.IVectorStore
 	embeddings interfaces.IEmbeddingRegistry
 	reranks    interfaces.IRerankRegistry
-	tuning     SearchTuning
+	tuning     Tuning
 }
 
 func NewService(
@@ -28,7 +28,7 @@ func NewService(
 	store repository.IVectorStore,
 	embeddings interfaces.IEmbeddingRegistry,
 	reranks interfaces.IRerankRegistry,
-	tuning SearchTuning,
+	tuning Tuning,
 ) *Service {
 	return &Service{
 		kbRepo:     kbRepo,

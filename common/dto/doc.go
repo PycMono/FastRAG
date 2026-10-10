@@ -1,12 +1,14 @@
 package dto
 
+import domainservice "github.com/PycMono/FastRAG/domain/service"
+
 // ChunkDTO 调用方直接给出的切片（format = chunks 时使用）
 type ChunkDTO struct {
 	Title   string `json:"title" binding:"max=512"`
 	Content string `json:"content" binding:"required"`
 }
 
-// SplitOptionsDTO 切片参数，可选，覆盖 KB 上的默认值
+// SplitOptionsDTO 切片参数，可选，覆盖默认切片参数
 type SplitOptionsDTO struct {
 	ChunkSize  int `json:"chunk_size" binding:"omitempty,gte=100,lte=4000"`
 	SplitLevel int `json:"split_level" binding:"omitempty,gte=1,lte=6"`
@@ -39,6 +41,20 @@ type DocIngestDTO struct {
 
 	// 这里**没有** biz_tag：切片上的 biz_tag 一律取自 KB（§7.2）。
 	// 让文档覆盖它会让这个文档按 KB 的 tag 搜不到、按自己的 tag 库又被筛掉。
+}
+
+// ChunkOptions 解析本次导入的切片参数：请求给了就用，没给的留零值，
+// 由 Normalize 补默认值并做范围校验。
+func (in *DocIngestDTO) ChunkOptions() (domainservice.ChunkOptions, error) {
+	var opts domainservice.ChunkOptions
+	if o := in.SplitOptions; o != nil {
+		opts = domainservice.ChunkOptions{
+			ChunkSize:  o.ChunkSize,
+			SplitLevel: o.SplitLevel,
+			MinChunk:   o.MinChunk,
+		}
+	}
+	return opts.Normalize()
 }
 
 // DocDeleteDTO 文档删除请求

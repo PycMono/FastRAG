@@ -121,6 +121,7 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 		s.client.Indices.Refresh.WithContext(ctx),
 		s.client.Indices.Refresh.WithIndex(s.index),
 	)
+
 	if err != nil {
 		return apperrors.ErrVectorStoreFailed.Wrap(err)
 	}

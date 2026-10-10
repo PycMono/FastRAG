@@ -17,13 +17,13 @@ import (
 // 里挨着 Splitter——因为 splitter.go 的函数签名要它们，而领域层够不着
 // （也不该够着）common/dto。
 type searchOptions struct {
-	Query         string
-	Limit         int
-	RetrieveCount int
-	BizTags       []string
-	DenseWeight   float64
-	MinScore      float64
-	Rerank        bool
+	Query         string   // 查询文本。走向量路时先 EmbedQuery，也是 BM25 与精排的输入
+	Limit         int      // 最终返回给调用方的条数上限，⑦ 截断用
+	RetrieveCount int      // rerank 前的召回池大小（fetchSize）；0 表示按 Limit*2。多召回→精排→再截断
+	BizTags       []string // 检索侧按业务标签筛库；空表示不筛
+	DenseWeight   float64  // 向量路融合权重 [0,1]；=0 就不发向量路，省一次 embedding
+	MinScore      float64  // 最终 Score 的阈值，低于它丢弃；<=0 表示不启用。量纲随 Rerank 变（详见 dto.SearchDTO.MinScore）
+	Rerank        bool     // 是否启用精排
 }
 
 // normalize 补齐默认值并校验。

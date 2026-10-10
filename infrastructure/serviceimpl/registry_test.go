@@ -84,17 +84,6 @@ func TestEmbeddingRegistry_UnknownNameIsParamError(t *testing.T) {
 	}
 }
 
-func TestEmbeddingRegistry_Names(t *testing.T) {
-	reg, err := NewEmbeddingRegistry(registryTestConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := reg.Names()
-	if len(names) != 2 || names[0] != "a" || names[1] != "b" {
-		t.Errorf("Names 应排序且完整，得到 %v", names)
-	}
-}
-
 // enabled=false 时保持"没配 rerank 也能正常启动和检索"的语义：
 // 任何名字都拿到空实现，且永不出错。
 func TestRerankRegistry_DisabledReturnsNopForAnyName(t *testing.T) {

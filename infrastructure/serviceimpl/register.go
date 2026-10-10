@@ -1,8 +1,6 @@
 package serviceimpl
 
 import (
-	"context"
-
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/repository"
 	"github.com/PycMono/FastRAG/infrastructure/config"
@@ -28,20 +26,6 @@ var Register = fx.Options(
 	fx.Provide(NewEmbeddingRegistry),
 	fx.Provide(NewRerankRegistry),
 )
-
-// nopRerank 未启用 rerank 时的空实现：原样返回候选顺序。
-//
-// 分数一律给 NoRerankScore——调用方据此保留自己原有的融合分，
-// 于是"没配 rerank"和"以前没做 rerank"在响应里逐字节一致。
-type nopRerank struct{}
-
-func (nopRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]interfaces.ScoredIndex, error) {
-	out := make([]interfaces.ScoredIndex, len(cands))
-	for i := range out {
-		out[i] = interfaces.ScoredIndex{Index: i, Score: interfaces.NoRerankScore}
-	}
-	return out, nil
-}
 
 // 编译期断言：实现必须满足端口。
 var (

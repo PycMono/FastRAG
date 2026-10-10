@@ -104,13 +104,11 @@ func (m *mockRerank) Rerank(ctx context.Context, query string, cands []interface
 type mockEmbeddingRegistry struct{ impl interfaces.IEmbedding }
 
 func (m mockEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) { return m.impl, nil }
-func (m mockEmbeddingRegistry) Names() []string                                { return []string{"mock"} }
 
 // mockRerankRegistry 同上。
 type mockRerankRegistry struct{ impl interfaces.IRerank }
 
 func (m mockRerankRegistry) Get(name string) (interfaces.IRerank, error) { return m.impl, nil }
-func (m mockRerankRegistry) Names() []string                             { return []string{"mock"} }
 
 // errEmbeddingRegistry 任何名字都取不到。
 type errEmbeddingRegistry struct{}
@@ -118,7 +116,6 @@ type errEmbeddingRegistry struct{}
 func (errEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) {
 	return nil, apperrors.NewParamError("没有名为 " + name + " 的 embedding 模型")
 }
-func (errEmbeddingRegistry) Names() []string { return []string{"bge-m3"} }
 
 // ─── 构造 Service 的辅助函数 ─────────────────────────────────────────────────
 
@@ -132,7 +129,7 @@ func newSearchServiceForTest(
 	return NewService(kbRepo, docRepo, store,
 		mockEmbeddingRegistry{impl: embedder},
 		mockRerankRegistry{impl: rerank},
-		SearchTuning{
+		Tuning{
 			BM25Top:       10,
 			KNNTops:       10,
 			NumCandidates: 50,
@@ -543,7 +540,7 @@ func TestService_Search_RetrieveCount_Default(t *testing.T) {
 
 func TestService_Search_RerankItems_CandidateComposition(t *testing.T) {
 	reranker := &mockRerank{order: []interfaces.ScoredIndex{{Index: 0}}}
-	svc := NewService(nil, nil, nil, nil, mockRerankRegistry{impl: reranker}, SearchTuning{})
+	svc := NewService(nil, nil, nil, nil, mockRerankRegistry{impl: reranker}, Tuning{})
 
 	items := []*vo.SearchItemVO{
 		{
@@ -574,7 +571,7 @@ func TestService_Search_UnknownModel_FailsBeforeES(t *testing.T) {
 		return entity.KnowledgeBases{defaultKB()}, nil
 	}}
 	store := &mockVectorStore{}
-	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{}, SearchTuning{})
+	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{}, Tuning{})
 
 	_, err := svc.Search(context.Background(), &dto.SearchDTO{
 		Account:    "demo",

@@ -56,8 +56,8 @@ func core(conf *config.Config) fx.Option {
 
 		// 配置 → 领域调参。
 		// 在这里转一次手，application 层就不必 import infrastructure/config（§3）
-		fx.Provide(func(c *config.Config) search.SearchTuning {
-			return search.SearchTuning{
+		fx.Provide(func(c *config.Config) search.Tuning {
+			return search.Tuning{
 				BM25Top:              c.Search.BM25Top,
 				KNNTops:              c.Search.KNNTops,
 				NumCandidates:        c.Search.NumCandidates,

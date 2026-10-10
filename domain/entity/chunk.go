@@ -1,5 +1,7 @@
 package entity
 
+import "github.com/PycMono/FastRAG/common/utils"
+
 // Chunk 切片。
 //
 // 它不是聚合根——切片没有独立生命周期，完全从属于文档（D3）。
@@ -38,4 +40,12 @@ func (cs Chunks) TotalChars() int {
 		n += len([]rune(c.Content))
 	}
 	return n
+}
+
+// ContentHash 对**切片正文**取指纹，而不是对原文取。
+//
+// 判断依据应该是「最终索引内容有没有变」：原文改了排版、空白但切出来一样，
+// 重灌一遍纯属浪费 embedding 调用。
+func (cs Chunks) ContentHash() string {
+	return utils.Hash(cs.Contents())
 }

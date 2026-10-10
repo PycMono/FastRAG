@@ -24,7 +24,7 @@ type IEmbedding interface {
 //
 // 名字来自请求体，取不到时返回参数错误——绝不能悄悄回落到默认那家：
 // 调用方写错了名字却拿到一份"看起来正常"的结果，比直接报错难查得多。
+// 报错里会附上可用名字，让调用方知道能填什么。
 type IEmbeddingRegistry interface {
 	Get(name string) (IEmbedding, error) // name 为空 → 配置里的 default
-	Names() []string                     // 报错时列出来，让调用方知道有哪些可用
 }

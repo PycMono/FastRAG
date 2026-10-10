@@ -41,5 +41,4 @@ type IRerank interface {
 // 和检索"这个既有语义。
 type IRerankRegistry interface {
 	Get(name string) (IRerank, error)
-	Names() []string
 }

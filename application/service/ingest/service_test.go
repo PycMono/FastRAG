@@ -26,7 +26,6 @@ func (s stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.K
 type errEmbeddingRegistry struct{ err error }
 
 func (r errEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) { return nil, r.err }
-func (r errEmbeddingRegistry) Names() []string                                { return []string{"bge-m3"} }
 
 // 名字写错必须**在写任何东西之前**就返回：不能先切片、先算向量、先写 ES，
 // 白跑一大圈才告诉调用方"这个名字不存在"。

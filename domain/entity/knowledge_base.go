@@ -26,10 +26,6 @@ type KnowledgeBase struct {
 	SearchMode    string `gorm:"column:search_mode;type:varchar(32);not null;default:'title_and_content'"`
 	BizTag        string `gorm:"column:biz_tag;type:varchar(64);not null;default:''"`
 
-	// 切片参数快照。用 []byte 而不是 json.RawMessage，避免 GORM 的 JSON 序列化
-	// 把已是 JSON 的内容再编码一层。
-	SplitOptions []byte `gorm:"column:split_options;type:json"`
-
 	// 冗余计数（列表页用，见 D3）。
 	// 列是有符号 BIGINT，差值本身就能为负；仓储侧仍用
 	// GREATEST(CAST(... AS SIGNED) + ?, 0) 兜底，怎么加都掉不成负数（见 ApplyChunkDelta）。

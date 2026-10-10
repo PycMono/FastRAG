@@ -6,7 +6,7 @@
 package serviceimpl
 
 import (
-	"fmt"
+	"context"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain/interfaces"
@@ -39,19 +39,17 @@ func NewEmbeddingRegistry(conf *config.Config) (interfaces.IEmbeddingRegistry, e
 	return r, nil
 }
 
+// Get 取向量化实现，名字为空时回落到配置里的 default。
+//
+// 解析（空→default、未知→报错时列出可用名字）交给 config.Params，这里只查表：
+// 那份解析在启动构造与请求解析两处必须给出同一个答案，重抄一遍迟早会漂移。
 func (r *embeddingRegistry) Get(name string) (interfaces.IEmbedding, error) {
-	if name == "" {
-		name = r.conf.Default
+	p, err := r.conf.Params(name)
+	if err != nil {
+		return nil, apperrors.NewParamError(err.Error())
 	}
-	impl, ok := r.byName[name]
-	if !ok {
-		return nil, apperrors.NewParamError(fmt.Sprintf(
-			"没有名为 %q 的 embedding 模型。可用：%v", name, r.conf.Names()))
-	}
-	return impl, nil
+	return r.byName[p.Name], nil
 }
-
-func (r *embeddingRegistry) Names() []string { return r.conf.Names() }
 
 // rerankRegistry 按名字取重排序实现。
 type rerankRegistry struct {
@@ -84,19 +82,28 @@ func NewRerankRegistry(conf *config.Config) (interfaces.IRerankRegistry, error) 
 	return r, nil
 }
 
+// Get 取重排序实现。enabled=false 时对任何名字都给空实现。
 func (r *rerankRegistry) Get(name string) (interfaces.IRerank, error) {
 	if !r.conf.Enabled {
 		return nopRerank{}, nil
 	}
-	if name == "" {
-		name = r.conf.Default
+	p, err := r.conf.Params(name)
+	if err != nil {
+		return nil, apperrors.NewParamError(err.Error())
 	}
-	impl, ok := r.byName[name]
-	if !ok {
-		return nil, apperrors.NewParamError(fmt.Sprintf(
-			"没有名为 %q 的 rerank 模型。可用：%v", name, r.conf.Names()))
-	}
-	return impl, nil
+	return r.byName[p.Name], nil
 }
 
-func (r *rerankRegistry) Names() []string { return r.conf.Names() }
+// nopRerank 未启用 rerank 时的空实现：原样返回候选顺序。
+//
+// 分数一律给 NoRerankScore——调用方据此保留自己原有的融合分，
+// 于是"没配 rerank"和"以前没做 rerank"在响应里逐字节一致。
+type nopRerank struct{}
+
+func (nopRerank) Rerank(ctx context.Context, query string, cands []interfaces.RerankCandidate, topN int) ([]interfaces.ScoredIndex, error) {
+	out := make([]interfaces.ScoredIndex, len(cands))
+	for i := range out {
+		out[i] = interfaces.ScoredIndex{Index: i, Score: interfaces.NoRerankScore}
+	}
+	return out, nil
+}
