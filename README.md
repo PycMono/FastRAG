@@ -38,13 +38,18 @@ common
 ├── constants           // 枚举与默认值
 ├── dto                 // 入参定义
 ├── vo                  // 返回值定义
-└── errors              // 业务错误码与预定义错误
+├── errors              // 业务错误码与预定义错误
+└── utils               // 通用小工具（泛型去重、SHA-256 指纹）
 ```
 
 **领域实体直接就是持久化模型**：`domain/entity/` 下的 `knowledge_base.go` /
 `knowledge_doc.go` 上挂着 `gorm:"column:..."` 和 `TableName()`，没有再单设 `po` / `mapper` 两层。
-实体上的 tag 与 `scripts/schema.sql` 是同一份列定义的两个写法——改一边就要改另一边，
-不一致不会报错，只会静默查不到数据。`chunk.go` / `collection.go` 不带 tag：它们不是表。
+`chunk.go` / `collection.go` 不带 tag：它们不是表。
+
+两张表里**只有 `knowledge_doc` 的 DDL 归本服务**（`scripts/schema.sql`）；
+`knowledge_base` 由外部系统预置（§1.2），列定义归建库方——实体上的 tag 只是**读**它时的映射，
+改 tag 不会去动那张表。所以只有 `knowledge_doc` 的 tag 与 `scripts/schema.sql` 是
+"同一份列定义的两个写法、改一边就要改另一边"；不一致都不会报错，只会静默查不到数据。
 
 依赖注入使用 [Uber FX](https://github.com/uber-go/fx)。
 
@@ -64,7 +69,7 @@ common
 
 ## 快速开始
 
-前置：Go 1.25+、MySQL、Elasticsearch（需装 analysis-ik 插件，见 `deploy/README.md`）。
+前置：Go 1.26+、MySQL、Elasticsearch（需装 analysis-ik 插件，见 `deploy/README.md`）。
 Redis 可选（`config.json` 的 `redis.addr` 留空即不启用）。
 
 **库表和索引要先建好**——服务自己不做这件事（设计文档 §9.4）：
@@ -107,6 +112,7 @@ make run
 ```bash
 make build        # 构建二进制到 bin/server
 make run          # 直接运行服务
+make debug        # dlv headless 调试，监听 :2345（等 Delve 接入）
 make test         # 运行所有测试（含 race 检测和覆盖率）
 make test-pkg     # 运行指定包测试，如 make test-pkg PKG=infrastructure/persistence
 make test-single  # 运行单个测试，如 make test-single NAME=TestKNNClauses PKG=infrastructure/persistence
@@ -115,6 +121,40 @@ make es-index     # 建 ES 索引（已存在则只校验 mapping）
 make tidy         # 整理 go.mod
 make clean        # 清理构建产物
 ```
+
+## 配置文件
+
+配置只有一份 **`config.json`**，从 `config.example.json` 复制而来：
+
+```bash
+cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接信息
+```
+
+它装着本机连接信息与凭据（数据库密码、上游 `api_key`），已在 `.gitignore` 里，**不入库**；
+`config.example.json` 与它结构完全一致，只是把密码和 `api_key` 留空，可以安全进仓库。
+
+两点要知道：
+
+- `Load()` 读的是**相对路径** `config.json`，所以服务必须**从仓库根目录启动**。
+- 启动时跑一次 `validate()`（设计文档 §7）：`embedding` 配错、或 `rerank.enabled=true`
+  却没有可用模型，都会在**启动期**直接报错退出，不会拖到第一次检索才暴露。
+
+顶层各块：
+
+| 块 | 作用 | 关键点 |
+|----|------|--------|
+| `app` / `debug` | 应用名 / 调试模式 | `debug=false` 把 Gin 切到 `ReleaseMode`；`app` 用作 Redis 连接名 |
+| `http` | 监听地址与读写超时（秒） | 默认 `:8080`；`host` 留空 = 监听 `0.0.0.0` |
+| `mysql` | 业务库连接（文档行、KB 计数） | 库表要先 `make init-db` |
+| `redis` | 可选 | `addr` 为空即不启用 |
+| `snowflake_node_id` | 雪花 ID 节点号 `[0,1023]` | 多实例必须各不相同；缺省 = 0，会生成重复 ID |
+| `es` | ES 地址与索引名 | 只含「怎么连」；索引要先 `make es-index`。建索引的 dim / 分词器等**不在这里**，在 `scripts/create-es-index.sh` |
+| `embedding` / `rerank` | 模型服务商注册表 | 结构见下一节「模型配置」 |
+| `search` | 混合检索的默认参数 | `dense_weight` / `rank_constant` 等，可被单次请求覆盖 |
+| `security` | `trust_request_account` 启动闸门 | 见「租户与鉴权」 |
+
+`security` 不置 `trust_request_account=true`，服务**拒绝启动**（§6.1）；
+`search` 各键与 `dense_weight` 的取值语义见「API 示例」里的检索说明。
 
 ## 模型配置
 
@@ -186,10 +226,11 @@ make clean        # 清理构建产物
 | `10201`–`10206` | 文档：切片为空 / 切片过长 / 导入失败 / 删除失败 / embedding 异常 / 向量库异常 |
 | `10301`–`10302` | 检索失败 / rerank 服务失败 |
 
-`10101`–`10106` 是脚手架时期的遗留，现在**没有一个会由 HTTP 请求返回**：
-知识库的 CRUD 全在外部系统里（设计文档 §1.2），本服务只读写 `knowledge_base` 表、
-不提供对应接口。其中 `10106`（检索未实现）尤其名不副实——检索已经落地并改用 `10301`，
-它只剩兼容意义，别再用。这几条现在只被 `common/errors/errors_test.go` 引用。
+`10101`–`10106` 里，知识库的 CRUD 错误码已基本无主：CRUD 全在外部系统里（§1.2），
+本服务不提供对应接口。**唯一还在用的是 `10101`（库不存在）**——`FindByNo` 找不到库、
+或 account 不匹配时都会返回它（`knowledge_base_repo.go`）。其余 `10102`–`10106` 只剩兼容
+意义，其中 `10106`（检索未实现）尤其名不副实——检索早已落地并改用 `10301`，别再用；
+`10102`–`10106` 现在只被 `common/errors/errors_test.go` 引用。
 `10002`（未登录）/`10003`（无权限）同理：本服务不做鉴权（见下文「租户与鉴权」）。
 
 错误定义集中在 `common/errors/errors.go`。新增错误码时在此追加，不要在业务代码里随手 `errors.New`。

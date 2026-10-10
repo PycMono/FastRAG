@@ -180,7 +180,7 @@ ES_VERSION=9.6.0 docker compose up -d --build
 |---|---|
 | `docker-compose.yml` | ES + Kibana（含可选的独立 MySQL/Redis 注释块） |
 | `deploy/es/Dockerfile` | 基于官方 ES 镜像，装 analysis-ik 插件 |
-| `../scripts/schema.sql` | 业务库 DDL，单一事实源（设计文档 §4.1 的两张表）。执行见 `make init-db` |
+| `../scripts/schema.sql` | 业务库 DDL，单一事实源（本服务只建 `knowledge_doc`；`knowledge_base` 由外部系统预置）。执行见 `make init-db` |
 | `../scripts/create-es-index.sh` | ES 索引 mapping / settings，单一事实源（设计文档 §4.2、§9）。执行见 `make es-index` |
 | `../common/constants/field.go` | 查询/写入用的字段名常量（mapping 的另一半） |
 | `../docs/superpowers/specs/2026-10-08-fastrag-design.md` | 设计文档 |
