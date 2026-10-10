@@ -69,7 +69,7 @@ func TestKNNClauses(t *testing.T) {
 
 	t.Run("每条子句都带租户过滤", func(t *testing.T) {
 		// filter 只挂请求外层是不够的：每条 kNN 子句各自独立召回，
-		// 漏挂一条就是那条子句跨租户（D2）
+		// 漏挂一条就是那条子句跨租户
 		for i, c := range store.knnClauses(req) {
 			filters, ok := c.(map[string]any)["filter"].([]any)
 			if !ok || len(filters) == 0 {
@@ -149,45 +149,6 @@ func TestIndexName_SingleIndex(t *testing.T) {
 	if constants.IndexName != "fastrag" {
 		t.Errorf("IndexName = %q, want fastrag", constants.IndexName)
 	}
-}
-
-// smokeCheckMapping 是「写入/检索前的最后一道闸」。它只在索引明显不是我们的
-// 时候报警（ES 的 auto_create_index 会静默建出动态 mapping 的索引）。
-// 这里钉住它不误报、也不漏报。
-func TestSmokeCheckMapping(t *testing.T) {
-	good := map[string]esField{
-		constants.FieldAccount:    {Type: "keyword"},
-		constants.FieldContentVec: {Type: "dense_vector", Dims: 1024},
-	}
-
-	t.Run("正常索引不报", func(t *testing.T) {
-		if got := smokeCheckMapping(good); got != "" {
-			t.Errorf("不该报错，得到 %q", got)
-		}
-	})
-
-	t.Run("动态 mapping 建出来的索引要报", func(t *testing.T) {
-		// ES 把 account 动态映射成 text（带 keyword 子字段），content_vec 根本不存在
-		bad := map[string]esField{constants.FieldAccount: {Type: "text"}}
-		got := smokeCheckMapping(bad)
-		if got == "" {
-			t.Fatal("必须报错，否则跨租户越权会静默发生")
-		}
-		if !strings.Contains(got, "keyword") {
-			t.Errorf("错误信息要点出 account 应为 keyword，得到 %q", got)
-		}
-	})
-
-	t.Run("向量字段被建成别的类型要报", func(t *testing.T) {
-		bad := map[string]esField{
-			constants.FieldAccount:    {Type: "keyword"},
-			constants.FieldContentVec: {Type: "float"},
-		}
-		got := smokeCheckMapping(bad)
-		if !strings.Contains(got, "dense_vector") {
-			t.Errorf("错误信息要点出 content_vec 应为 dense_vector，得到 %q", got)
-		}
-	})
 }
 
 // clausesOf 把摘要结果里的 knn 统一成切片，两种形态都吃。

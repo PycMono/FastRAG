@@ -1,6 +1,5 @@
 // 本文件是 IVectorStore 的 Elasticsearch 实现。
-//
-// 对应设计文档 §7.2（两路检索）、§9（单索引多租户）。
+
 package persistence
 
 import (
@@ -10,10 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/PycMono/FastRAG/common/constants"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -27,10 +24,6 @@ import (
 type ESVectorStore struct {
 	client *elasticsearch.Client
 	index  string
-
-	// indexChecked 为真表示「已经确认过线上索引存在且可用」。
-	// 见 checkIndex：只在第一次用到时校一次，之后是一次原子读，不进热路径。
-	indexChecked atomic.Bool
 }
 
 func NewESVectorStore(
@@ -42,108 +35,6 @@ func NewESVectorStore(
 	}
 
 	return &ESVectorStore{client: client, index: index}
-}
-
-// esField 是 mapping 里一个字段的最小投影，冒烟检查够用。
-type esField struct {
-	Type string `json:"type"`
-	Dims int    `json:"dims"`
-}
-
-// checkIndex 确认线上索引存在、且是「本服务要的那个」索引。
-//
-// 为什么需要它：建索引已经不在本服务职责内（§9.4），索引成了**外部前提**。
-// 前提不成立时，最糟的结果不是报错而是静默 —— ES 的 action.auto_create_index
-// 默认是 true，一次写入就能让 ES 自己建出一个动态 mapping 的索引
-// （无 IK 分词、无 dense_vector、account 变 text），而 bulk 返回成功、毫无提示；
-// 等检索时才以「字段不存在」这类面目全非的错误浮现出来。
-//
-// 用户明确要求**不在启动期**校验（ES 没准备好不该让整个服务起不来），
-// 所以这里是「第一次用时报清楚」。
-//
-// 只查一次：成功后置位，之后每个请求只付一次原子读。**失败不置位** ——
-// 运维补建完索引，下一次请求自动恢复，不必重启服务。
-func (s *ESVectorStore) checkIndex(ctx context.Context) error {
-	if s.indexChecked.Load() {
-		return nil
-	}
-
-	res, err := s.client.Indices.GetMapping(
-		s.client.Indices.GetMapping.WithContext(ctx),
-		s.client.Indices.GetMapping.WithIndex(s.index),
-	)
-	if err != nil {
-		return apperrors.ErrVectorStoreFailed.Wrap(err)
-	}
-	defer res.Body.Close()
-
-	// ⚠️ 响应体只能读一次。而且不能走 readBody —— 它截断到 512 rune，
-	// 拿来喂 json.Unmarshal 会解析失败。整份读进来，报错时再截断。
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return apperrors.ErrVectorStoreFailed.Wrap(err)
-	}
-	raw := string(body)
-
-	if res.StatusCode == http.StatusNotFound {
-		return s.errIndexMissing()
-	}
-	if res.IsError() {
-		return apperrors.NewSysError(apperrors.CodeVectorStoreFail,
-			fmt.Sprintf("检查索引失败，ES 返回 %d: %s", res.StatusCode, truncateForLog(raw)))
-	}
-
-	var parsed map[string]struct {
-		Mappings struct {
-			Properties map[string]esField `json:"properties"`
-		} `json:"mappings"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return apperrors.ErrVectorStoreFailed.Wrap(err)
-	}
-
-	if bad := smokeCheckMapping(parsed[s.index].Mappings.Properties); bad != "" {
-		return apperrors.NewSysError(apperrors.CodeIndexInitFail, fmt.Sprintf(
-			"ES 索引 %q 不像本服务要的索引：%s。\n"+
-				"多半是 ES 按动态 mapping 自己建出来的（action.auto_create_index 默认为 true）。\n"+
-				"本服务不创建索引，请核对后重建：\n  bash scripts/create-es-index.sh",
-			s.index, bad))
-	}
-
-	s.indexChecked.Store(true)
-	return nil
-}
-
-// errIndexMissing 是索引不存在时给调用方看的话 —— 要能照着做，不能只说「失败了」。
-func (s *ESVectorStore) errIndexMissing() error {
-	return apperrors.NewSysError(apperrors.CodeIndexInitFail, fmt.Sprintf(
-		"ES 索引 %q 不存在。索引不由本服务创建，请先执行：\n  bash scripts/create-es-index.sh",
-		s.index))
-}
-
-// smokeCheckMapping 只是冒烟，**不是** mapping 的权威校验 ——
-// 权威版本在 scripts/create-es-index.sh，那里逐字段比对。
-// 这里只挑两个「类型本身就是语义」的字段：
-//
-//   - account 必须是 keyword：单索引多租户下这是唯一的隔离手段（D2）。
-//     若被建成 text，term 查询会按分词匹配，「demo」就能命中「demo-other」的文档 ——
-//     那是**跨租户越权**，不是召回变小。
-//   - content_vec 必须是 dense_vector：否则 kNN 那一路直接不可用。
-//
-// 动态 mapping 建出来的索引，两条都不过。
-func smokeCheckMapping(props map[string]esField) string {
-	var bad []string
-	if f, ok := props[constants.FieldAccount]; !ok {
-		bad = append(bad, fmt.Sprintf("缺字段 %s", constants.FieldAccount))
-	} else if f.Type != "keyword" {
-		bad = append(bad, fmt.Sprintf("%s 是 %s，应为 keyword（租户隔离靠它）", constants.FieldAccount, f.Type))
-	}
-	if f, ok := props[constants.FieldContentVec]; !ok {
-		bad = append(bad, fmt.Sprintf("缺字段 %s", constants.FieldContentVec))
-	} else if f.Type != "dense_vector" {
-		bad = append(bad, fmt.Sprintf("%s 是 %s，应为 dense_vector（kNN 检索靠它）", constants.FieldContentVec, f.Type))
-	}
-	return strings.Join(bad, "；")
 }
 
 // Save 批量写入切片。_id 用 chunk_id（§5.3）。
@@ -160,12 +51,6 @@ func smokeCheckMapping(props map[string]esField) string {
 func (s *ESVectorStore) Save(ctx context.Context, docs []repository.VectorDoc) error {
 	if len(docs) == 0 {
 		return nil
-	}
-
-	// 索引是外部前提（§9.4）。**必须写之前查** —— 写完再查就晚了：
-	// ES 的 auto_create_index 会在这条 bulk 里悄悄把索引建错，而且返回成功。
-	if err := s.checkIndex(ctx); err != nil {
-		return err
 	}
 
 	var buf bytes.Buffer
@@ -250,12 +135,9 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 
 // DeleteByQuery 按条件删除。
 //
-// 开头这两步不是可选的铺垫，这个方法的正确性依赖它们。
+// 开头那次 Refresh 不是可选的铺垫，这个方法的正确性依赖它。
 //
-// checkIndex 让「索引不在」报成「索引不存在、请先跑脚本」，而不是让下面那次刷新
-// 抛出一句没人看得懂的 index_not_found。
-//
-// Refresh 则是**让这次删除真的删得掉**。ES 的 delete_by_query 只作用在已刷新的段上，
+// Refresh 是**让这次删除真的删得掉**。ES 的 delete_by_query 只作用在已刷新的段上，
 // 而写入默认要等 30s 才刷新（§4.2）——一条切片如果在删除前 30s 内刚写进去，
 // 对这次删除就是「不存在」的：MySQL 那边文档已经软删，接口却回 deleted_chunks=0，
 // 切片原样留在 ES 里占着召回位。最容易撞上的正是这条路：导入完发现不对，马上删。
@@ -276,9 +158,6 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 func (s *ESVectorStore) DeleteByQuery(
 	ctx context.Context, f repository.VectorFilter,
 ) (int64, error) {
-	if err := s.checkIndex(ctx); err != nil {
-		return 0, err
-	}
 	if err := s.Refresh(ctx); err != nil {
 		return 0, err
 	}
@@ -601,13 +480,6 @@ func describeVec(vec []float32) string {
 func (s *ESVectorStore) runSearch(
 	ctx context.Context, body map[string]any,
 ) ([]repository.VectorHit, error) {
-	// 这里是 Search 两条路（BM25 / kNN）唯一的汇聚点，所以校验放这儿，
-	// 而不是放在 Search 那把两个 error 用 errors.Join 拼起来的地方 ——
-	// 从拼好的字符串里认 404 太脆。
-	if err := s.checkIndex(ctx); err != nil {
-		return nil, err
-	}
-
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, apperrors.ErrSearchFailed.Wrap(err)

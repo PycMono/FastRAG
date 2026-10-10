@@ -36,7 +36,6 @@ const (
 	CodeDocDeleteFail   = 10204 // 文档删除失败
 	CodeEmbeddingFail   = 10205 // embedding 服务异常
 	CodeVectorStoreFail = 10206 // 向量库异常
-	CodeIndexInitFail   = 10207 // 索引初始化失败
 )
 
 // 检索相关错误码
