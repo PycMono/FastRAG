@@ -16,7 +16,7 @@ import (
 // 拿去算 KB 计数差值时就会算错。
 // 这两个接口由同一个 TransProvider 实例同时 provide，fx 自动装配。
 var Register = fx.Options(
-	fx.Provide(NewKnowledgeBaseRepo),
+	fx.Provide(NewKnowledgeRepo),
 	fx.Provide(NewKnowledgeDocRepo),
 	fx.Provide(NewESVectorStore),
 )
@@ -24,7 +24,7 @@ var Register = fx.Options(
 // 编译期断言：实现必须满足端口。
 // 放在装配处而不是实现文件里，是为了让「谁该满足哪个接口」一眼可见。
 var (
-	_ repository.IKnowledgeBaseRepo = (*KnowledgeBaseRepo)(nil)
-	_ repository.IKnowledgeDocRepo  = (*KnowledgeDocRepo)(nil)
-	_ repository.IVectorStore       = (*ESVectorStore)(nil)
+	_ repository.IKnowledgeRepo    = (*KnowledgeRepo)(nil)
+	_ repository.IKnowledgeDocRepo = (*KnowledgeDocRepo)(nil)
+	_ repository.IVectorStore      = (*ESVectorStore)(nil)
 )

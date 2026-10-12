@@ -16,11 +16,11 @@ import (
 // stubKBRepo 只实现 FindByNo，其余方法靠内嵌的 nil 接口兜着——
 // 一旦被调到就 panic，正好说明用例走到了不该走的地方。
 type stubKBRepo struct {
-	repository.IKnowledgeBaseRepo
-	kb *entity.KnowledgeBase
+	repository.IKnowledgeRepo
+	kb *entity.Knowledge
 }
 
-func (s stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
+func (s stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
 	return s.kb, nil
 }
 
@@ -34,7 +34,7 @@ func (r errEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) { 
 // docRepo / store / tm 都是 nil，谁被调到谁就 panic。
 func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 	svc := NewService(
-		stubKBRepo{kb: &entity.KnowledgeBase{}},
+		stubKBRepo{kb: &entity.Knowledge{}},
 		nil, // docRepo：不该被调到
 		nil, // store：不该被调到
 		errEmbeddingRegistry{err: errors.New(`没有名为 "nope" 的 embedding 模型。可用：[bge-m3]`)},
@@ -67,7 +67,7 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 // 反过来（吞掉错误继续往下走）会让 KB 的 doc_count / chunk_count 永久偏小，
 // 而调用方拿到的还是「删除成功」，账再也对不上。
 func TestDeleteDoc_DeleteFails_NoDeltaNoESCleanup(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{delErr: errors.New("文档不存在: gone.md")}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}

@@ -33,7 +33,7 @@ func ChunkID(docID uint64, order int, content string) string {
 // 返回的 ChunkID 列表就是 §5.2 第 ② 步「保留集合」的来源，
 // 调用方不用自己再算一遍（算两遍就多一处可能算岔的地方）。
 func BuildVectorDocs(
-	kb *entity.KnowledgeBase,
+	kb *entity.Knowledge,
 	docID uint64,
 	chunks entity.Chunks,
 	titleVecs, contentVecs [][]float32,

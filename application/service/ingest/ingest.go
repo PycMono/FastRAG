@@ -63,7 +63,7 @@ type ingestSource func() (entity.Chunks, error)
 // 且失败是静默的——接口返回成功，用户搜到的还是旧内容。
 func (s *Service) ingestDoc(
 	ctx context.Context,
-	kb *entity.KnowledgeBase,
+	kb *entity.Knowledge,
 	docName string,
 	src ingestSource,
 	model string,

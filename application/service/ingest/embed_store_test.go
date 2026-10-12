@@ -149,7 +149,7 @@ func (s *stubIDService) NextIntID() int64 { s.next += 100; return s.next }
 
 // 首次导入：库里没有这一行 → 分配新 id、写 ES、清差集、新建文档行并 +1 doc_count。
 func TestEmbedAndStore_FirstImport(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{existing: nil}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
@@ -197,7 +197,7 @@ func TestEmbedAndStore_FirstImport(t *testing.T) {
 // Review Focus 第 1 条：同名重导入必须**沿用库里那一行的 id**。
 // id 一换就双向静默失效——新切片成孤儿、DeleteExcept 删不到旧切片。
 func TestEmbedAndStore_Reimport_KeepsDocID(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{existing: &entity.KnowledgeDoc{ID: 42, KBID: 7, Name: "a.md", ChunkCount: 2}}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
@@ -248,7 +248,7 @@ func (r *countingEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, err
 // 向量实现是逐请求取的：两次导入各取一次，且用的是请求给的名字。
 // 存回 Service 的字段上就是单例数据竞争（见 ingestDoc 的注释）。
 func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	reg := &countingEmbeddingRegistry{e: stubEmbedding{dim: 4}}
 	svc := NewService(
 		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},

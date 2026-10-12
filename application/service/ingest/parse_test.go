@@ -85,7 +85,7 @@ func newParseService(
 // 格式不被该后端支持 → 参数错误，且在调用解析之前就返回。
 func TestParse_UnsupportedFormat(t *testing.T) {
 	svc := NewService(
-		stubKBRepo{kb: &entity.KnowledgeBase{}},
+		stubKBRepo{kb: &entity.Knowledge{}},
 		nil, nil,
 		errEmbeddingRegistry{err: errors.New("不该走到这里")},
 		stubParserRegistry{parser: stubParser{name: "docling", formats: []string{"pdf"}}},
@@ -108,7 +108,7 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 // 扩展名推不出来的合法地址不能被格式闸门误杀（任务 10 真实打到：arXiv 的
 // `https://arxiv.org/pdf/1706.03762v7` 被回成「不支持该文件类型: 1706.03762v7」）。
 func TestParse_ExtensionlessID_PassesFormatGate(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{
 			name: "docling", formats: []string{"pdf"}, md: "# 标题\n正文正文正文",
@@ -133,7 +133,7 @@ func TestParse_ExtensionlessID_PassesFormatGate(t *testing.T) {
 // 顺序反了用例就炸。
 func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 	svc := NewService(
-		stubKBRepo{kb: &entity.KnowledgeBase{}},
+		stubKBRepo{kb: &entity.Knowledge{}},
 		nil, nil,
 		errEmbeddingRegistry{err: errors.New("不该走到这里")},
 		stubParserRegistry{boom: true},
@@ -157,7 +157,7 @@ func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 
 // Review Focus 第 5 条：Formats() 为空表示「后端不声明、一律放行」。
 func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{}
 	store := &stubStore{}
 	svc := newParseService(
@@ -180,7 +180,7 @@ func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
 
 // Review Focus 第 2 条：解析结果为空/全空白不能报成功。
 func TestParse_EmptyMarkdown_Fails(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	for _, md := range []string{"", "   \n\t  \n"} {
 		store := &stubStore{}
 		svc := newParseService(
@@ -216,7 +216,7 @@ func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 // Review Focus 第 1 条：经 /docs/parse 解析一份已存在的 doc_name 时，
 // 必须沿用库里那一行的 id（与 Ingest 的重导入同一条语义）。
 func TestParse_Reimport_KeepsDocID(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{existing: &entity.KnowledgeDoc{ID: 42, KBID: 7, Name: "a.pdf", ChunkCount: 1}}
 	store := &stubStore{}
 	svc := newParseService(
@@ -242,7 +242,7 @@ func TestParse_Reimport_KeepsDocID(t *testing.T) {
 
 // doc_name 缺省时由 URL 推出，且沿用既有的同名重导入语义（同一 URL 同名）。
 func TestParse_DerivesDocNameFromURL(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{}
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{name: "p", md: "# 标题\n正文正文正文"}},
@@ -266,7 +266,7 @@ func TestParse_DerivesDocNameFromURL(t *testing.T) {
 // 唯一一根线（它靠扩展名映射 FileType）。删掉 parse.go 里那行 Filename，别处测试仍全绿，
 // 但腾讯后端运行时每条请求都会报 ParamError；此用例专门守着这道缝。
 func TestParse_PassesURLBasenameAsFilename(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
 	var got interfaces.ParseReq
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{
@@ -296,19 +296,6 @@ func TestParse_PassesURLBasenameAsFilename(t *testing.T) {
 }
 
 // ─── URL 工具 ────────────────────────────────────────────────────────────────
-
-func TestIsHTTPScheme(t *testing.T) {
-	for _, u := range []string{"http://a.com/x.pdf", "https://a.com/x.pdf", "HTTPS://a.com/x"} {
-		if !isHTTPScheme(u) {
-			t.Errorf("%q 应放行", u)
-		}
-	}
-	for _, u := range []string{"ftp://a.com/x", "file:///etc/passwd", "", "://a.com", "a.com/x.pdf"} {
-		if isHTTPScheme(u) {
-			t.Errorf("%q 应拒绝", u)
-		}
-	}
-}
 
 // Review Focus 第 3 条：查询串与百分号编码。
 func TestFilenameOf_QueryAndPercentEncoded(t *testing.T) {

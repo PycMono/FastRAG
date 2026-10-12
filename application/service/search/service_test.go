@@ -16,13 +16,13 @@ import (
 // ─── mock 实现 ───────────────────────────────────────────────────────────────
 
 type mockKBRepo struct {
-	load func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error)
+	load func(ctx context.Context, nos []string, account string) (entity.Knowledges, error)
 }
 
-func (m *mockKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
+func (m *mockKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
 	return nil, nil
 }
-func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
+func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
 	return m.load(ctx, nos, account)
 }
 func (m *mockKBRepo) ApplyChunkDelta(ctx context.Context, kbID uint64, delta int64) error { return nil }
@@ -120,7 +120,7 @@ func (errEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) {
 // ─── 构造 Service 的辅助函数 ─────────────────────────────────────────────────
 
 func newSearchServiceForTest(
-	kbRepo repository.IKnowledgeBaseRepo,
+	kbRepo repository.IKnowledgeRepo,
 	docRepo repository.IKnowledgeDocRepo,
 	store repository.IVectorStore,
 	embedder interfaces.IEmbedding,
@@ -138,8 +138,8 @@ func newSearchServiceForTest(
 		})
 }
 
-func defaultKB() *entity.KnowledgeBase {
-	return &entity.KnowledgeBase{
+func defaultKB() *entity.Knowledge {
+	return &entity.Knowledge{
 		ID:      1,
 		No:      "demo-kb",
 		Account: "demo",
@@ -160,8 +160,8 @@ func defaultDoc() *entity.KnowledgeDoc {
 
 func TestService_Search_NoRerank(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -208,8 +208,8 @@ func TestService_Search_NoRerank(t *testing.T) {
 
 func TestService_Search_RerankSuccess(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -276,8 +276,8 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
 	newSvc := func() (*Service, *mockRerank) {
 		kbRepo := &mockKBRepo{
-			load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-				return entity.KnowledgeBases{defaultKB()}, nil
+			load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+				return entity.Knowledges{defaultKB()}, nil
 			},
 		}
 		docRepo := &mockDocRepo{
@@ -355,8 +355,8 @@ func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
 // 把"没上游分"和"上游给了 0 分"混为一谈。
 func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -401,8 +401,8 @@ func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
 
 func TestService_Search_RerankFailed_Fallback(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -450,8 +450,8 @@ func TestService_Search_RerankFailed_Fallback(t *testing.T) {
 func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 	var gotFetchSize int
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -503,8 +503,8 @@ func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 func TestService_Search_RetrieveCount_Default(t *testing.T) {
 	var gotFetchSize int
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-			return entity.KnowledgeBases{defaultKB()}, nil
+		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
 	docRepo := &mockDocRepo{
@@ -565,8 +565,8 @@ func floatPtr(f float64) *float64 { return &f }
 // 注意即便 dense_weight=0（压根不走向量路）也要校验 embed_model——
 // 传了一个用不上的错名字同样应该被指出，而不是被静默忽略。
 func TestService_Search_UnknownModel_FailsBeforeES(t *testing.T) {
-	kbRepo := &mockKBRepo{load: func(ctx context.Context, nos []string, account string) (entity.KnowledgeBases, error) {
-		return entity.KnowledgeBases{defaultKB()}, nil
+	kbRepo := &mockKBRepo{load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		return entity.Knowledges{defaultKB()}, nil
 	}}
 	store := &mockVectorStore{}
 	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{}, Tuning{})

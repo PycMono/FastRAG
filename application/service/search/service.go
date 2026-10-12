@@ -14,7 +14,7 @@ import (
 
 // Service 检索应用服务。
 type Service struct {
-	kbRepo     repository.IKnowledgeBaseRepo
+	kbRepo     repository.IKnowledgeRepo
 	docRepo    repository.IKnowledgeDocRepo
 	store      repository.IVectorStore
 	embeddings interfaces.IEmbeddingRegistry
@@ -23,7 +23,7 @@ type Service struct {
 }
 
 func NewService(
-	kbRepo repository.IKnowledgeBaseRepo,
+	kbRepo repository.IKnowledgeRepo,
 	docRepo repository.IKnowledgeDocRepo,
 	store repository.IVectorStore,
 	embeddings interfaces.IEmbeddingRegistry,
@@ -176,7 +176,7 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 }
 
 func (s *Service) buildReq(
-	kbs entity.KnowledgeBases,
+	kbs entity.Knowledges,
 	opts searchOptions,
 	queryVec []float32,
 	fetchSize int,
@@ -219,7 +219,7 @@ func (s *Service) buildReq(
 func (s *Service) filterAlive(
 	ctx context.Context,
 	hits []repository.VectorHit,
-	kbs entity.KnowledgeBases,
+	kbs entity.Knowledges,
 ) ([]*vo.SearchItemVO, error) {
 	if len(hits) == 0 {
 		return []*vo.SearchItemVO{}, nil

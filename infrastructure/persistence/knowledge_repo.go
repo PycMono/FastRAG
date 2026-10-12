@@ -12,26 +12,26 @@ import (
 	"gorm.io/gorm"
 )
 
-// KnowledgeBaseRepo 知识库仓储（只读）。
+// KnowledgeRepo 知识库仓储（只读）。
 //
 // 这一层是租户隔离的最后一道闸：所有语句都带 account = ?，
 // 漏写在 code review 里能看出来，靠每个用例自己记得加则看不出来。
-type KnowledgeBaseRepo struct {
+type KnowledgeRepo struct {
 	provider sqlsdk.Provider
 }
 
-func NewKnowledgeBaseRepo(provider sqlsdk.Provider) repository.IKnowledgeBaseRepo {
-	return &KnowledgeBaseRepo{provider: provider}
+func NewKnowledgeRepo(provider sqlsdk.Provider) repository.IKnowledgeRepo {
+	return &KnowledgeRepo{provider: provider}
 }
 
-func (r *KnowledgeBaseRepo) db(ctx context.Context) *gorm.DB {
-	return r.provider.UseDB(ctx).Model(&entity.KnowledgeBase{})
+func (r *KnowledgeRepo) db(ctx context.Context) *gorm.DB {
+	return r.provider.UseDB(ctx).Model(&entity.Knowledge{})
 }
 
-func (r *KnowledgeBaseRepo) FindByNo(
+func (r *KnowledgeRepo) FindByNo(
 	ctx context.Context, no, account string,
-) (*entity.KnowledgeBase, error) {
-	var kb entity.KnowledgeBase
+) (*entity.Knowledge, error) {
+	var kb entity.Knowledge
 	err := r.db(ctx).
 		Where("no = ? AND account = ?", no, account).
 		First(&kb).Error
@@ -48,16 +48,16 @@ func (r *KnowledgeBaseRepo) FindByNo(
 	return &kb, nil
 }
 
-func (r *KnowledgeBaseRepo) FindByNos(
+func (r *KnowledgeRepo) FindByNos(
 	ctx context.Context, nos []string, account string,
-) (entity.KnowledgeBases, error) {
+) (entity.Knowledges, error) {
 	if len(nos) == 0 {
 		return nil, nil
 	}
 
-	// 直接 Find 进 KnowledgeBases（[]*KnowledgeBase），GORM 逐个分配指针，
+	// 直接 Find 进 Knowledges（[]*Knowledge），GORM 逐个分配指针，
 	// 省掉「先扫进 []struct 再转一遍指针」的循环
-	var kbs entity.KnowledgeBases
+	var kbs entity.Knowledges
 	if err := r.db(ctx).
 		Where("no IN ? AND account = ?", nos, account).
 		Find(&kbs).Error; err != nil {
@@ -69,21 +69,21 @@ func (r *KnowledgeBaseRepo) FindByNos(
 	return kbs, nil
 }
 
-func (r *KnowledgeBaseRepo) ApplyChunkDelta(ctx context.Context, kbID uint64, delta int64) error {
+func (r *KnowledgeRepo) ApplyChunkDelta(ctx context.Context, kbID uint64, delta int64) error {
 	if delta == 0 {
 		return nil
 	}
 	return r.applyDelta(ctx, kbID, "chunk_count", delta)
 }
 
-func (r *KnowledgeBaseRepo) ApplyDocDelta(ctx context.Context, kbID uint64, delta int64) error {
+func (r *KnowledgeRepo) ApplyDocDelta(ctx context.Context, kbID uint64, delta int64) error {
 	if delta == 0 {
 		return nil
 	}
 	return r.applyDelta(ctx, kbID, "doc_count", delta)
 }
 
-func (r *KnowledgeBaseRepo) applyDelta(ctx context.Context, kbID uint64, column string, delta int64) error {
+func (r *KnowledgeRepo) applyDelta(ctx context.Context, kbID uint64, column string, delta int64) error {
 	// GREATEST(..., 0) 是这里真正的兜底：「计数只增不减」这个业务假设一旦破了
 	// （重导入的负增量比现有值还大），计数也只会停在 0，不会掉成负数。
 	//

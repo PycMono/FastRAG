@@ -15,7 +15,7 @@ import (
 // 禁止在别处直接 &KnowledgeDoc{}——CreateTs / UpdateTs 漏填就是脏数据。
 func NewDoc(
 	docID uint64,
-	kb *entity.KnowledgeBase,
+	kb *entity.Knowledge,
 	name, contentHash string,
 	chunkCount int,
 	now time.Time,

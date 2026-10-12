@@ -1,11 +1,11 @@
 package entity
 
-// KnowledgeBases 知识库集合。
-type KnowledgeBases []*KnowledgeBase
+// Knowledges 知识库集合。
+type Knowledges []*Knowledge
 
 // IndexByID 建 ID 索引，供检索结果回填 kb_name / kb_no。
-func (ks KnowledgeBases) IndexByID() map[uint64]*KnowledgeBase {
-	out := make(map[uint64]*KnowledgeBase, len(ks))
+func (ks Knowledges) IndexByID() map[uint64]*Knowledge {
+	out := make(map[uint64]*Knowledge, len(ks))
 	for _, kb := range ks {
 		out[kb.ID] = kb
 	}
