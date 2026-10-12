@@ -151,6 +151,7 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
 | `es` | ES 地址与索引名 | 只含「怎么连」；索引要先 `make es-index`。建索引的 dim / 分词器等**不在这里**，在 `scripts/create-es-index.sh` |
 | `embedding` / `rerank` | 模型服务商注册表 | 结构见下一节「模型配置」 |
 | `search` | 混合检索的默认参数 | `dense_weight` / `rank_constant` 等，可被单次请求覆盖 |
+| `parser` | 文档解析后端注册表 | `POST /api/v1/docs/parse` 用；结构与 `embedding` 同类，见下 |
 | `security` | `trust_request_account` 启动闸门 | 见「租户与鉴权」 |
 
 `security` 不置 `trust_request_account=true`，服务**拒绝启动**（§6.1）；
@@ -192,6 +193,42 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
   接口不报错、日志不报警。要换就重建索引重导，本服务不替你保持自洽。
 - **换 rerank 服务商随时安全**：它只在查询期调用，不落库。
 
+### 解析后端
+
+`parser` 与上面两块同构，只是外层没有共用字段——`timeout_ms` 逐家不同（自部署的
+Docling 能等，腾讯要卡小）：
+
+```json
+"parser": {
+  "default": "docling",
+  "backends": {
+    "docling": {
+      "type": "docling",
+      "base_url": "http://127.0.0.1:5001",
+      "timeout_ms": 110000,
+      "max_retries": 1,
+      "retry_wait_ms": 1000,
+      "formats": ["pdf","docx","pptx","xlsx","md","txt","png","jpg"],
+      "options": { "do_ocr": true, "image_export_mode": "placeholder" }
+    }
+  }
+}
+```
+
+- **`type` 现在只有 `docling`**。自部署 Docling 用
+  `docker compose --profile docling up -d` 起（镜像约 14GB，所以默认不启动）。
+- **`default` 决定这次用哪家**：接口不带选后端的参数，改它再重启即换后端。
+- **`timeout_ms` 必须小于 `http.write_timeout`**（默认 120s），启动期会校验。
+  它是这次解析的**总预算**，不是「每次尝试各算一份」——超时重试不会撞穿写超时。
+- **`formats` 是该后端支持的扩展名**，请求的扩展名不在里面就直接返回参数错误，
+  不白跑一次解析。留空（或不写）表示「不声明、一律放行」。扩展名只认「末段最后一个点
+  之后全是字母」的后缀，所以 `https://arxiv.org/pdf/1706.03762v7` 这类省略扩展名的地址
+  不会被误杀——它会被交给后端，`doc_name` 取末段 `1706.03762v7`。
+- **解析产物恒是 markdown**，之后与 `format: "markdown"` 走同一条切片 → 向量化路径。
+- **能提前判的纯参数错误在解析之前报完**：坏 scheme、不支持的格式、非法的切片参数都不会
+  白花一次解析。但模型名不在此列——它在解析之后的落库步里才查（`ingestDoc`），
+  拼错模型名要先付一次解析的费用。
+
 ## 统一响应格式
 
 所有 JSON API 均通过 `ginsdk.Send` 返回（`/health`、`/ready` 两个探针除外：K8s 探针需要固定格式，
@@ -225,6 +262,7 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
 | `10101`–`10106` | knowledge：不存在 / 名称重复 / 创建失败 / 更新失败 / 删除失败 / 检索未实现 |
 | `10201`–`10206` | 文档：切片为空 / 切片过长 / 导入失败 / 删除失败 / embedding 异常 / 向量库异常 |
 | `10301`–`10302` | 检索失败 / rerank 服务失败 |
+| `10401` | 解析失败：解析上游超时 / 返回非 200 / 返回体不可解析 |
 
 `10101`–`10106` 里，知识库的 CRUD 错误码已基本无主：CRUD 全在外部系统里（§1.2），
 本服务不提供对应接口。**唯一还在用的是 `10101`（库不存在）**——`FindByNo` 找不到库、
@@ -293,6 +331,14 @@ curl -X POST http://localhost:8080/api/v1/docs/batch \
   -H 'Content-Type: application/json' \
   -d '[{"account":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text","content":"…"},
        {"account":"demo","kb_no":"demo-kb","doc_name":"b.md","format":"text","content":"…"}]'
+
+# 解析导入：给一个可公网下载的 URL，服务端解析成 markdown 后入库
+# 用哪家后端由 config.parser.default 决定（改配置重启即换）；
+# doc_name 省略时取 URL 末段（去查询串、百分号解码）
+curl -sS -X POST http://127.0.0.1:8080/api/v1/docs/parse -H 'Content-Type: application/json' -d '{
+  "account": "demo", "kb_no": "demo-kb",
+  "url": "https://example.com/xxx.pdf", "refresh": true
+}'
 
 # 删除文档（POST 而非 DELETE：DELETE 带 body 合法，但网关和客户端库常把它丢掉）
 curl -X POST http://localhost:8080/api/v1/docs/delete \
