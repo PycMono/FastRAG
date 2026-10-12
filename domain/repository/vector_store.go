@@ -107,4 +107,14 @@ type IVectorStore interface {
 
 	// Search 发 BM25 / kNN 两路，原样返回，不融合。
 	Search(ctx context.Context, req VectorSearchReq) (SearchResult, error)
+
+	// ListByDoc 按 filter 枚举切片，按 order 升序，返回当页切片与总数。
+	//
+	// 没有查询词、不打分——它与 Search 是两件事：一个是「召回」，一个是「枚举」。
+	// 所以复用 VectorHit 而不另立类型：字段就是 ES 里那几个，Score 恒为 0，
+	// **不要拿它做任何判断**（VO 里也不暴露它）。
+	//
+	// 调用方**必须**同时填 Account 与 DocID：buildFilter 只在三者**全空**时
+	// 拒绝，只给 DocID 它照样会放行——租户隔离靠调用约定，不靠它兜底。
+	ListByDoc(ctx context.Context, filter VectorFilter, offset, limit int) ([]VectorHit, int64, error)
 }

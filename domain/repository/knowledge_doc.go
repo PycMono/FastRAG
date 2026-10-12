@@ -18,6 +18,14 @@ type IKnowledgeDocRepo interface {
 	// 查不到 = 孤儿或幽灵切片，由 AliveMap 之后的判断丢弃。
 	FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error)
 
+	// ListByKB 列某库下的文档，返回当页的行与总数，供分页使用。
+	//
+	// 排序 `name ASC`：uk_kb_name (kb_id, name) 的左前缀正好覆盖 kb_id 过滤、
+	// 排序也走索引，翻页稳定、跨页不乱序。**不返回 content**——列表不背正文
+	// （一页几十篇、每篇可能上百 KB，背正文会让响应体没有上界），正文归详情接口。
+	// 有没有正文由 HasContent 给出，那也是 SQL 侧的表达式，不是把 content 读回来再判空。
+	ListByKB(ctx context.Context, kbID uint64, offset, limit int) (entity.KnowledgeDocs, int64, error)
+
 	// Save 写入/更新文档行。
 	//
 	// 语义是 upsert，键是 (kb_id, name)：doc 不存在则按 doc.ID 建行，

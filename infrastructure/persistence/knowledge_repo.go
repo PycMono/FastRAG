@@ -48,6 +48,25 @@ func (r *KnowledgeRepo) FindByNo(
 	return &kb, nil
 }
 
+func (r *KnowledgeRepo) FindByID(
+	ctx context.Context, id uint64, account string,
+) (*entity.Knowledge, error) {
+	var kb entity.Knowledge
+	err := r.db(ctx).
+		Where("id = ? AND account = ?", id, account).
+		First(&kb).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 与 FindByNo 同一口径：不存在与 account 不符折叠成一个错。
+		// 分开的话，拿别人的 doc_id 反复试就能问出「这个库存不存在」
+		return nil, apperrors.ErrKnowledgeBaseNotFound
+	}
+	if err != nil {
+		return nil, apperrors.ErrInternal.Wrap(err)
+	}
+	return &kb, nil
+}
+
 func (r *KnowledgeRepo) FindByNos(
 	ctx context.Context, nos []string, account string,
 ) (entity.Knowledges, error) {

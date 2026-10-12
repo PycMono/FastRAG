@@ -22,6 +22,9 @@ type mockKBRepo struct {
 func (m *mockKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
 	return nil, nil
 }
+func (m *mockKBRepo) FindByID(ctx context.Context, id uint64, account string) (*entity.Knowledge, error) {
+	return nil, nil
+}
 func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
 	return m.load(ctx, nos, account)
 }
@@ -37,6 +40,9 @@ func (m *mockDocRepo) FindByName(ctx context.Context, kbID uint64, name string) 
 }
 func (m *mockDocRepo) FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
 	return m.load(ctx, ids)
+}
+func (m *mockDocRepo) ListByKB(ctx context.Context, kbID uint64, offset, limit int) (entity.KnowledgeDocs, int64, error) {
+	return nil, 0, nil
 }
 func (m *mockDocRepo) Save(ctx context.Context, doc *entity.KnowledgeDoc) (oldChunkCount int, created bool, err error) {
 	return 0, false, nil
@@ -70,6 +76,9 @@ func (m *mockVectorStore) Search(ctx context.Context, req repository.VectorSearc
 		return repository.SearchResult{}, nil
 	}
 	return m.search(ctx, req)
+}
+func (m *mockVectorStore) ListByDoc(ctx context.Context, filter repository.VectorFilter, offset, limit int) ([]repository.VectorHit, int64, error) {
+	return nil, 0, nil
 }
 
 type mockEmbedding struct {

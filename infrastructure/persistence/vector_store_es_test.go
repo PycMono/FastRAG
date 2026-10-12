@@ -154,3 +154,68 @@ func clausesOf(knn any) []map[string]any {
 	}
 	return nil
 }
+
+// termFields 把查询体里所有 term 条件摊成「字段名 → 值」，便于断言隔离条件在场。
+func termFields(body map[string]any) map[string]any {
+	out := map[string]any{}
+	q, _ := body["query"].(map[string]any)
+	b, _ := q["bool"].(map[string]any)
+	must, _ := b["must"].([]any)
+	for _, c := range must {
+		cm, _ := c.(map[string]any)
+		tm, _ := cm["term"].(map[string]any)
+		for k, v := range tm {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// 枚举切片的查询体错起来是**静默**的：少一个 term 只是越权，排序写错只是
+// 页面上的顺序乱掉，两者都不报错。这里把它们钉住。
+func TestListBody(t *testing.T) {
+	t.Run("account 与 doc_id 两个 term 都在", func(t *testing.T) {
+		body, ok := listBody(repository.VectorFilter{Account: "demo", DocID: 42}, 0, 50)
+		if !ok {
+			t.Fatal("条件齐全却返回 false")
+		}
+
+		terms := termFields(body)
+		if _, has := terms[constants.FieldAccount]; !has {
+			t.Error("查询体里没有 account 的 term —— 单索引下这是唯一的租户隔离手段")
+		}
+		if _, has := terms[constants.FieldDocId]; !has {
+			t.Error("查询体里没有 doc_id 的 term")
+		}
+
+		if body["from"] != 0 || body["size"] != 50 {
+			t.Errorf("from/size = %v/%v，期望 0/50", body["from"], body["size"])
+		}
+		if body["track_total_hits"] != true {
+			t.Error("没开 track_total_hits：total 会是个下界，页面上的「共 N 条」就骗人")
+		}
+
+		sortSpec, _ := body["sort"].([]any)
+		if len(sortSpec) != 1 {
+			t.Fatalf("排序子句 %d 条，期望 1 条", len(sortSpec))
+		}
+		first, _ := sortSpec[0].(map[string]any)
+		ord, _ := first[constants.FieldOrder].(map[string]any)
+		if ord["order"] != "asc" {
+			t.Errorf("排序 = %v，期望 order 升序（切片要按文档内顺序读）", ord)
+		}
+	})
+
+	t.Run("只给 doc_id 一律拒绝", func(t *testing.T) {
+		// buildFilter 不兜这个底——它只在三者全空时拒绝。兜底责任在 listBody
+		if _, ok := listBody(repository.VectorFilter{DocID: 42}, 0, 50); ok {
+			t.Error("只给 doc_id 也放行了：会跨租户枚举")
+		}
+	})
+
+	t.Run("只给 account 一律拒绝", func(t *testing.T) {
+		if _, ok := listBody(repository.VectorFilter{Account: "demo"}, 0, 50); ok {
+			t.Error("只给 account 也放行了：那是在枚举整库")
+		}
+	})
+}

@@ -83,6 +83,37 @@ func (r *KnowledgeDocRepo) FindByIDs(
 //   - create_ts 一动，「文档创建时间」这个对外字段就变成"最后导入时间"。
 //
 // content / title 跟着一起覆盖：同名重导入视作更新，台账也要跟着最新那一版走。
+// listByKBSelect ListByKB 的 SELECT 子句。
+//
+// 抽成常量不是为了复用，是为了可测：「列表不背正文」这条决定只有在这里
+// 看得见，而本仓没有真库测试设施（真库测试要 config.json + 一个跑着的 MySQL）。
+// 改它之前先想清楚——把 content 加回来会让列表接口的响应体没有上界。
+const listByKBSelect = "id, kb_id, account, name, title, content_hash, " +
+	"chunk_count, create_ts, update_ts, CHAR_LENGTH(content) > 0 AS has_content"
+
+func (r *KnowledgeDocRepo) ListByKB(
+	ctx context.Context, kbID uint64, offset, limit int,
+) (entity.KnowledgeDocs, int64, error) {
+	var total int64
+	if err := r.db(ctx).Where("kb_id = ?", kbID).Count(&total).Error; err != nil {
+		return nil, 0, apperrors.ErrInternal.Wrap(err)
+	}
+
+	var docs entity.KnowledgeDocs
+	// Select 显式列清单：**不是「查了不填」，是 SQL 里就不带 content**
+	// （has_content 那个表达式是它的替代品）
+	if err := r.db(ctx).
+		Select(listByKBSelect).
+		Where("kb_id = ?", kbID).
+		Order("name ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&docs).Error; err != nil {
+		return nil, 0, apperrors.ErrInternal.Wrap(err)
+	}
+	return docs, total, nil
+}
+
 func (r *KnowledgeDocRepo) Save(
 	ctx context.Context, doc *entity.KnowledgeDoc,
 ) (oldChunkCount int, created bool, err error) {

@@ -351,7 +351,7 @@ func (s *ESVectorStore) Search(
 
 			s.logSearch(ctx, rt.name, rt.body)
 
-			hits, err := s.runSearch(ctx, rt.body)
+			hits, _, err := s.runQuery(ctx, rt.body)
 
 			// 在加锁前记，别让日志把两路的并发串起来
 			s.logSearchResult(ctx, rt.name, hits, err)
@@ -478,12 +478,18 @@ func describeVec(vec []float32) string {
 	)
 }
 
-func (s *ESVectorStore) runSearch(
+// runQuery 发一次 _search 并解码成 VectorHit。两处共用：检索（忽略 total）
+// 与按文档枚举（要 total）。
+//
+// total 取 `hits.total.value`。它只有在查询体里开了 `track_total_hits` 才是
+// **准确值**，否则只是「至少这么多」的下界——目前唯一的消费者是 ListByDoc，
+// 它自己在 listBody 里开了这个选项。
+func (s *ESVectorStore) runQuery(
 	ctx context.Context, body map[string]any,
-) ([]repository.VectorHit, error) {
+) ([]repository.VectorHit, int64, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, apperrors.ErrSearchFailed.Wrap(err)
+		return nil, 0, apperrors.ErrSearchFailed.Wrap(err)
 	}
 
 	res, err := s.client.Search(
@@ -492,17 +498,20 @@ func (s *ESVectorStore) runSearch(
 		s.client.Search.WithBody(bytes.NewReader(payload)),
 	)
 	if err != nil {
-		return nil, apperrors.ErrSearchFailed.Wrap(err)
+		return nil, 0, apperrors.ErrSearchFailed.Wrap(err)
 	}
 	defer res.Body.Close()
 
 	if res.IsError() {
-		return nil, apperrors.NewSysError(apperrors.CodeSearchFail,
-			fmt.Sprintf("检索失败，ES 返回 %d: %s", res.StatusCode, readBody(res.Body)))
+		return nil, 0, apperrors.NewSysError(apperrors.CodeSearchFail,
+			fmt.Sprintf("ES 查询失败，返回 %d: %s", res.StatusCode, readBody(res.Body)))
 	}
 
 	var parsed struct {
 		Hits struct {
+			Total struct {
+				Value int64 `json:"value"`
+			} `json:"total"`
 			Hits []struct {
 				Score  float64         `json:"_score"`
 				Source json.RawMessage `json:"_source"`
@@ -510,7 +519,7 @@ func (s *ESVectorStore) runSearch(
 		} `json:"hits"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return nil, apperrors.ErrSearchFailed.Wrap(err)
+		return nil, 0, apperrors.ErrSearchFailed.Wrap(err)
 	}
 
 	out := make([]repository.VectorHit, 0, len(parsed.Hits.Hits))
@@ -525,7 +534,7 @@ func (s *ESVectorStore) runSearch(
 			HeadingPath string `json:"heading_path"`
 		}
 		if err := json.Unmarshal(h.Source, &src); err != nil {
-			// 单条解析失败不该让整次检索挂掉
+			// 单条解析失败不该让整次查询挂掉
 			continue
 		}
 		out = append(out, repository.VectorHit{
@@ -539,7 +548,7 @@ func (s *ESVectorStore) runSearch(
 			Score:       h.Score,
 		})
 	}
-	return out, nil
+	return out, parsed.Hits.Total.Value, nil
 }
 
 // bm25Body 关键词路。
@@ -650,6 +659,45 @@ func buildFilter(f repository.VectorFilter) (map[string]any, bool) {
 		return nil, false
 	}
 	return map[string]any{"bool": map[string]any{"must": must}}, true
+}
+
+// listBody 按文档枚举切片的查询体。纯函数，便于单测。
+//
+// 与 buildFilter 的关系：过滤条件交给 buildFilter 生成，但**不靠它兜底**——
+// 它只在三个条件**全空**时拒绝，只给 DocID 它照样放行。枚举切片必须同时
+// 有 account 与 doc_id，所以这里显式要求两者在场，缺一个就返回 false。
+func listBody(f repository.VectorFilter, offset, limit int) (map[string]any, bool) {
+	if f.Account == "" || f.DocID == 0 {
+		return nil, false
+	}
+	cond, ok := buildFilter(f)
+	if !ok {
+		return nil, false
+	}
+	return map[string]any{
+		"from": offset,
+		"size": limit,
+		// 不开它的话 total 只是下界；切片清单要拿它显示「共 N 条」
+		"track_total_hits": true,
+		// order 在 mapping 里是 integer，可排序
+		"sort":    []any{map[string]any{constants.FieldOrder: map[string]any{"order": "asc"}}},
+		"query":   cond,
+		"_source": sourceFields(),
+	}, true
+}
+
+// ListByDoc 按 filter 枚举切片（order 升序），返回当页切片与总数。
+//
+// 这是 Search 之外的第一条 ES 查询路径：没有查询词、没有打分、不融合。
+// 复用 VectorHit 但不填 Score——调用方也不要看它。
+func (s *ESVectorStore) ListByDoc(
+	ctx context.Context, f repository.VectorFilter, offset, limit int,
+) ([]repository.VectorHit, int64, error) {
+	body, ok := listBody(f, offset, limit)
+	if !ok {
+		return nil, 0, apperrors.NewParamError("枚举切片必须同时指定 account 与 doc_id")
+	}
+	return s.runQuery(ctx, body)
 }
 
 func sourceFields() []string {
