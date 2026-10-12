@@ -51,6 +51,7 @@ func RegisterRoutes(d RouteDeps) {
 			docs.POST("", d.DocCtl.Ingest)
 			docs.POST("/batch", d.DocCtl.BatchIngest)
 			docs.POST("/delete", d.DocCtl.Delete)
+			docs.POST("/parse", d.DocCtl.Parse)
 		}
 
 		api.POST("/search", d.SearchCtl.Search)

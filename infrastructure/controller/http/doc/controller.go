@@ -75,3 +75,18 @@ func (ctl *Controller) Delete(c *gin.Context) {
 	result, err := ctl.service.DeleteDoc(c.Request.Context(), &param)
 	ginsdk.Send(c, result, err)
 }
+
+// Parse POST /api/v1/docs/parse
+//
+// 入参是一个可公网下载的 URL，服务端解析成 markdown 后入库。
+// 与 Ingest 的区别只在「正文从哪来」——响应形状一致（都是 DocIngestVO）。
+func (ctl *Controller) Parse(c *gin.Context) {
+	var param dto.DocParseDTO
+	if err := c.ShouldBindJSON(&param); err != nil {
+		ginsdk.Send(c, nil, fmt.Errorf("%w: %v", apperrors.ErrInvalidParam, err))
+		return
+	}
+
+	result, err := ctl.service.Parse(c.Request.Context(), &param)
+	ginsdk.Send(c, result, err)
+}
