@@ -737,10 +737,12 @@
   // 三条只读接口的入口。与检索那一栏的区别：检索是「按词找片段」，
   // 这里是「按库看全貌」——先列这个库有哪些文档，再点开看整篇 / 切片。
 
-  const DOC_PAGE_SIZE = 10;   // 与后端 PageQuery 的上限 100 无关，纯前端每页条数
+  const DOC_PAGE_SIZE = 10;   // 作为 page_size 发给服务端，让服务端分页；本地不再按它切
   const CHUNK_PAGE_SIZE = 200;
-  let docItems = [];
-  let docPage = 1;
+  let docItems = [];          // 服务端返回的**当前页**（≤ DOC_PAGE_SIZE 条），不是整库
+  let docPage = 1;            // 当前请求的页码
+  let docTotal = 0;           // 服务端 total：整个库的文档总数
+  let docPageCount = 1;       // 服务端 pages：准确总页数
   let curDocID = 0;
   let chunkOffset = 0;
 
@@ -775,10 +777,20 @@
       $('docRawWrap').style.display = '';
       $('docRaw').textContent = JSON.stringify(data, null, 2);
       docItems = (data && data.list) || [];
-      renderDocList((data && data.total) || 0);
+      // 页数来自**服务端响应**：docItems 只是当前页，拿它的 length 推总页数会把
+      // 任何多于一页的库都算成 1 页，导致「下一页」永远灰着。total/pages 缺失时
+      // 由 docPagerState 回退。
+      const st = docPagerState(
+        data && data.total, data && data.pages, docPage, DOC_PAGE_SIZE);
+      docTotal = st.total;
+      docPageCount = st.pages;
+      docPage = st.page;   // 归一：越界 / 非数字都拉回 [1, pages]
+      renderDocList();
     } catch (e) {
       showMsg($('docsMsg'), 'err', '加载失败：' + escapeHTML(e.message));
       docItems = [];
+      docTotal = 0;
+      docPageCount = 1;
       $('docList').innerHTML = '<div class="empty">加载失败。</div>';
       $('docCount').textContent = '0 篇';
       $('docPager').className = 'pager';
@@ -787,10 +799,20 @@
     }
   }
 
-  const docPages = () => Math.max(1, Math.ceil(docItems.length / DOC_PAGE_SIZE));
+  // 纯函数：把服务端分页体的 total / pages / page 归一成 { total, pages, page }。
+  // 页数只能信服务端：docItems 是**当前页**（≤ page_size 条），拿它的 length 推
+  // 总页数，任何多于一页的库都会被算成 1 页。pages 缺失时回退到
+  // Math.ceil(total / pageSize)，total 也缺失时再回退到 1；page 夹进 [1, pages]。
+  function docPagerState(total, pages, page, pageSize) {
+    const t = Number(total) || 0;
+    const size = Number(pageSize) || DOC_PAGE_SIZE || 1;
+    const totalPages = Math.max(1, Number(pages) || Math.ceil(t / size) || 1);
+    const cur = Math.min(Math.max(Number(page) || 1, 1), totalPages);
+    return { total: t, pages: totalPages, page: cur };
+  }
 
-  function renderDocList(total) {
-    $('docCount').textContent = total + ' 篇';
+  function renderDocList() {
+    $('docCount').textContent = docTotal + ' 篇';
     const box = $('docList');
     if (!docItems.length) {
       box.innerHTML = '<div class="empty">这一页没有文档（或 account / kb_no 填错了）。</div>';
@@ -812,18 +834,18 @@
     box.querySelectorAll('.doc-item').forEach((el) => {
       el.addEventListener('click', () => openDoc(parseInt(el.dataset.doc, 10)));
     });
-    renderDocPager(total, docItems.length);
+    renderDocPager(docItems.length);
   }
 
-  function renderDocPager(total, shown) {
+  function renderDocPager(shown) {
     const pager = $('docPager');
-    const pages = docPages();
-    if (total <= DOC_PAGE_SIZE) { pager.className = 'pager'; return; }
+    const pages = docPageCount;
+    if (pages <= 1) { pager.className = 'pager'; return; } // 只有一页就别摆翻页器
     const nums = pageList(docPage, pages).map((p) => p === '…'
       ? '<span class="gap">…</span>'
       : `<button data-dpage="${p}" class="${p === docPage ? 'cur' : ''}">${p}</button>`).join('');
     pager.innerHTML =
-      `<span class="info">第 ${docPage}/${pages} 页 · 本页 ${shown} 条 · 共 ${total} 条</span>` +
+      `<span class="info">第 ${docPage}/${pages} 页 · 本页 ${shown} 条 · 共 ${docTotal} 条</span>` +
       `<span class="btns">` +
       `<button data-dpage="${docPage - 1}" ${docPage <= 1 ? 'disabled' : ''}>上一页</button>` +
       nums +
