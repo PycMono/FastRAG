@@ -24,9 +24,17 @@ type stubDocRepo struct {
 	existing  *entity.KnowledgeDoc // FindByName 的返回；nil 表示库里没有
 	saved     *entity.KnowledgeDoc // Save 收到的实体
 	saveCalls int
+	delErr    error // Delete 的返回；nil 表示删除成功
 }
 
 func (s *stubDocRepo) FindByName(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
+	return s.existing, nil
+}
+
+func (s *stubDocRepo) Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
+	if s.delErr != nil {
+		return nil, s.delErr
+	}
 	return s.existing, nil
 }
 

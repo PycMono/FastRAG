@@ -10,6 +10,7 @@ import (
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/repository"
+	"github.com/PycMono/FastRAG/domain/service"
 )
 
 // stubKBRepo 只实现 FindByNo，其余方法靠内嵌的 nil 接口兜着——
@@ -58,5 +59,36 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 	// 否则这条用例钉不住「就是「取实现」这一步失败的」。
 	if !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("应是取实现报的错（提到 nope），得到 %v", err)
+	}
+}
+
+// 删除失败（文档不存在等）：整笔回滚——不扣 KB 的冗余计数，也不清 ES。
+//
+// 反过来（吞掉错误继续往下走）会让 KB 的 doc_count / chunk_count 永久偏小，
+// 而调用方拿到的还是「删除成功」，账再也对不上。
+func TestDeleteDoc_DeleteFails_NoDeltaNoESCleanup(t *testing.T) {
+	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	docRepo := &stubDocRepo{delErr: errors.New("文档不存在: gone.md")}
+	store := &stubStore{}
+	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
+	svc := NewService(
+		kbRepo, docRepo, store,
+		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{parser: stubParser{name: "p"}},
+		service.NewSplitter(), &stubIDService{}, &stubTm{},
+	)
+
+	_, err := svc.DeleteDoc(context.Background(), &dto.DocDeleteDTO{
+		Account: "demo", KBNo: "kb-1", DocName: "gone.md",
+	})
+	if err == nil {
+		t.Fatal("删除失败必须报错，不能当成功返回")
+	}
+	if len(store.calls) != 0 {
+		t.Errorf("删除没成功就不该清 ES，得到 %v", store.calls)
+	}
+	if kbRepo.chunkDelta != 0 || kbRepo.docDelta != 0 {
+		t.Errorf("删除没成功就不该动 KB 计数，得到 chunkDelta=%d docDelta=%d",
+			kbRepo.chunkDelta, kbRepo.docDelta)
 	}
 }

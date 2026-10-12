@@ -40,7 +40,7 @@ func (r *KnowledgeDocRepo) FindByName(
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
 	err := r.db(ctx).
-		Where("kb_id = ? AND name = ? AND delete_ts = 0", kbID, name).
+		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&doc).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -62,9 +62,7 @@ func (r *KnowledgeDocRepo) FindByIDs(
 	}
 
 	var docs entity.KnowledgeDocs
-	// 这里刻意**不**加 delete_ts = 0：软删的也要捞回来，
-	// 统一交给 AliveMap 判断。带上条件的话，「文档被删了」会退化成
-	// 「文档不存在」，两条不同的异常路径混成一条，排查时看不出真相
+	// 不加任何过滤：查不到的行就是不在了（硬删），由调用方丢弃其切片
 	if err := r.db(ctx).Where("id IN ?", ids).Find(&docs).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
@@ -92,16 +90,16 @@ func (r *KnowledgeDocRepo) Save(
 		var cur entity.KnowledgeDoc
 		e := r.db(txCtx).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("kb_id = ? AND name = ? AND delete_ts = 0", doc.KBID, doc.Name).
+			Where("kb_id = ? AND name = ?", doc.KBID, doc.Name).
 			First(&cur).Error
 
 		switch {
 		case errors.Is(e, gorm.ErrRecordNotFound):
-			// 没有活着的同名行 → 本次插入一行新的。oldChunkCount 自然是 0
+			// 没有同名行 → 本次插入一行新的。oldChunkCount 自然是 0
 			//
-			// 含「软删后同名重建」：软删那行 delete_ts != 0，不在这条查询的范围内，
-			// 唯一键 (kb_id, name, delete_ts) 因此被让了出来，落库的是一行**新 id**
-			// 的行。调用方那边 FindByName 同样查不到，于是分配了新雪花——两边一致。
+			// 含「删掉之后同名重建」：硬删把行整行删了，唯一键 (kb_id, name)
+			// 自然让了出来，落库的是一行**新 id** 的行。调用方那边 FindByName
+			// 同样查不到，于是分配了新雪花——两边一致。
 			// 对调用方而言这确实是新建（doc_id 变了），报 created = true 是实话。
 			created = true
 		case e != nil:
@@ -126,7 +124,7 @@ func (r *KnowledgeDocRepo) Save(
 		if err := r.db(txCtx).Clauses(clause.OnConflict{
 			// MySQL 会忽略 Columns，实际走「任意唯一键冲突即更新」；
 			// 写上是为了让意图在代码里读得出来
-			Columns: []clause.Column{{Name: "kb_id"}, {Name: "name"}, {Name: "delete_ts"}},
+			Columns: []clause.Column{{Name: "kb_id"}, {Name: "name"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"content_hash": doc.ContentHash,
 				"chunk_count":  doc.ChunkCount,
@@ -144,12 +142,12 @@ func (r *KnowledgeDocRepo) Save(
 	return oldChunkCount, created, nil
 }
 
-func (r *KnowledgeDocRepo) SoftDelete(
-	ctx context.Context, kbID uint64, name string, now int64,
+func (r *KnowledgeDocRepo) Delete(
+	ctx context.Context, kbID uint64, name string,
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
 	err := r.db(ctx).
-		Where("kb_id = ? AND name = ? AND delete_ts = 0", kbID, name).
+		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&doc).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -159,24 +157,20 @@ func (r *KnowledgeDocRepo) SoftDelete(
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
 
-	// 只置 delete_ts，不挪 name。唯一键是 (kb_id, name, delete_ts)，
-	// 置了新时间戳就等于把老键让了出来，同名重导入自然会插一行新的
-	if err := r.db(ctx).
-		Where("id = ? AND delete_ts = 0", doc.ID).
-		Updates(map[string]any{"delete_ts": now, "update_ts": now}).Error; err != nil {
+	// 先查后删：上面那一次查询是为了拿到 ChunkCount，调用方要拿它扣 KB 计数。
+	// 直接 Delete 掉就再也取不到了。
+	if err := r.db(ctx).Delete(&entity.KnowledgeDoc{}, "id = ?", doc.ID).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
-
-	doc.DeleteTs, doc.UpdateTs = now, now
 	return &doc, nil
 }
 
-func (r *KnowledgeDocRepo) SoftDeleteByKBID(
-	ctx context.Context, kbID uint64, account string, now int64,
+func (r *KnowledgeDocRepo) DeleteByKBID(
+	ctx context.Context, kbID uint64, account string,
 ) (int64, error) {
 	tx := r.db(ctx).
-		Where("kb_id = ? AND account = ? AND delete_ts = 0", kbID, account).
-		Updates(map[string]any{"delete_ts": now, "update_ts": now})
+		Where("kb_id = ? AND account = ?", kbID, account).
+		Delete(&entity.KnowledgeDoc{})
 	if tx.Error != nil {
 		return 0, apperrors.ErrInternal.Wrap(tx.Error)
 	}

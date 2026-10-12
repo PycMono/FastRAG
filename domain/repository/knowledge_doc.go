@@ -14,8 +14,8 @@ type IKnowledgeDocRepo interface {
 
 	// FindByIDs 批量加载，供检索时的存活校验使用。
 	//
-	// 刻意**不过滤** delete_ts：调用方要靠返回的行区分「不存在」和「已删」两种情况，
-	// SQL 里加 delete_ts = 0 会把它们混成一个 (nil, nil)，日志里就查不出是哪种。
+	// 刻意**不加任何过滤**：调用方要的就是「这批 doc_id 里哪些还有行」。
+	// 查不到 = 孤儿或幽灵切片，由 AliveMap 之后的判断丢弃。
 	FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error)
 
 	// Save 写入/更新文档行。
@@ -32,9 +32,12 @@ type IKnowledgeDocRepo interface {
 	// 否则中途挤进来的另一次导入会让差值算错，KB 计数就永久性偏了。
 	Save(ctx context.Context, doc *entity.KnowledgeDoc) (oldChunkCount int, created bool, err error)
 
-	// SoftDelete 按 (kbID, name) 软删，返回受影响的文档。
-	SoftDelete(ctx context.Context, kbID uint64, name string, now int64) (*entity.KnowledgeDoc, error)
+	// Delete 按 (kbID, name) 硬删，返回被删掉的那一行。
+	//
+	// 返回整行不是为了留痕——行已经没了——而是调用方需要它的 ChunkCount
+	// 去扣 KB 的冗余计数。删完就取不到了，所以必须先查后删。
+	Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error)
 
-	// SoftDeleteByKBID 软删某 KB 下所有文档，返回文档数。
-	SoftDeleteByKBID(ctx context.Context, kbID uint64, account string, now int64) (int64, error)
+	// DeleteByKBID 硬删某 KB 下的所有文档，返回删除的行数。
+	DeleteByKBID(ctx context.Context, kbID uint64, account string) (int64, error)
 }

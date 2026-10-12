@@ -41,10 +41,10 @@ func (m *mockDocRepo) FindByIDs(ctx context.Context, ids []uint64) (entity.Knowl
 func (m *mockDocRepo) Save(ctx context.Context, doc *entity.KnowledgeDoc) (oldChunkCount int, created bool, err error) {
 	return 0, false, nil
 }
-func (m *mockDocRepo) SoftDelete(ctx context.Context, kbID uint64, name string, now int64) (*entity.KnowledgeDoc, error) {
+func (m *mockDocRepo) Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
 	return nil, nil
 }
-func (m *mockDocRepo) SoftDeleteByKBID(ctx context.Context, kbID uint64, account string, now int64) (int64, error) {
+func (m *mockDocRepo) DeleteByKBID(ctx context.Context, kbID uint64, account string) (int64, error) {
 	return 0, nil
 }
 
@@ -150,11 +150,10 @@ func defaultKB() *entity.KnowledgeBase {
 
 func defaultDoc() *entity.KnowledgeDoc {
 	return &entity.KnowledgeDoc{
-		ID:       100,
-		KBID:     1,
-		Account:  "demo",
-		Name:     "doc.md",
-		DeleteTs: 0,
+		ID:      100,
+		KBID:    1,
+		Account: "demo",
+		Name:    "doc.md",
 	}
 }
 

@@ -22,22 +22,18 @@ package entity
 // 中途失败要么什么都没写（ES 层），要么产生孤儿切片（MySQL 层，由查询侧存活校验兜住）。
 type KnowledgeDoc struct {
 	ID      uint64 `gorm:"column:id;primaryKey"` // 雪花 ID，写入前预分配
-	KBID    uint64 `gorm:"column:kb_id;type:bigint unsigned;not null;index:idx_kb_delete,priority:1"`
+	KBID    uint64 `gorm:"column:kb_id;type:bigint unsigned;not null"`
 	Account string `gorm:"column:account;type:varchar(64);not null"`
 	Name    string `gorm:"column:name;type:varchar(512);not null"` // 文档身份 = (KBID, Name)，同名重导入即更新
 
 	ContentHash string `gorm:"column:content_hash;type:char(64);not null"` // SHA256
 	ChunkCount  int    `gorm:"column:chunk_count;type:int;not null;default:0"`
 
-	CreateTs int64 `gorm:"column:create_ts;type:bigint;not null"`
-	UpdateTs int64 `gorm:"column:update_ts;type:bigint;not null"`
-	DeleteTs int64 `gorm:"column:delete_ts;type:bigint;not null;default:0"`
+	CreateTs int64 `gorm:"column:create_ts;type:bigint;not null"` // 首次导入时间
+	UpdateTs int64 `gorm:"column:update_ts;type:bigint;not null"` // 最近一次导入/更新时间
 }
 
 func (KnowledgeDoc) TableName() string { return "knowledge_doc" }
-
-// Deleted 是否已软删。存活校验靠它丢弃幽灵切片（§7.3）。
-func (d *KnowledgeDoc) Deleted() bool { return d.DeleteTs > 0 }
 
 // IsSameContent 内容是否未变（可跳过重灌）。
 func (d *KnowledgeDoc) IsSameContent(hash string) bool {

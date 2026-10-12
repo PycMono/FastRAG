@@ -12,7 +12,7 @@ import (
 // （§5.2 ③）。这样实体从诞生起就是终态，不存在"先建行、后填内容"的中间态，
 // 也就不存在"ES 写失败但库里已经记了新计数"的谎报窗口。
 //
-// 禁止在别处直接 &KnowledgeDoc{}——CreateTs / DeleteTs 漏填就是脏数据。
+// 禁止在别处直接 &KnowledgeDoc{}——CreateTs / UpdateTs 漏填就是脏数据。
 func NewDoc(
 	docID uint64,
 	kb *entity.KnowledgeBase,
@@ -30,6 +30,5 @@ func NewDoc(
 		ChunkCount:  chunkCount,
 		CreateTs:    ts,
 		UpdateTs:    ts,
-		DeleteTs:    0,
 	}
 }
