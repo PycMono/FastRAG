@@ -61,8 +61,15 @@ func newParseService(
 // ─── 顺序：纯参数错误必须挡在解析之前 ────────────────────────────────────────
 //
 // 解析是本次请求里最贵、最慢的一步。名字写错、格式不支持、scheme 不对，
-// 都不该白花一次解析的钱——这些用例里 embeddings / splitter 故意留成会报错或 nil 的，
-// 走到那儿就说明顺序反了。
+// 都不该白花一次解析的钱。
+//
+// 两道防线各管一段，缺一不可：
+//   - 下游协作者（splitter / idGen / tm / docRepo / store）留成 nil——真走到写库
+//     那步就 nil panic，把用例判死，钉住「根本没进到下游」；
+//   - 对错误**文案**的断言——钉住到底是哪个检查先报了。
+//
+// 只看 err != nil 是不够的：那几个故意的哨兵错误（"不该走到这里"）也能满足它，
+// 顺序一反过来，浮上来的正好就是哨兵，测试却照样绿。
 
 // 未知解析后端必须在写任何东西之前返回——不能先切片、先算向量、先写 ES。
 func TestParse_UnknownParser_FailsEarly(t *testing.T) {
@@ -83,6 +90,11 @@ func TestParse_UnknownParser_FailsEarly(t *testing.T) {
 	if err == nil {
 		t.Fatal("未知 parser 必须报错")
 	}
+	// 文案必须点出是「取后端」这一步报的：embedding 的哨兵（"不该走到这里"）
+	// 也能让 err != nil 成立，但它不可能提到请求里的名字 nope。
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("应是取后端报的错（提到 nope），得到 %v", err)
+	}
 }
 
 // 格式不被该后端支持 → 参数错误，且在调用解析之前就返回。
@@ -101,6 +113,11 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 	if err == nil {
 		t.Fatal("docx 不在 pdf-only 后端的 Formats() 里，必须报参数错误")
 	}
+	// 文案必须点出是「格式不支持」报的，并带上后端名与扩展名：顺序反了、先落到
+	// embedding 的哨兵上时，err 非空但不会提到这些。
+	if !strings.Contains(err.Error(), "docling") || !strings.Contains(err.Error(), "docx") {
+		t.Fatalf("应是格式检查报的错（提到 docling / docx），得到 %v", err)
+	}
 }
 
 // 坏 scheme 必须挡在解析之前，而且先于「取后端」——registry 这里故意报错，
@@ -115,10 +132,16 @@ func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 	)
 
 	for _, bad := range []string{"ftp://example.com/a.pdf", "file:///etc/passwd"} {
-		if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
 			Account: "demo", KBNo: "demo-kb", URL: bad,
-		}); err == nil {
+		})
+		if err == nil {
 			t.Fatalf("%s 必须被拒", bad)
+		}
+		// 文案必须来自 scheme 检查。registry 的哨兵（"不该走到这里"）同样非空，
+		// 但只有真正的 scheme 检查才会提到 http/https——顺序反过来时浮上来的就是哨兵。
+		if !strings.Contains(err.Error(), "http/https") {
+			t.Fatalf("应是 scheme 检查报的错（提到 http/https），得到 %v", err)
 		}
 	}
 }
@@ -150,9 +173,10 @@ func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
 func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
 	for _, md := range []string{"", "   \n\t  \n"} {
+		store := &stubStore{}
 		svc := newParseService(
 			stubParserRegistry{parser: stubParser{name: "p", md: md}},
-			&stubDocRepo{}, &stubStore{},
+			&stubDocRepo{}, store,
 			&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
 			&stubTm{},
 		)
@@ -161,6 +185,11 @@ func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 			Account: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
 		}); err == nil {
 			t.Fatalf("markdown=%q 必须报错，不能当成功返回", md)
+		}
+		// 光报错还不够：真正要防的是「空文档被写进 ES」。空 markdown 必须在切片那步
+		// 就停住，一次写都不该发生。
+		if len(store.calls) != 0 {
+			t.Fatalf("markdown=%q 是空的，不该有任何 ES 写入，得到 %v", md, store.calls)
 		}
 	}
 }
