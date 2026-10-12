@@ -169,28 +169,36 @@ func TestDoclingParser_Parse_NoRetryWhenZero(t *testing.T) {
 	}
 }
 
-// Review Focus 第 4 条：ctx 已取消时不许空转重试。
-// 配了 3 次重试，但取消的 ctx 必须让它在第一次就停——否则调用方断开后
-// 解析后端仍被打满。
+// Review Focus 第 4 条：ctx 取消后必须立刻停手，不能把重试的退避空转完。
+//
+// 判据是**耗时**，不是服务端收到的请求数——ctx 在第一次请求里就被取消，
+// 之后每次重试的 client.Do 都在出发前就失败，服务端再也收不到，所以
+// 「数服务端命中次数」区分不了有没有 retry.Context(ctx)。真正的差别在
+// retry-go 的退避等待：传了 Context 时那个 select 会监听 ctx.Done()，
+// 取消即返回；没传时 config.context 是 Background（Done() 是 nil channel，
+// 永远不可选），退避是一次睡满的 time.Timer，3 次重试要白等 3 × retryWait。
+//
+// 改这个用例时必须反向验证一次：把 retry.Context(ctx) 删掉后它必须失败。
 func TestDoclingParser_CanceledCtx_StopsRetrying(t *testing.T) {
-	var calls int
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		cancel() // 第一枪落地即取消：重试循环必须就此停手
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	p := newTestDoclingParser(srv.URL)
 	p.maxRetries = 3
-	p.retryWait = time.Millisecond
+	p.retryWait = 200 * time.Millisecond // 睡眠式退避会白等 3 × 200ms
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
+	start := time.Now()
 	if _, err := p.Parse(ctx, interfaces.ParseReq{URL: "https://example.com/a.pdf"}); err == nil {
 		t.Fatal("ctx 已取消必须报错")
 	}
-	if calls > 1 {
-		t.Errorf("ctx 取消后不该继续重试，期望 ≤1 次请求，得到 %d", calls)
+	// 接了 Context 时几乎立刻返回；漏了它则 ≥600ms。
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Errorf("ctx 取消后不该把退避睡完，期望 <150ms 返回，实际 %v", elapsed)
 	}
 }
