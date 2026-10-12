@@ -1,5 +1,5 @@
-// 本文件是单文档导入：Ingest 及其专用的切片 / 向量化内部步骤。
-// 服务主体见 service.go，批量导入见 batch.go。
+// 本文件是单文档导入：Ingest、与 Parse 共用的落库段 ingestDoc，及其内部步骤。
+// 服务主体见 service.go，批量导入见 batch.go，基于 URL 的解析导入见 parse.go。
 
 package ingest
 
