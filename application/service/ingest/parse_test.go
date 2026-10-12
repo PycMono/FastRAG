@@ -109,10 +109,16 @@ func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 	)
 
 	for _, bad := range []string{"ftp://example.com/a.pdf", "file:///etc/passwd"} {
-		if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
 			Account: "demo", KBNo: "demo-kb", URL: bad,
-		}); err == nil {
+		})
+		if err == nil {
 			t.Fatalf("%s 必须被拒", bad)
+		}
+		// 文案必须来自 scheme 检查：别的错误同样非空，但只有真正的 scheme 检查
+		// 才会提到 http/https——顺序反过来时浮上来的就不是它。
+		if !strings.Contains(err.Error(), "http/https") {
+			t.Fatalf("应是 scheme 检查报的错（提到 http/https），得到 %v", err)
 		}
 	}
 }
