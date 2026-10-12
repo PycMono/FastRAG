@@ -69,20 +69,6 @@ func (r *KnowledgeDocRepo) FindByIDs(
 	return docs, nil
 }
 
-// Save 写入/更新文档行，返回**更新前**的切片数与「是否新建」。
-//
-// 语义是 upsert，键 (kb_id, name)。刻意不复用 GORM 的 clause.OnConflict 一把梭，
-// 而是「先锁行读旧值 → 再 upsert」的两步——因为 oldChunkCount 必须和这次写入
-// 原子地取值，否则调用方拿它去算 KB 计数差值时会算错。
-//
-//	SELECT ... FOR UPDATE  ← 拿行锁 + 旧 chunk_count
-//	INSERT ... ON DUPLICATE KEY UPDATE content_hash/chunk_count/update_ts
-//
-// 只更新那几列，**绝不动 id 和 create_ts**：
-//   - id 一动，ES 里那批切片的 doc_id 就指向一个不存在的行了；
-//   - create_ts 一动，「文档创建时间」这个对外字段就变成"最后导入时间"。
-//
-// content / title 跟着一起覆盖：同名重导入视作更新，台账也要跟着最新那一版走。
 // listByKBSelect ListByKB 的 SELECT 子句。
 //
 // 抽成常量不是为了复用，是为了可测：「列表不背正文」这条决定只有在这里
@@ -114,6 +100,20 @@ func (r *KnowledgeDocRepo) ListByKB(
 	return docs, total, nil
 }
 
+// Save 写入/更新文档行，返回**更新前**的切片数与「是否新建」。
+//
+// 语义是 upsert，键 (kb_id, name)。刻意不复用 GORM 的 clause.OnConflict 一把梭，
+// 而是「先锁行读旧值 → 再 upsert」的两步——因为 oldChunkCount 必须和这次写入
+// 原子地取值，否则调用方拿它去算 KB 计数差值时会算错。
+//
+//	SELECT ... FOR UPDATE  ← 拿行锁 + 旧 chunk_count
+//	INSERT ... ON DUPLICATE KEY UPDATE content_hash/chunk_count/update_ts
+//
+// 只更新那几列，**绝不动 id 和 create_ts**：
+//   - id 一动，ES 里那批切片的 doc_id 就指向一个不存在的行了；
+//   - create_ts 一动，「文档创建时间」这个对外字段就变成"最后导入时间"。
+//
+// content / title 跟着一起覆盖：同名重导入视作更新，台账也要跟着最新那一版走。
 func (r *KnowledgeDocRepo) Save(
 	ctx context.Context, doc *entity.KnowledgeDoc,
 ) (oldChunkCount int, created bool, err error) {
