@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	neturl "net/url"
 	"path"
 	"strings"
@@ -16,14 +15,17 @@ import (
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/common/vo"
+	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 )
 
 // Parse 解析 URL 上的文档并入库。等同 Ingest，但 chunks 来自解析结果而不是请求体。
 //
-// 顺序是刻意的：所有「纯参数」错误（格式不支持、坏模型名、切片参数）
-// 都在调用解析后端之前报完——解析是本次请求里最贵、最慢的一步，
-// 不该为一个拼错的名字白花一次解析的钱。
+// 顺序是刻意的：能提前判的纯参数错误（scheme、格式、切片参数）都在调用解析后端之前
+// 报完——解析是本次请求里最贵、最慢的一步，不该为一条坏参数白花一次解析的钱。
+//
+// 例外是模型名：向量的实现由 ingestDoc 内部按 model 取（它收名字、不收实现），
+// 所以拼错的模型名要等解析跑完才报——这是合并落库段换来的（用户 2026-10-12 裁定）。
 func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngestVO, error) {
 	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
 	if err != nil {
@@ -45,10 +47,6 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 			"解析后端 " + parser.Name() + " 不支持该文件类型: " + filenameOf(in.URL))
 	}
 
-	embedder, err := s.embeddings.Get(in.Model)
-	if err != nil {
-		return nil, err
-	}
 	opts, err := in.ChunkOptions()
 	if err != nil {
 		return nil, err
@@ -68,16 +66,9 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 	}
 
 	// 解析产物恒是 markdown，走结构感知切片器（与 format=markdown 同一条路）。
-	chunks, err := s.splitter.Split(res.Markdown, constants.FormatMarkdown, opts)
-	if err != nil {
-		return nil, err
-	}
-	if len(chunks) > constants.MaxIngestChunks {
-		return nil, apperrors.NewParamError(fmt.Sprintf(
-			"切片数 %d 超过上限 %d，请检查文档内容或切片参数", len(chunks), constants.MaxIngestChunks))
-	}
-
-	return s.embedAndStore(ctx, kb, docName, chunks, embedder, in.Refresh)
+	return s.ingestDoc(ctx, kb, docName, func() (entity.Chunks, error) {
+		return s.splitter.Split(res.Markdown, constants.FormatMarkdown, opts)
+	}, in.Model, in.Refresh)
 }
 
 // supportsFormat 判 URL 的扩展名是否在该后端声明的格式内。

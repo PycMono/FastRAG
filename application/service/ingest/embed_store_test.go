@@ -213,3 +213,45 @@ func TestEmbedAndStore_Reimport_KeepsDocID(t *testing.T) {
 		t.Errorf("重导入不是新建，不该动 doc_count，得到 %d", kbRepo.docDelta)
 	}
 }
+
+// countingEmbeddingRegistry 记下 Get 被调了几次、用的什么名字。
+type countingEmbeddingRegistry struct {
+	e     interfaces.IEmbedding
+	calls int
+	name  string
+}
+
+func (r *countingEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, error) {
+	r.calls++
+	r.name = name
+	return r.e, nil
+}
+
+// 向量实现是逐请求取的：两次导入各取一次，且用的是请求给的名字。
+// 存回 Service 的字段上就是单例数据竞争（见 ingestDoc 的注释）。
+func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
+	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	reg := &countingEmbeddingRegistry{e: stubEmbedding{dim: 4}}
+	svc := NewService(
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		&stubDocRepo{}, &stubStore{},
+		reg,
+		stubParserRegistry{},
+		service.NewSplitter(), &stubIDService{}, &stubTm{},
+	)
+
+	for _, model := range []string{"m1", "m2"} {
+		if _, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
+			Account: "demo", KBNo: "kb-1", DocName: "a.md",
+			Format: "text", Content: "正文。", Model: model,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reg.calls != 2 {
+		t.Errorf("两次导入应各取一次实现（逐请求），得到 %d 次", reg.calls)
+	}
+	if reg.name != "m2" {
+		t.Errorf("取实现要用请求给的名字，得到 %q", reg.name)
+	}
+}

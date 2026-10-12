@@ -22,7 +22,7 @@ import (
 
 // Ingest 导入一份文档。同名重导入视作「更新」。
 //
-// 编排：定位 KB → 取 embedder → 切片 → 交给 embedAndStore 落库。
+// 编排：定位 KB → 定切片参数 → 把「切」交给 ingestDoc（它取向量实现、落库）。
 // 三条路径（format=markdown/text/chunks）的差异只在切，落库完全同构。
 func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocIngestVO, error) {
 	// ① 定位 KB。kb_no 指向的库 account 不等于传入值，在这里就被挡掉
@@ -31,51 +31,62 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		return nil, err
 	}
 
-	// ② 定这次用哪家算向量。放在切片与任何写操作之前——名字写错在这里就返回。
-	//    解出来的实现逐请求传给下游，不能存回 Service 的字段（它是单例，会数据竞争）。
-	embedder, err := s.embeddings.Get(in.Model)
-	if err != nil {
-		return nil, err
-	}
-
-	// ③ 切片参数：请求给了就用，没给的由 Normalize 补默认并校验。
+	// ② 切片参数：请求给了就用，没给的由 Normalize 补默认并校验。
+	//    放在这里而不是闭包里，是为了「坏参数先于贵操作报错」这条顺序不依赖闭包的实现。
 	opts, err := in.ChunkOptions()
 	if err != nil {
 		return nil, err
 	}
 
-	chunks, err := s.split(in, opts)
+	return s.ingestDoc(ctx, kb, in.DocName, func() (entity.Chunks, error) {
+		return s.split(in, opts)
+	}, in.Model, in.Refresh)
+}
+
+// ingestSource 产出这次要落库的 chunks。两条导入路径的差异全在这里：
+// Ingest 从请求体切（markdown/text 走切片器、chunks 走 Normalize），
+// Parse 从解析出的 markdown 切。
+type ingestSource func() (entity.Chunks, error)
+
+// ingestDoc 把一份文档落库：产 chunks → 取这次的向量实现 → 向量化 → 写 ES → 清旧 → 事务提交计数。
+//
+// Ingest 与 Parse 共用这一段：两者的差异只在「chunks 从哪来」（就是 src），
+// 之后的向量化与三次写入完全同构，没有理由各写一遍。序号沿用原 Ingest 的 ②、④～⑨，
+// 便于与设计文档对照。
+//
+// 编排分三步写入：
+//
+//	⑥ ES 写新切片 → ⑧ ES 删旧切片（_id 差集）→ ⑨ MySQL 写文档行 + 计数
+//
+// 「更新」这条语义的落点是 doc_id 的复用（第 ⑤ 步）：重导入必须先 FindByName 取回
+// 库里那一行的 id。切片、删差集、存活校验三处都以 doc_id 为轴，id 一换就全盘失效，
+// 且失败是静默的——接口返回成功，用户搜到的还是旧内容。
+func (s *Service) ingestDoc(
+	ctx context.Context,
+	kb *entity.KnowledgeBase,
+	docName string,
+	src ingestSource,
+	model string,
+	refresh bool,
+) (*vo.DocIngestVO, error) {
+	// 先拿到要落的 chunks——两条路径的切片行为差异全部封装在 src 里。
+	chunks, err := src()
 	if err != nil {
 		return nil, err
 	}
 	if len(chunks) > constants.MaxIngestChunks {
 		return nil, apperrors.NewParamError(fmt.Sprintf(
-			"切片数 %d 超过上限 %d，请检查切片参数或文档格式", len(chunks), constants.MaxIngestChunks))
+			"切片数 %d 超过上限 %d，请检查文档内容或切片参数", len(chunks), constants.MaxIngestChunks))
 	}
 
-	return s.embedAndStore(ctx, kb, in.DocName, chunks, embedder, in.Refresh)
-}
+	// ② 定这次用哪家算向量。放在任何写操作之前——名字写错在这里就返回，
+	//    超限的文档也不会白算一遍向量。
+	//    解出来的实现逐请求传给下游，不能存回 Service 的字段（它是单例，会数据竞争）。
+	embedder, err := s.embeddings.Get(model)
+	if err != nil {
+		return nil, err
+	}
 
-// embedAndStore 把已切好的 chunks 落库：向量化 → 写 ES → 清旧 → 事务提交计数。
-//
-// Ingest 与 Parse 共用这一段：两者的差异只在「chunks 从哪来」，之后的三次写入
-// 完全同构，没有理由各写一遍。序号沿用原 Ingest 的 ④～⑨，便于与设计文档对照。
-//
-// 编排分三步写入：
-//
-//	① ES 写新切片 → ② ES 删旧切片（_id 差集）→ ③ MySQL 写文档行 + 计数
-//
-// 「更新」这条语义的落点是 doc_id 的复用（第 ⑤ 步）：重导入必须先 FindByName 取回
-// 库里那一行的 id。切片、删差集、存活校验三处都以 doc_id 为轴，id 一换就全盘失效，
-// 且失败是静默的——接口返回成功，用户搜到的还是旧内容。
-func (s *Service) embedAndStore(
-	ctx context.Context,
-	kb *entity.KnowledgeBase,
-	docName string,
-	chunks entity.Chunks,
-	embedder interfaces.IEmbedding,
-	refresh bool,
-) (*vo.DocIngestVO, error) {
 	// ④ 向量化。放在任何写操作之前——失败时什么都没动，重试是干净的。
 	//    索引的创建不在这里，也不由本服务负责。
 	titleVecs, contentVecs, err := s.embedChunks(ctx, embedder, chunks)
