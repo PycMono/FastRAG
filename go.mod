@@ -12,6 +12,8 @@ require (
 	github.com/elastic/go-elasticsearch/v9 v9.4.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/redis/go-redis/v9 v9.23.0
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.193
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ocr v1.3.193
 	go.uber.org/fx v1.23.0
 	golang.org/x/sync v0.23.0
 	gorm.io/gorm v1.25.1

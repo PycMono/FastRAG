@@ -72,3 +72,17 @@ func TestParserRegistry_GetReturnsDoclingWithJoinedURL(t *testing.T) {
 		t.Errorf("Name 应是配置里的 key，得到 %q", dp.Name())
 	}
 }
+
+// default 指向一个没有实现的 type：注册表要在启动期就拒掉，不能造出个空壳。
+func TestParserRegistry_UnknownType_FailsAtStartup(t *testing.T) {
+	conf := &config.Config{Parser: config.ParserConfig{
+		Default: "odd",
+		Backends: map[string]config.ParserEntry{
+			"odd": {Type: "odd", TimeoutMS: 1000},
+		},
+	}}
+
+	if _, err := NewParserRegistry(conf); err == nil {
+		t.Fatal("没有实现的 type 必须让启动失败")
+	}
+}

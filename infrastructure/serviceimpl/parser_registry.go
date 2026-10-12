@@ -25,8 +25,8 @@ type parserRegistry struct {
 // 配置错在这一步就暴露，而不是等某次解析跑到一半才炸。
 //
 // 只造 default：其余 entry 由 config.validate 校验字段，但不构造——构造会碰密钥
-// 这类「真用起来才需要」的东西，而 config.example.json 里 tencent 的密钥是空的，
-// 全量构造会让「cp 示例再启动」直接失败（见 parser_tencent.go 的构造函数）。
+// 这类「真用起来才需要」的东西。`config.example.json` 里的 tencent 条目（任务 13 补）
+// 就是密钥留空的，全量构造会让「cp 示例再启动」直接失败。
 func NewParserRegistry(conf *config.Config) (interfaces.IParserRegistry, error) {
 	p, err := conf.Parser.Params("")
 	if err != nil {
@@ -35,6 +35,12 @@ func NewParserRegistry(conf *config.Config) (interfaces.IParserRegistry, error) 
 	switch p.Type {
 	case config.ParserTypeDocling:
 		return &parserRegistry{def: newDoclingParser(p)}, nil
+	case config.ParserTypeTencent:
+		tp, err := newTencentParser(p)
+		if err != nil {
+			return nil, err
+		}
+		return &parserRegistry{def: tp}, nil
 	default:
 		// validate 已经挡过一次，这里兜底，避免将来加 type 时漏改
 		return nil, fmt.Errorf("解析后端 %q 的 type=%q 没有对应实现", p.Name, p.Type)

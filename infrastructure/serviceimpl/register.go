@@ -36,5 +36,6 @@ var (
 	_ interfaces.IRerank            = (*nopRerank)(nil)
 	_ interfaces.IRerankRegistry    = (*rerankRegistry)(nil)
 	_ interfaces.IParser            = (*doclingParser)(nil)
+	_ interfaces.IParser            = (*tencentParser)(nil)
 	_ interfaces.IParserRegistry    = (*parserRegistry)(nil)
 )
