@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS `knowledge_doc` (
   `account`         VARCHAR(64)  NOT NULL,
   `name`            VARCHAR(512) NOT NULL COMMENT '文档名。同名重导入 = 更新，doc_id 不变',
   `title`           VARCHAR(255) NOT NULL DEFAULT '' COMMENT '展示用标题，与 name（文档身份）分开',
-  `content`         MEDIUMTEXT   NOT NULL COMMENT '整篇原文；format=chunks 进来的为空串',
+  `content`         MEDIUMTEXT   NOT NULL COMMENT '整篇原文：markdown 或纯文本；format=chunks 时为空串',
   `content_hash`    CHAR(64)     NOT NULL COMMENT '内容指纹',
   `chunk_count`     INT          NOT NULL DEFAULT 0,
   `create_ts`       BIGINT       NOT NULL,

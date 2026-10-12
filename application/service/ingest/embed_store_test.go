@@ -341,3 +341,46 @@ func TestIngestDoc_RejectsOversizedContent(t *testing.T) {
 		t.Errorf("MySQL 被写了 %d 次：超限守卫必须在任何一次写之前", docRepo.saveCalls)
 	}
 }
+
+// format=chunks 的原文落库必须是**空串**：服务端手里从来没有过完整正文，
+// 把切片按 order 拼起来是伪造、不是原文（设计文档 §2.3）。这条钉住两件事：
+// 落库 content == ""，且**没有**把任何一条切片的内容拼进去。
+func TestIngest_ChunksFormatStoresEmptyContent(t *testing.T) {
+	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	docRepo := &stubDocRepo{existing: nil}
+	svc := NewService(
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		docRepo, &stubStore{},
+		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{},
+		service.NewSplitter(), &stubIDService{}, &stubTm{})
+
+	pieces := []string{"第一片-甲甲甲", "第二片-乙乙乙", "第三片-丙丙丙"}
+	chunks := make([]dto.ChunkDTO, 0, len(pieces))
+	for _, p := range pieces {
+		chunks = append(chunks, dto.ChunkDTO{Title: "小节", Content: p})
+	}
+
+	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
+		Account: "demo", KBNo: "demo-kb", DocName: "已切好的.md",
+		Format: constants.FormatChunks, Chunks: chunks,
+	})
+	if err != nil {
+		t.Fatalf("Ingest 报错：%v", err)
+	}
+	if docRepo.saved == nil {
+		t.Fatal("Save 没被调到")
+	}
+	if docRepo.saved.Content != "" {
+		t.Errorf("chunks 路径 content 应为空串，得到 %q", docRepo.saved.Content)
+	}
+	if docRepo.saved.Title != "已切好的.md" {
+		t.Errorf("title = %q，期望 doc_name", docRepo.saved.Title)
+	}
+	// 钉住「没被拼起来」：任何一条切片的内容都不该出现在落库的 content 里。
+	for _, p := range pieces {
+		if strings.Contains(docRepo.saved.Content, p) {
+			t.Errorf("落库 content 里出现了切片内容 %q：切片不能被拼成原文", p)
+		}
+	}
+}
