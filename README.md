@@ -42,19 +42,19 @@ common
 └── utils               // 通用小工具（泛型去重、SHA-256 指纹）
 ```
 
-**领域实体直接就是持久化模型**：`domain/entity/` 下的 `knowledge_base.go` /
+**领域实体直接就是持久化模型**：`domain/entity/` 下的 `knowledge.go` /
 `knowledge_doc.go` 上挂着 `gorm:"column:..."` 和 `TableName()`，没有再单设 `po` / `mapper` 两层。
 `chunk.go` / `collection.go` 不带 tag：它们不是表。
 
 两张表里**只有 `knowledge_doc` 的 DDL 归本服务**（`scripts/schema.sql`）；
-`knowledge_base` 由外部系统预置（§1.2），列定义归建库方——实体上的 tag 只是**读**它时的映射，
-改 tag 不会去动那张表。所以只有 `knowledge_doc` 的 tag 与 `scripts/schema.sql` 是
-"同一份列定义的两个写法、改一边就要改另一边"；不一致都不会报错，只会静默查不到数据。
+`knowledge` 由外部系统预置（§1.2），列定义归建库方——实体上的 tag 只是**读**它时的映射，
+改 tag 不会去动那张表。本服务对它只写三列：`doc_count` / `chunk_count` / `update_ts`。
+所以只有 `knowledge_doc` 的 tag 与 `scripts/schema.sql` 是"同一份列定义的两个写法、
+改一边就要改另一边"；不一致都不会报错，只会静默查不到数据。
 
-2026-10-12 的这次简化**两张表一起改了**：`knowledge_doc` 去掉软删列、`knowledge_base` 去掉几个
-字段并把类型列改名为 `type`。一次性迁移在
-`scripts/migrate-2026-10-12-entity-simplify.sql`——它是**非幂等**脚本，只对已存在的库跑一次，
-**跑之前先备份**（新建库直接用 `scripts/schema.sql`，不需要它）。
+两张表的关系是**一个来源 URL 建一个库，一个库下挂多篇文档**：库级的 `source_url` 记在
+`knowledge` 上，文档级的内容与标题记在 `knowledge_doc` 上（`title` / `content`），
+所以同一个 URL 拆出来的多篇不必各自抄一遍来源。
 
 依赖注入使用 [Uber FX](https://github.com/uber-go/fx)。
 
@@ -284,12 +284,15 @@ Docling 能等，腾讯要卡小）：
 | `10201`–`10206` | 文档：切片为空 / 切片过长 / 导入失败 / 删除失败 / embedding 异常 / 向量库异常 |
 | `10301`–`10302` | 检索失败 / rerank 服务失败 |
 | `10401` | 解析失败：解析上游超时 / 返回非 200 / 返回体不可解析 |
+| `10501` | 文档不存在：`doc_id` 查无此行，**或**该行不属于这个 `account`（两者同一个码） |
 
 `10101`–`10106` 里，知识库的 CRUD 错误码已基本无主：CRUD 全在外部系统里（§1.2），
 本服务不提供对应接口。**唯一还在用的是 `10101`（库不存在）**——`FindByNo` 找不到库、
-或 account 不匹配时都会返回它（`knowledge_base_repo.go`）。其余 `10102`–`10106` 只剩兼容
+或 account 不匹配时都会返回它（`knowledge_repo.go`）。其余 `10102`–`10106` 只剩兼容
 意义，其中 `10106`（检索未实现）尤其名不副实——检索早已落地并改用 `10301`，别再用；
 `10102`–`10106` 现在只被 `common/errors/errors_test.go` 引用。
+`10501` 沿用同一条原则：详情 / 切片接口拿到的 `doc_id` 不属于该租户时，返回的与「不存在」
+一字不差——分开就等于送出一个可枚举的越权探测接口（`docview` 服务）。
 `10002`（未登录）/`10003`（无权限）同理：本服务不做鉴权（见下文「租户与鉴权」）。
 
 错误定义集中在 `common/errors/errors.go`。新增错误码时在此追加，不要在业务代码里随手 `errors.New`。
@@ -332,12 +335,15 @@ Docling 能等，腾讯要卡小）：
 两点别误会：分页只翻**本次返回**的前 `limit`（≤100）条，服务端不做深翻页（§13 明确不做）；
 页面默认的 `account` / `kb` 是写死的演示值，它不读 URL、也不该读——演示态不该背隐藏配置。
 
+第三点：页面右侧多了一张「按文档浏览」的卡——先列该库下的文档，点开看整篇原文与切片。
+它走的是上面那三条只读 GET；检索命中卡片上也挂了「看整篇」，直接跳到同一篇的详情。
+
 ## API 示例
 
-业务路由按能力分四件事（`infrastructure/controller/http/register.go`）：写文档（`/api/v1/docs`、
+业务路由按能力分五件事（`infrastructure/controller/http/register.go`）：写文档（`/api/v1/docs`、
 `/api/v1/docs/batch`）、解析导入（`/api/v1/docs/parse`）、删文档（`/api/v1/docs/delete`）、
-检索（`/api/v1/search`）。
-知识库的 CRUD 不在本服务范围内（§1.2）——`knowledge_base` 表由外部系统维护。
+检索（`/api/v1/search`）、看文档（三条只读 GET）。
+知识库的 CRUD 不在本服务范围内（§1.2）——`knowledge` 表由外部系统维护，本服务只读它。
 
 ```bash
 # 导入文档。format 取 markdown / text / chunks；
@@ -385,6 +391,23 @@ curl -X POST http://localhost:8080/api/v1/search \
   -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
        "limit":5,"dense_weight":0.5,"min_score":0,"rerank_switch":false,
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
+
+# ── 只读三条：GET + query 参数（本仓唯一走 query string 的业务接口）──────
+# 为什么是 GET 而不是 POST：这三条没有副作用、参数都是标量，用 query 才能直接
+# 贴进浏览器地址栏排查。写侧那四条不改，仍是 POST + JSON。
+
+# 列某库下的文档（分页）。**刻意不返回正文**——列表是导航用的，
+# 一页几十篇背正文会让响应体没有上界；也不返回 source_url（库级的，每篇都一样）
+curl 'http://localhost:8080/api/v1/docs?account=demo&kb_no=demo-kb&page=1&page_size=10'
+
+# 单篇详情：整篇原文 + 库级来源 URL。
+# doc_id 查无此行、或不属于该 account，都返回 10501
+curl 'http://localhost:8080/api/v1/docs/detail?account=demo&doc_id=12'
+
+# 枚举某篇的切片。limit 默认 200、封顶 500（超了**钳到** 500，不像 page_size 那样报错）
+# total=0 是**合法状态**：ES 可见性有两档延迟，刚导入的文档原文立刻能看、
+# 切片要等下一轮刷新（最长约 30s）
+curl 'http://localhost:8080/api/v1/docs/chunks?account=demo&doc_id=12&limit=200&offset=0'
 
 # 探针
 curl http://localhost:8080/health
