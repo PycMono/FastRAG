@@ -760,10 +760,10 @@
     kb_no: $('kb_no').value.trim(),
   });
 
-  // 时间戳是 Unix **秒**（后端存的 int64），不是毫秒
+  // 后端全链路存的是**毫秒**（Go 侧 UnixMilli），别当秒用、别再乘 1000
   function fmtTime(ts) {
     if (!ts) return '—';
-    const d = new Date(ts * 1000);
+    const d = new Date(ts);
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
       `${p(d.getHours())}:${p(d.getMinutes())}`;

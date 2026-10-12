@@ -41,6 +41,9 @@ func (m *mockDocRepo) FindByName(ctx context.Context, kbID uint64, name string) 
 func (m *mockDocRepo) FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error) {
 	return m.load(ctx, ids)
 }
+func (m *mockDocRepo) FindByID(ctx context.Context, id uint64) (*entity.KnowledgeDoc, error) {
+	return nil, nil
+}
 func (m *mockDocRepo) ListByKB(ctx context.Context, kbID uint64, offset, limit int) (entity.KnowledgeDocs, int64, error) {
 	return nil, 0, nil
 }

@@ -12,10 +12,21 @@ type IKnowledgeDocRepo interface {
 	// 「不存在」是重导入路径上的正常分支。
 	FindByName(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error)
 
+	// FindByID 按主键加载**整行**（含整篇正文），供详情接口使用。
+	//
+	// 与 FindByIDs 分开，是因为两者要的列不同：详情要正文，存活校验不要。
+	// 合成一个方法，就会让每次检索都把命中文档的全文读回内存（见 FindByIDs）。
+	// 查不到返回 (nil, nil)，与 FindByName 同口径——是不是「不存在」由调用方判。
+	FindByID(ctx context.Context, id uint64) (*entity.KnowledgeDoc, error)
+
 	// FindByIDs 批量加载，供检索时的存活校验使用。
 	//
 	// 刻意**不加任何过滤**：调用方要的就是「这批 doc_id 里哪些还有行」。
 	// 查不到 = 孤儿或幽灵切片，由 AliveMap 之后的判断丢弃。
+	//
+	// **刻意不返回 content**：一次检索会捞几十篇文档，而单篇正文上限
+	// 8 MiB（constants.MaxContentBytes），带上它就是把几十 MB 读进内存，
+	// 只为回答「这行还在不在」。要正文走 FindByID。
 	FindByIDs(ctx context.Context, ids []uint64) (entity.KnowledgeDocs, error)
 
 	// ListByKB 列某库下的文档，返回当页的行与总数，供分页使用。

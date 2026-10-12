@@ -68,24 +68,19 @@ func (s *Service) List(
 
 // liveDoc 按 doc_id 取一篇「属于该 account」的文档。
 //
-// 租户校验补在这里，是因为 FindByIDs **刻意不带任何过滤**（它是给存活校验用的，
-// 调用方要的就是「这批 id 里哪些还有行」）。行不存在、或 account 对不上，
-// 都返回同一个 ErrDocNotFound——分开就是告诉探测者「这个 id 是存在的」。
+// 租户校验补在这里，是因为 FindByID **刻意不带 account 过滤**（底层仓储不该
+// 替调用方做租户判断）。行不存在、或 account 对不上，都返回同一个
+// ErrDocNotFound——分开就是告诉探测者「这个 id 是存在的」。
 func (s *Service) liveDoc(
 	ctx context.Context, docID uint64, account string,
 ) (*entity.KnowledgeDoc, error) {
-	docs, err := s.docRepo.FindByIDs(ctx, []uint64{docID})
+	doc, err := s.docRepo.FindByID(ctx, docID)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range docs {
-		if d.ID != docID {
-			continue
-		}
-		if d.Account != account {
-			break // 存在但不属于你：与「不存在」同一个错
-		}
-		return d, nil
+	if doc == nil || doc.Account != account {
+		// 不存在，或存在但不属于你：同一个错
+		return nil, apperrors.ErrDocNotFound
 	}
-	return nil, apperrors.ErrDocNotFound
+	return doc, nil
 }

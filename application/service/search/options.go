@@ -72,7 +72,7 @@ func (o searchOptions) effectiveRetrieveCount() int {
 // useKNN 判断向量路要不要发。不发就省下这次 embedding 调用（见 Service.Search ②）。
 //
 // 没有配对的 useBM25：BM25 发不发由仓储层自己看 DenseWeight 决定
-// （值随 VectorSearchReq 带过去了，见 vector_store_es.go 的 runSearch），
+// （值随 VectorSearchReq 带过去了，见 vector_store_es.go 的 runQuery），
 // 应用层在请求组装之前判一次没有任何效果——原来那个 UseBM25 就一直没人调。
 //
 // 阈值不是 0/1 而是 ±0.01，是为了容忍配置里写的 0.999 这类值。

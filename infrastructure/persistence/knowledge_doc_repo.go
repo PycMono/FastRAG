@@ -54,6 +54,33 @@ func (r *KnowledgeDocRepo) FindByName(
 	return &doc, nil
 }
 
+func (r *KnowledgeDocRepo) FindByID(
+	ctx context.Context, id uint64,
+) (*entity.KnowledgeDoc, error) {
+	var doc entity.KnowledgeDoc
+	err := r.db(ctx).Where("id = ?", id).First(&doc).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 与 FindByName 同口径：是不是「不存在」由调用方判，这里不是错误
+		return nil, nil
+	}
+	if err != nil {
+		return nil, apperrors.ErrInternal.Wrap(err)
+	}
+	return &doc, nil
+}
+
+// findByIDsSelect FindByIDs 的 SELECT 子句。
+//
+// 与 listByKBSelect 同一个理由：**不带 content**。这次不是响应体大小的问题，
+// 是内存——一次检索要捞几十篇文档，而单篇正文上限 8 MiB
+// （constants.MaxContentBytes），带上它就是把几十 MB 读进内存，
+// 只为回答「这行还在不在」。正文归 FindByID（详情接口）。
+//
+// 同样抽成常量以便钉住：本仓没有真库测试设施，多读一列既不报错也不变慢到能察觉。
+const findByIDsSelect = "id, kb_id, account, name, title, content_hash, " +
+	"chunk_count, create_ts, update_ts"
+
 func (r *KnowledgeDocRepo) FindByIDs(
 	ctx context.Context, ids []uint64,
 ) (entity.KnowledgeDocs, error) {
@@ -63,7 +90,11 @@ func (r *KnowledgeDocRepo) FindByIDs(
 
 	var docs entity.KnowledgeDocs
 	// 不加任何过滤：查不到的行就是不在了（硬删），由调用方丢弃其切片
-	if err := r.db(ctx).Where("id IN ?", ids).Find(&docs).Error; err != nil {
+	err := r.db(ctx).
+		Select(findByIDsSelect).
+		Where("id IN ?", ids).
+		Find(&docs).Error
+	if err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
 	return docs, nil
