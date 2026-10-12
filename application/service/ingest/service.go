@@ -23,6 +23,7 @@ type Service struct {
 	docRepo    repository.IKnowledgeDocRepo
 	store      repository.IVectorStore
 	embeddings interfaces.IEmbeddingRegistry
+	parsers    interfaces.IParserRegistry
 	splitter   *domainservice.Splitter
 	idGen      repository.IIDService
 	tm         transaction.Manager
@@ -33,6 +34,7 @@ func NewService(
 	docRepo repository.IKnowledgeDocRepo,
 	store repository.IVectorStore,
 	embeddings interfaces.IEmbeddingRegistry,
+	parsers interfaces.IParserRegistry, // ← 新增
 	splitter *domainservice.Splitter,
 	idGen repository.IIDService,
 	tm transaction.Manager,
@@ -42,6 +44,7 @@ func NewService(
 		docRepo:    docRepo,
 		store:      store,
 		embeddings: embeddings,
+		parsers:    parsers, // ← 新增
 		splitter:   splitter,
 		idGen:      idGen,
 		tm:         tm,

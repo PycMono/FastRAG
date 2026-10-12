@@ -35,9 +35,10 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 		nil, // docRepo：不该被调到
 		nil, // store：不该被调到
 		errEmbeddingRegistry{err: errors.New(`没有名为 "nope" 的 embedding 模型。可用：[bge-m3]`)},
-		nil, // splitter
-		nil, // idGen
-		nil, // tm
+		stubParserRegistry{}, // parsers：本用例走不到解析，给个空壳
+		nil,                  // splitter
+		nil,                  // idGen
+		nil,                  // tm
 	)
 
 	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{

@@ -139,6 +139,7 @@ func TestEmbedAndStore_FirstImport(t *testing.T) {
 
 	svc := NewService(kbRepo, docRepo, store,
 		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{}, // parsers：这两个用例走不到解析，给个空壳
 		service.NewSplitter(), &stubIDService{}, tm)
 
 	out, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
@@ -185,6 +186,7 @@ func TestEmbedAndStore_Reimport_KeepsDocID(t *testing.T) {
 
 	svc := NewService(kbRepo, docRepo, store,
 		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{}, // parsers：这两个用例走不到解析，给个空壳
 		service.NewSplitter(), &stubIDService{}, &stubTm{})
 
 	out, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
