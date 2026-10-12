@@ -23,6 +23,7 @@ type Config struct {
 	ES        ESConfig        `json:"es"` // Elasticsearch
 	Embedding EmbeddingConfig `json:"embedding"`
 	Rerank    RerankConfig    `json:"rerank"`
+	Parser    ParserConfig    `json:"parser"`
 	Search    SearchConfig    `json:"search"`
 	Security  SecurityConfig  `json:"security"`
 }
@@ -276,6 +277,142 @@ func (c RerankConfig) validate() error {
 	return nil
 }
 
+// ─── 解析后端：parser ──────────────────────────────────────────────────────
+//
+// 与 embedding / rerank 同一套两层结构（外层默认 + backends 逐项），但这里
+// 外层没有「共用字段」——timeout_ms 也是逐家不同（自部署 Docling 能等，
+// 腾讯要卡小），所以外层只剩 default。
+//
+// 两个后端字段按 type 分用，不拆成两个 struct：registry 只想要
+// 「一个名字 → 一份参数」，拆开会让配置解析多一层类型断言。
+
+// 解析后端类型，对应 backends[*].type。
+const (
+	ParserTypeDocling = "docling"
+	ParserTypeTencent = "tencent"
+)
+
+// ParserConfig 文档解析后端的注册表。
+type ParserConfig struct {
+	Default  string                 `json:"default"` // 请求没带 parser 时用哪个；必须是 backends 的一个 key
+	Backends map[string]ParserEntry `json:"backends"`
+}
+
+// ParserEntry 一个解析后端。
+//
+// docling 看 BaseURL / Options；tencent 看 SecretID / SecretKey / Region。
+type ParserEntry struct {
+	Type        string         `json:"type"`          // "docling" | "tencent"
+	BaseURL     string         `json:"base_url"`      // docling 用
+	SecretID    string         `json:"secret_id"`     // tencent 用
+	SecretKey   string         `json:"secret_key"`    // tencent 用
+	Region      string         `json:"region"`        // tencent 用
+	TimeoutMS   int            `json:"timeout_ms"`    // 必须 < http.write_timeout
+	MaxRetries  int            `json:"max_retries"`   // 重试次数（不含首次）；0 = 不重试
+	RetryWaitMS int            `json:"retry_wait_ms"` // 固定间隔退避
+	Formats     []string       `json:"formats"`       // 支持的扩展名（小写、不含点）
+	Options     map[string]any `json:"options"`       // 后端私有，透传
+}
+
+// ParserParams 造一个解析实现所需的参数。
+type ParserParams struct {
+	Name        string
+	Type        string
+	BaseURL     string
+	SecretID    string
+	SecretKey   string
+	Region      string
+	TimeoutMS   int
+	MaxRetries  int
+	RetryWaitMS int
+	Formats     []string
+	Options     map[string]any
+}
+
+// Params 取某个解析后端的完整参数；name 为空时用 Default。
+//
+// 未知名字**报错、不回落**——消息格式与 embedding 那条一致，方便调用方照着填。
+func (c ParserConfig) Params(name string) (ParserParams, error) {
+	if name == "" {
+		name = c.Default
+	}
+	e, ok := c.Backends[name]
+	if !ok {
+		return ParserParams{}, fmt.Errorf("没有名为 %q 的解析后端。可用：%v", name, c.Names())
+	}
+	return ParserParams{
+		Name:        name,
+		Type:        e.Type,
+		BaseURL:     e.BaseURL,
+		SecretID:    e.SecretID,
+		SecretKey:   e.SecretKey,
+		Region:      e.Region,
+		TimeoutMS:   e.TimeoutMS,
+		MaxRetries:  e.MaxRetries,
+		RetryWaitMS: e.RetryWaitMS,
+		Formats:     e.Formats,
+		Options:     e.Options,
+	}, nil
+}
+
+// Names 返回所有可用的名字，已排序。
+func (c ParserConfig) Names() []string { return sortedKeys(c.Backends) }
+
+// validate 校验 parser 这块能不能用。
+//
+// maxTimeoutMS 是 http.write_timeout 换算成的毫秒数，由 (*Config).validate() 传进来：
+// 解析超时必须落在写超时之内，否则解析还没结束连接就被掐断，我们连错误都回不了包。
+//
+// **刻意不校验 tencent 的密钥**：config.example.json 必须始终是一份能过校验的配置
+// （config_test.go 就是这么断言的），而示例里密钥和 embedding 的 api_key 一样是留空的。
+// 密钥缺失改由腾讯适配器的构造函数报错。
+func (c ParserConfig) validate(maxTimeoutMS int) error {
+	names := c.Names()
+	if len(names) == 0 {
+		return errors.New("parser.backends 为空：至少要配一个解析后端")
+	}
+	if c.Default == "" {
+		return fmt.Errorf("parser.default 为空：请求不带 parser 时没有兜底。可用：%v", names)
+	}
+	if _, ok := c.Backends[c.Default]; !ok {
+		return fmt.Errorf("parser.default=%q 不在 backends 里。可用：%v", c.Default, names)
+	}
+	for _, name := range names {
+		e := c.Backends[name]
+		switch e.Type {
+		case ParserTypeDocling:
+			if strings.TrimSpace(e.BaseURL) == "" {
+				return fmt.Errorf("parser.backends[%s].base_url 为空：docling 必须给服务地址", name)
+			}
+		case ParserTypeTencent:
+			// 密钥在这里不查，见方法注释
+		default:
+			return fmt.Errorf("parser.backends[%s].type=%q 不认识，只能是 %q 或 %q",
+				name, e.Type, ParserTypeDocling, ParserTypeTencent)
+		}
+		if e.TimeoutMS <= 0 {
+			return fmt.Errorf("parser.backends[%s].timeout_ms 必须大于 0，当前 %d", name, e.TimeoutMS)
+		}
+		// 注意这条比对的是**单次尝试**的上限；整段重试的总预算由适配器用
+		// context.WithTimeout 自己罩（见 parser_docling.go / parser_tencent.go），
+		// 两者合起来才保证总耗时 < write_timeout。
+		if maxTimeoutMS > 0 && e.TimeoutMS >= maxTimeoutMS {
+			return fmt.Errorf(
+				"parser.backends[%s].timeout_ms=%d 必须小于 http.write_timeout(%dms)，否则解析未结束连接就被掐断",
+				name, e.TimeoutMS, maxTimeoutMS)
+		}
+		// 这两个也要卡负值：retry.Attempts 收的是 uint，-1 会被转成 4294967295，
+		// 表现成「无限重试直到超时」，而不是报错。
+		if e.MaxRetries < 0 {
+			return fmt.Errorf("parser.backends[%s].max_retries 不能为负，当前 %d", name, e.MaxRetries)
+		}
+		if e.RetryWaitMS < 0 {
+			return fmt.Errorf("parser.backends[%s].retry_wait_ms 不能为负，当前 %d", name, e.RetryWaitMS)
+		}
+	}
+	return nil
+}
+
 // sortedKeys 取 map 的 key 并排序。列可用名字时用，顺序必须稳定。
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
@@ -309,7 +446,10 @@ func (c *Config) validate() error {
 	if err := c.Embedding.validate(); err != nil {
 		return err
 	}
-	return c.Rerank.validate()
+	if err := c.Rerank.validate(); err != nil {
+		return err
+	}
+	return c.Parser.validate(c.HTTP.WriteTimeout * 1000)
 }
 
 // SearchConfig 检索调参

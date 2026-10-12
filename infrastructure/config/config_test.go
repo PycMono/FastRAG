@@ -64,6 +64,16 @@ func validConfig() *Config {
 				},
 			},
 		},
+		Parser: ParserConfig{
+			Default: "docling",
+			Backends: map[string]ParserEntry{
+				"docling": {
+					Type:      ParserTypeDocling,
+					BaseURL:   "http://127.0.0.1:5001",
+					TimeoutMS: 1000,
+				},
+			},
+		},
 	}
 }
 
@@ -243,5 +253,94 @@ func TestNames_Sorted(t *testing.T) {
 	names := validConfig().Embedding.Names()
 	if len(names) != 2 || names[0] != "bge-m3" || names[1] != "qwen" {
 		t.Errorf("Names 必须排序且完整，得到 %v", names)
+	}
+}
+
+func TestParserConfig_Validate(t *testing.T) {
+	ok := func(mut func(*ParserConfig)) ParserConfig {
+		c := ParserConfig{
+			Default: "d",
+			Backends: map[string]ParserEntry{
+				"d": {Type: ParserTypeDocling, BaseURL: "http://127.0.0.1:5001", TimeoutMS: 1000},
+			},
+		}
+		mut(&c)
+		return c
+	}
+
+	cases := []struct {
+		name string
+		cfg  ParserConfig
+		ok   bool
+	}{
+		{"合法", ok(func(*ParserConfig) {}), true},
+		{"default 不命中", ok(func(c *ParserConfig) { c.Default = "nope" }), false},
+		{"type 未知", ok(func(c *ParserConfig) {
+			e := c.Backends["d"]
+			e.Type = "gemini"
+			c.Backends["d"] = e
+		}), false},
+		{"docling 缺 base_url", ok(func(c *ParserConfig) {
+			e := c.Backends["d"]
+			e.BaseURL = "  "
+			c.Backends["d"] = e
+		}), false},
+		{"timeout_ms 撞写超时", ok(func(c *ParserConfig) {
+			e := c.Backends["d"]
+			e.TimeoutMS = 200000
+			c.Backends["d"] = e
+		}), false},
+		{"max_retries 为负", ok(func(c *ParserConfig) {
+			e := c.Backends["d"]
+			e.MaxRetries = -1
+			c.Backends["d"] = e
+		}), false},
+		{"tencent 缺密钥也放行（示例配置必须过校验）", ParserConfig{
+			Default: "t",
+			Backends: map[string]ParserEntry{
+				"t": {Type: ParserTypeTencent, TimeoutMS: 1000},
+			},
+		}, true},
+	}
+
+	for _, tc := range cases {
+		err := tc.cfg.validate(120000) // 120s 写超时 = 120000ms
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: 期望 ok=%v，得到 err=%v", tc.name, tc.ok, err)
+		}
+	}
+}
+
+// Params：空名字取 default；未知名字报错并列出可用项；Options 原样带出。
+func TestParserConfig_Params(t *testing.T) {
+	c := ParserConfig{
+		Default: "docling",
+		Backends: map[string]ParserEntry{
+			"docling": {
+				Type:      ParserTypeDocling,
+				BaseURL:   "http://127.0.0.1:5001",
+				TimeoutMS: 1000,
+				Options:   map[string]any{"do_ocr": true},
+			},
+		},
+	}
+
+	got, err := c.Params("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "docling" {
+		t.Errorf("空名字应取 default，得到 %q", got.Name)
+	}
+	if got.Options["do_ocr"] != true {
+		t.Errorf("Options 应原样带出，得到 %#v", got.Options)
+	}
+
+	_, err = c.Params("nope")
+	if err == nil {
+		t.Fatal("未知名字必须报错")
+	}
+	if !strings.Contains(err.Error(), "docling") {
+		t.Errorf("报错消息里应列出可用名字，得到 %v", err)
 	}
 }

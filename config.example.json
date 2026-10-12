@@ -77,6 +77,24 @@
     "dense_weight": 0.5,
     "default_retrieve_count": 0
   },
+  "parser": {
+    "default": "docling",
+    "backends": {
+      "docling": {
+        "type": "docling",
+        "base_url": "http://127.0.0.1:5001",
+        "timeout_ms": 110000,
+        "max_retries": 1,
+        "retry_wait_ms": 1000,
+        "formats": ["pdf","docx","doc","pptx","xlsx","html","htm","md","txt","png","jpg","jpeg","tiff"],
+        "options": {
+          "do_ocr": true,
+          "table_mode": "accurate",
+          "image_export_mode": "placeholder"
+        }
+      }
+    }
+  },
   "security": {
     "trust_request_account": true
   }
