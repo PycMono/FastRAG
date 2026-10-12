@@ -10,6 +10,7 @@ import (
 	neturl "net/url"
 	"path"
 	"strings"
+	"unicode"
 
 	"github.com/PycMono/FastRAG/common/constants"
 	"github.com/PycMono/FastRAG/common/dto"
@@ -149,11 +150,34 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// extOf 取扩展名（小写、不含点）；没有则空串。
+// extOf 取扩展名（小写、不含点）；推不出则空串。
+//
+// 只有「最后一段里最后一个点之后全是字母」才认作扩展名。光用 path.Ext 不够：
+// arXiv 那种省略扩展名的 id（`/pdf/1706.03762v7`）里带点，path.Ext 会把
+// `03762v7` 当成扩展名，于是格式闸门把一条合法地址误杀——正是 supportsFormat
+// 注释里说要避免的那件事。
 func extOf(rawURL string) string {
 	name := filenameOf(rawURL)
 	if name == "" {
 		return ""
 	}
-	return strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))
+	ext := path.Ext(name)
+	if !isLetterExt(ext) {
+		return ""
+	}
+	return strings.ToLower(ext[1:])
+}
+
+// isLetterExt 判 path.Ext 的结果「像个真扩展名」：点后面全是字母（.pdf、.docx）。
+// 点后面带数字或符号的（.03762v7）不是扩展名，是文件名的一部分。
+func isLetterExt(ext string) bool {
+	if len(ext) < 2 {
+		return false
+	}
+	for _, r := range ext[1:] {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
 }

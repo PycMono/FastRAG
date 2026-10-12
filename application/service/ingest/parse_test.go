@@ -98,6 +98,30 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 	}
 }
 
+// 扩展名推不出来的合法地址不能被格式闸门误杀（任务 10 真实打到：arXiv 的
+// `https://arxiv.org/pdf/1706.03762v7` 被回成「不支持该文件类型: 1706.03762v7」）。
+func TestParse_ExtensionlessID_PassesFormatGate(t *testing.T) {
+	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	svc := newParseService(
+		stubParserRegistry{parser: stubParser{
+			name: "docling", formats: []string{"pdf"}, md: "# 标题\n正文正文正文",
+		}},
+		&stubDocRepo{}, &stubStore{},
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		&stubTm{},
+	)
+
+	out, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		Account: "demo", KBNo: "kb-1", URL: "https://arxiv.org/pdf/1706.03762v7",
+	})
+	if err != nil {
+		t.Fatalf("扩展名推不出来的地址应放行、交给后端判，得到 %v", err)
+	}
+	if out.DocName != "1706.03762v7" {
+		t.Errorf("doc_name 应取 URL 末段，得到 %q", out.DocName)
+	}
+}
+
 // 坏 scheme 必须挡在解析之前，而且先于「取后端」——registry 这里一被调到就 panic，
 // 顺序反了用例就炸。
 func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
@@ -251,6 +275,9 @@ func TestFilenameOf_QueryAndPercentEncoded(t *testing.T) {
 		{"https://example.com/dir/sub/b.docx", "b.docx", "docx"},
 		{"https://example.com/", "", ""},
 		{"https://example.com", "", ""},
+		// 省略扩展名、id 里带点的（arXiv 那种）：小数部分不是扩展名，推不出来就放行
+		{"https://arxiv.org/pdf/1706.03762v7", "1706.03762v7", ""},
+		{"https://arxiv.org/pdf/1706.03762v7.pdf", "1706.03762v7.pdf", "pdf"},
 		{"https://example.com/noext", "noext", ""},
 	}
 
