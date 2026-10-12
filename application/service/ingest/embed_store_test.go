@@ -33,7 +33,9 @@ func (s *stubDocRepo) FindByName(ctx context.Context, kbID uint64, name string) 
 
 func (s *stubDocRepo) Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
 	if s.delErr != nil {
-		return nil, s.delErr
+		// 即便报错也把「受害者」行带回去：调用方若吞掉错误继续往下走，
+		// 必须能走到扣计数/清 ES 那两步，让用例的断言真正发声，而不是半路 nil panic。
+		return &entity.KnowledgeDoc{ID: 42, ChunkCount: 2}, s.delErr
 	}
 	return s.existing, nil
 }
@@ -71,6 +73,14 @@ func (s *stubStore) Refresh(ctx context.Context) error {
 func (s *stubStore) DeleteExcept(ctx context.Context, f repository.VectorFilter, keepIDs []string) (int64, error) {
 	s.calls = append(s.calls, "delete_except")
 	s.keepIDs = keepIDs
+	return 0, nil
+}
+
+// DeleteByQuery 供删除用例观察「ES 清理有没有被调到」：记一笔调用即可。
+// 内嵌的 IVectorStore 是 nil 接口，不实现它的话被调到就 panic——那样
+// 用例只能在半路炸掉，断言反而没了发声的机会。
+func (s *stubStore) DeleteByQuery(ctx context.Context, f repository.VectorFilter) (int64, error) {
+	s.calls = append(s.calls, "delete_by_query")
 	return 0, nil
 }
 

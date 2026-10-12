@@ -82,7 +82,7 @@ func TestDeleteDoc_DeleteFails_NoDeltaNoESCleanup(t *testing.T) {
 		Account: "demo", KBNo: "kb-1", DocName: "gone.md",
 	})
 	if err == nil {
-		t.Fatal("删除失败必须报错，不能当成功返回")
+		t.Errorf("删除失败必须报错，不能当成功返回")
 	}
 	if len(store.calls) != 0 {
 		t.Errorf("删除没成功就不该清 ES，得到 %v", store.calls)
