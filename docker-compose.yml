@@ -1,10 +1,12 @@
 # FastRAG 本地开发环境
 #
-# 只起 Elasticsearch + Kibana。
+# 起 Elasticsearch（+可选 Kibana）。Docling Serve 也在这里，但**默认不启动**
+# （镜像解压后约 14GB）——要解析文档时用 --profile docling 单独拉起。
 # MySQL / Redis 本机已经在跑（3306 / 6379），直接用即可；
 # 需要独立一套时，见文件末尾的注释块。
 #
-#   docker compose up -d --build
+#   docker compose up -d --build                # 只起 ES
+#   docker compose --profile docling up -d      # 再带上 Docling Serve(5001)
 #   docker compose logs -f es
 #   docker compose down            # 保留数据
 #   docker compose down -v         # 连数据一起删
@@ -59,8 +61,33 @@ services:
       es:
         condition: service_healthy
 
+  # Docling Serve：自建解析后端（设计见 docs/superpowers/specs/2026-10-12-doc-parser-design.md §7）。
+  #
+  # 默认**不启动**——镜像解压后约 14GB，只有真要解析文档时才值得起。
+  #   docker compose --profile docling up -d
+  #
+  # 首次启动会下载 Docling 的模型（视 PDF 后端而定，数百 MB 到 GB 级），所以给
+  # /opt/app-root/src/.cache（= 镜像里的 HOME/.cache，HF 模型与 docling 产物都在这）
+  # 挂了卷：不挂的话每次重建容器都要重新下一遍。
+  #
+  # ⚠️ 本机若已有一个手工 `docker run` 出来的 docling-serve 容器，先
+  # `docker rm docling-serve`，否则它和这里的 fastrag-docling 会抢 5001 端口。
+  docling:
+    profiles: ["docling"]
+    image: quay.io/docling-project/docling-serve:latest
+    container_name: fastrag-docling
+    command: ["docling-serve", "run"]
+    environment:
+      - DOCLING_SERVE_ENABLE_UI=1          # 带 /ui，手工试转换时好用
+    ports:
+      - "5001:5001"
+    volumes:
+      - doclingcache:/opt/app-root/src/.cache
+    restart: unless-stopped
+
 volumes:
   esdata:
+  doclingcache:
 
 # ---------------------------------------------------------------------------
 # 可选：如果你想要一套完全独立的 MySQL / Redis（不共用本机已有的），
