@@ -104,7 +104,11 @@ func supportsFormat(p interfaces.IParser, rawURL string) bool {
 	return false
 }
 
-// filenameOf 取 URL 末段作为文件名（去查询串、做百分号解码）；推不出返回空串。
+// filenameOf 取 URL 末段作为文件名（去查询串、百分号解码后）；推不出返回空串。
+//
+// 不再自己 PathUnescape：net/url 存进 u.Path 的**已经是解码后的**路径
+// （`/%47%6f` 解析出来就是 `/Go`），再解一次是第二次解码——名字里本来就带
+// `%25` 的文件会被解坏（`100%2525.pdf` 变成 `100%.pdf`）。
 func filenameOf(rawURL string) string {
 	u, err := neturl.Parse(rawURL)
 	if err != nil {
@@ -113,9 +117,6 @@ func filenameOf(rawURL string) string {
 	base := path.Base(u.Path)
 	if base == "." || base == "/" || base == "" {
 		return ""
-	}
-	if dec, err := neturl.PathUnescape(base); err == nil {
-		return dec
 	}
 	return base
 }

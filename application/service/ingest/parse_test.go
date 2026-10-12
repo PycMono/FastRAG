@@ -242,6 +242,8 @@ func TestFilenameOf_QueryAndPercentEncoded(t *testing.T) {
 		{"https://example.com/a.pdf", "a.pdf", "pdf"},
 		{"https://example.com/a.pdf?v=2#p3", "a.pdf", "pdf"},
 		{"https://example.com/%E6%8A%A5%E5%91%8A.PDF?v=2", "报告.PDF", "pdf"},
+		// 名字里本来就带 %25 的：只该解码一次，两次会把 %25 也吃掉
+		{"https://example.com/100%2525.pdf", "100%25.pdf", "pdf"},
 		{"https://example.com/dir/sub/b.docx", "b.docx", "docx"},
 		{"https://example.com/", "", ""},
 		{"https://example.com", "", ""},
