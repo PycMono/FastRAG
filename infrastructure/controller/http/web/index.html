@@ -746,7 +746,12 @@
   let curDocID = 0;
   let chunkOffset = 0;
 
-  $('btnDocs').addEventListener('click', loadDocList);
+  // 「全新加载」才把页码归 1：点「加载」按钮、或换了 account / kb_no。归 1 放在
+  // 事件处理里、**不**放进 loadDocList 内部——分页器自己的翻页要带着目标页码去
+  // 请求（走 renderDocPager 里的 loadDocList()，不经这里），不能被打回第 1 页。
+  $('btnDocs').addEventListener('click', () => { docPage = 1; loadDocList(); });
+  ['account', 'kb_no'].forEach((id) =>
+    $(id).addEventListener('input', () => { docPage = 1; }));
   $('btnCloseDoc').addEventListener('click', () => { $('docDetail').style.display = 'none'; });
   $('btnChunks').addEventListener('click', loadChunks);
 
