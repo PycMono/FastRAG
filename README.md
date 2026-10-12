@@ -231,7 +231,8 @@ Docling 能等，腾讯要卡小）：
 
 - **`type` 取 `docling` 或 `tencent`**。自部署 Docling 用
   `docker compose --profile docling up -d` 起（镜像约 14GB，所以默认不启动）；
-  腾讯那家要填 `secret_id` / `secret_key`，**缺了会在启动期报错**。
+  腾讯那家要填 `secret_id` / `secret_key`——**把它设为 `default` 时缺密钥会在启动期报错**
+  （其余非默认后端只做字段校验，不查密钥）。
 - **`default` 决定这次用哪家**：接口不带选后端的参数，改它再重启即换后端。
 - **`timeout_ms` 必须小于 `http.write_timeout`**（默认 120s），启动期会校验。
   它是这次解析的**总预算**，不是「每次尝试各算一份」——超时重试不会撞穿写超时。
@@ -328,8 +329,9 @@ Docling 能等，腾讯要卡小）：
 
 ## API 示例
 
-业务路由有四个（`infrastructure/controller/http/register.go`）：`/api/v1/docs`、`/api/v1/docs/batch`、
-`/api/v1/docs/parse`、`/api/v1/docs/delete`，外加 `/api/v1/search`。
+业务路由按能力分四件事（`infrastructure/controller/http/register.go`）：写文档（`/api/v1/docs`、
+`/api/v1/docs/batch`）、解析导入（`/api/v1/docs/parse`）、删文档（`/api/v1/docs/delete`）、
+检索（`/api/v1/search`）。
 知识库的 CRUD 不在本服务范围内（§1.2）——`knowledge_base` 表由外部系统维护。
 
 ```bash
