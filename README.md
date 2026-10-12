@@ -378,7 +378,7 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
 # 注意量纲随 rerank_switch 变：开精排时是模型分（0~1），关时是 RRF 融合分（0.01 量级），
 # 所以关掉精排还填 0.9 会把结果全筛光
 #
-# 早先的 `BizTags` 请求参数已移除：带上它不会再报错，而是被**静默忽略**——
+# 早先的 `biz_tags` 请求参数已移除：带上它不会再报错，而是被**静默忽略**——
 # 别以为它还在筛库，请求会照常按 account 检索全部 kb_nos
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
