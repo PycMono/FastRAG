@@ -44,6 +44,11 @@ const (
 	CodeRerankFail = 10302 // 重排序服务失败
 )
 
+// 文档解析相关错误码
+const (
+	CodeParseFail = 10401 // 解析失败：上游超时 / 上游错误 / 返回体不可解析
+)
+
 // ─── CodeError 基础 ──────────────────────────────────────────────────────────
 
 // CodeError 带错误码的错误接口
@@ -184,6 +189,7 @@ var (
 	ErrVectorStoreFailed = NewSysError(CodeVectorStoreFail, "vector store failed")
 	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
 	ErrRerankFailed      = NewSysError(CodeRerankFail, "rerank service failed")
+	ErrParseFailed       = NewSysError(CodeParseFail, "doc parse failed")
 )
 
 // NewParamError 生成带自定义文案的参数错误。
