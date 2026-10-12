@@ -92,6 +92,16 @@
           "table_mode": "accurate",
           "image_export_mode": "placeholder"
         }
+      },
+      "tencent": {
+        "type": "tencent",
+        "secret_id": "",
+        "secret_key": "",
+        "region": "ap-guangzhou",
+        "timeout_ms": 110000,
+        "max_retries": 1,
+        "retry_wait_ms": 1000,
+        "formats": ["pdf","docx","doc","pptx","xlsx","md","txt","png","jpg","jpeg"]
       }
     }
   },
