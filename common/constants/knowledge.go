@@ -7,7 +7,7 @@ const (
 	FormatChunks   = "chunks"   // 给已切好的切片，只做索引
 )
 
-// 知识库类型（knowledge_base.knowledge_type）
+// 知识库类型（knowledge_base.type）
 const (
 	KnowledgeTypeOrdinary = "ordinary"
 	KnowledgeTypeQA       = "qa"

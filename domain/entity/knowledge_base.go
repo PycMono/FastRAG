@@ -14,21 +14,16 @@ package entity
 // 没有 index_kind / index_name：索引策略是「单索引 + term(account) 过滤」
 // （设计文档 D2），所有租户共用一个物理索引，不需要 per-KB 的索引路由列。
 type KnowledgeBase struct {
-	ID            uint64 `gorm:"column:id;primaryKey;autoIncrement"`                         // 内部主键，join 用
-	No            string `gorm:"column:no;type:varchar(64);not null"`                        // 对外编号，接口用
-	Account       string `gorm:"column:account;type:varchar(64);not null;index:idx_account"` // 租户
-	Name          string `gorm:"column:name;type:varchar(255);not null"`
-	Description   string `gorm:"column:description;type:varchar(1024);not null;default:''"`
-	KnowledgeType string `gorm:"column:knowledge_type;type:varchar(32);not null;default:'ordinary'"`
-	DocCount      int64  `gorm:"column:doc_count;type:bigint;not null;default:0"`
-	ChunkCount    int64  `gorm:"column:chunk_count;type:bigint;not null;default:0"`
-	IsSystem      bool   `gorm:"column:is_system;type:tinyint;not null;default:0"`
-	CreateTs      int64  `gorm:"column:create_ts;type:bigint;not null"`
-	UpdateTs      int64  `gorm:"column:update_ts;type:bigint;not null"`
-	DeleteTs      int64  `gorm:"column:delete_ts;type:bigint;not null;default:0"`
+	ID          uint64 `gorm:"column:id;primaryKey;autoIncrement"`                         // 内部主键，join 用
+	No          string `gorm:"column:no;type:varchar(64);not null"`                        // 对外编号，接口用
+	Account     string `gorm:"column:account;type:varchar(64);not null;index:idx_account"` // 租户
+	Name        string `gorm:"column:name;type:varchar(255);not null"`                     // 库的显示名
+	Description string `gorm:"column:description;type:varchar(1024);not null;default:''"`  // 简介，供展示
+	Type        string `gorm:"column:type;type:varchar(32);not null;default:'ordinary'"`   // 库类型：ordinary / qa，取值见 constants.KnowledgeTypeOrdinary / constants.KnowledgeTypeQA
+	DocCount    int64  `gorm:"column:doc_count;type:bigint;not null;default:0"`            // 冗余计数：本服务回写的文档数
+	ChunkCount  int64  `gorm:"column:chunk_count;type:bigint;not null;default:0"`          // 冗余计数：本服务回写的切片数
+	CreateTs    int64  `gorm:"column:create_ts;type:bigint;not null"`                      // 建库方维护
+	UpdateTs    int64  `gorm:"column:update_ts;type:bigint;not null"`                      // 本服务每次导入/删除都会回写
 }
 
 func (KnowledgeBase) TableName() string { return "knowledge_base" }
-
-// Deleted 是否已软删。
-func (kb *KnowledgeBase) Deleted() bool { return kb.DeleteTs > 0 }

@@ -33,7 +33,7 @@ func (r *KnowledgeBaseRepo) FindByNo(
 ) (*entity.KnowledgeBase, error) {
 	var kb entity.KnowledgeBase
 	err := r.db(ctx).
-		Where("no = ? AND account = ? AND delete_ts = 0", no, account).
+		Where("no = ? AND account = ?", no, account).
 		First(&kb).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -59,7 +59,7 @@ func (r *KnowledgeBaseRepo) FindByNos(
 	// 省掉「先扫进 []struct 再转一遍指针」的循环
 	var kbs entity.KnowledgeBases
 	if err := r.db(ctx).
-		Where("no IN ? AND account = ? AND delete_ts = 0", nos, account).
+		Where("no IN ? AND account = ?", nos, account).
 		Find(&kbs).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}

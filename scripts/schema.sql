@@ -32,8 +32,6 @@ CREATE TABLE IF NOT EXISTS `knowledge_doc` (
   `chunk_count`     INT          NOT NULL DEFAULT 0,
   `create_ts`       BIGINT       NOT NULL,
   `update_ts`       BIGINT       NOT NULL,
-  `delete_ts`       BIGINT       NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_kb_name` (`kb_id`, `name`, `delete_ts`),
-  KEY `idx_kb_delete` (`kb_id`, `delete_ts`)
+  UNIQUE KEY `uk_kb_name` (`kb_id`, `name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
