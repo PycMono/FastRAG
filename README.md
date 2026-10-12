@@ -18,7 +18,7 @@ application/service     // 应用服务层：编排领域服务，处理用例�
 └── search              // 混合检索
 domain
 ├── entity              // 领域模型（聚合根、实体；带 gorm tag 的即表模型）
-├── factory             // 实体的命名构造：保证 CreateTs/DeleteTs 漏填不了
+├── factory             // 实体的命名构造：保证 CreateTs 漏填不了
 ├── repository          // 仓储接口（持久化抽象）
 ├── interfaces          // 外部服务接口（embedding / rerank）
 ├── service             // 领域服务（切片）与其参数类型 ChunkOptions / ChunkInput
@@ -50,6 +50,11 @@ common
 `knowledge_base` 由外部系统预置（§1.2），列定义归建库方——实体上的 tag 只是**读**它时的映射，
 改 tag 不会去动那张表。所以只有 `knowledge_doc` 的 tag 与 `scripts/schema.sql` 是
 "同一份列定义的两个写法、改一边就要改另一边"；不一致都不会报错，只会静默查不到数据。
+
+2026-10-12 的这次简化**两张表一起改了**：`knowledge_doc` 去掉软删列、`knowledge_base` 去掉几个
+字段并把类型列改名为 `type`。一次性迁移在
+`scripts/migrate-2026-10-12-entity-simplify.sql`——它是**非幂等**脚本，只对已存在的库跑一次，
+**跑之前先备份**（新建库直接用 `scripts/schema.sql`，不需要它）。
 
 依赖注入使用 [Uber FX](https://github.com/uber-go/fx)。
 
@@ -372,6 +377,9 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
 # min_score 是**最终分**的阈值，>0 才启用，筛完可能不足 limit 条；
 # 注意量纲随 rerank_switch 变：开精排时是模型分（0~1），关时是 RRF 融合分（0.01 量级），
 # 所以关掉精排还填 0.9 会把结果全筛光
+#
+# 早先的 `BizTags` 请求参数已移除：带上它不会再报错，而是被**静默忽略**——
+# 别以为它还在筛库，请求会照常按 account 检索全部 kb_nos
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
@@ -420,5 +428,5 @@ open http://localhost:8080/
 > **embedding 的瞬时抖动已兜住**：`EmbedDocs` / `EmbedQuery` 各带 1 次重试
 > （固定 100ms 退避，与 rerank 一致）。持续不可用仍会失败，那属于调用方该重试的范畴。
 
-其余待定项（检索深翻页、`rank_constant` 调参、gRPC 接入、`_routing`、多 `search_mode`
-的并行度、租户与切片规模）逐条列在 §13 的表里。
+其余待定项（检索深翻页、`rank_constant` 调参、gRPC 接入、`_routing`、租户与切片规模）
+逐条列在 §13 的表里。
