@@ -61,6 +61,17 @@ func reqTimeoutSeconds(ms int) int {
 	return 1
 }
 
+// tencentHTTPProfile 造 SDK 的 HTTP 配置：接入点 + 超时（秒）。
+//
+// 抽成纯函数是为了能被单测直接断言：SDK v1.3.193 没有 profile 的取用侧 API，
+// 只有把构造变成能单独调用的函数，才测得到 ReqTimeout 到底有没有接到 profile 上。
+func tencentHTTPProfile(p config.ParserParams) *profile.HttpProfile {
+	hp := profile.NewHttpProfile()
+	hp.Endpoint = "ocr.tencentcloudapi.com"
+	hp.ReqTimeout = reqTimeoutSeconds(p.TimeoutMS)
+	return hp
+}
+
 type tencentParser struct {
 	name       string
 	formats    []string
@@ -71,22 +82,22 @@ type tencentParser struct {
 	retryWait  time.Duration
 }
 
-// newTencentParser 造腾讯解析实现。密钥缺失在这里就报错——它比 validate 更靠后一步，
-// 但仍早于任何一次真实调用。
+// newTencentParser 造腾讯解析实现。密钥/区域缺失在这里就报错——它比 validate 更靠后一步，
+// 但仍早于任何一次真实调用，符合「启动期暴露配置错」的一贯做法。
 func newTencentParser(p config.ParserParams) (*tencentParser, error) {
 	if strings.TrimSpace(p.SecretID) == "" || strings.TrimSpace(p.SecretKey) == "" {
 		return nil, fmt.Errorf("解析后端 %q（tencent）缺 secret_id / secret_key", p.Name)
 	}
+	if strings.TrimSpace(p.Region) == "" {
+		return nil, fmt.Errorf("解析后端 %q（tencent）缺 region", p.Name)
+	}
 
 	prof := profile.NewClientProfile()
-	prof.HttpProfile.Endpoint = "ocr.tencentcloudapi.com"
+	prof.HttpProfile = tencentHTTPProfile(p)
 
-	prof.HttpProfile.ReqTimeout = reqTimeoutSeconds(p.TimeoutMS)
-
-	c, err := ocr.NewClient(common.NewCredential(p.SecretID, p.SecretKey), p.Region, prof)
-	if err != nil {
-		return nil, err
-	}
+	// ocr.NewClient 从不给 err 赋值（生成代码：client.Init().WithCredential().WithProfile()
+	// 后直接 return），所以这里没有可失败的分支。
+	c, _ := ocr.NewClient(common.NewCredential(p.SecretID, p.SecretKey), p.Region, prof)
 
 	timeout := time.Duration(p.TimeoutMS) * time.Millisecond
 	return &tencentParser{

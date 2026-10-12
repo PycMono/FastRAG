@@ -86,3 +86,32 @@ func TestParserRegistry_UnknownType_FailsAtStartup(t *testing.T) {
 		t.Fatal("没有实现的 type 必须让启动失败")
 	}
 }
+
+// default 指向 tencent：注册表要真的造出 *tencentParser，而不是落到 default 兜底。
+// 这正是「配置选后端」这件事本身的钉子——少了它，删掉 tencent 分支也不会有测试红。
+func TestParserRegistry_ReturnsTencentDefault(t *testing.T) {
+	conf := &config.Config{Parser: config.ParserConfig{
+		Default: "tx",
+		Backends: map[string]config.ParserEntry{
+			"tx": {
+				Type:      config.ParserTypeTencent,
+				SecretID:  "id",
+				SecretKey: "key",
+				Region:    "ap-guangzhou",
+				TimeoutMS: 1000,
+			},
+		},
+	}}
+
+	r, err := NewParserRegistry(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp, ok := r.Get().(*tencentParser)
+	if !ok {
+		t.Fatalf("期望 *tencentParser，得到 %T", r.Get())
+	}
+	if tp.Name() != "tx" {
+		t.Errorf("Name 应是配置里的 key，得到 %q", tp.Name())
+	}
+}

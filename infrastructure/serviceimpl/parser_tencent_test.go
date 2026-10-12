@@ -86,13 +86,25 @@ func TestTencentParser_FetchMarkdown_NoMD(t *testing.T) {
 // 密钥缺失在构造函数就报错——它比 validate 更靠后，但早于任何一次真实调用。
 func TestNewTencentParser_MissingCredential(t *testing.T) {
 	for _, p := range []config.ParserParams{
-		{Name: "t", Type: config.ParserTypeTencent, SecretKey: "k", TimeoutMS: 1000},
-		{Name: "t", Type: config.ParserTypeTencent, SecretID: "id", TimeoutMS: 1000},
-		{Name: "t", Type: config.ParserTypeTencent, TimeoutMS: 1000},
+		{Name: "t", Type: config.ParserTypeTencent, SecretKey: "k", Region: "ap-guangzhou", TimeoutMS: 1000},
+		{Name: "t", Type: config.ParserTypeTencent, SecretID: "id", Region: "ap-guangzhou", TimeoutMS: 1000},
+		{Name: "t", Type: config.ParserTypeTencent, Region: "ap-guangzhou", TimeoutMS: 1000},
 	} {
 		if _, err := newTencentParser(p); err == nil {
 			t.Errorf("缺 secret_id/secret_key 必须报错：%#v", p)
 		}
+	}
+}
+
+// region 缺失同样在构造期报错：否则要到第一次请求才以 SysError 形式炸出来，
+// 那不是「启动期暴露配置错」的语义。
+func TestNewTencentParser_MissingRegion(t *testing.T) {
+	p := config.ParserParams{
+		Name: "t", Type: config.ParserTypeTencent,
+		SecretID: "id", SecretKey: "key", TimeoutMS: 1000,
+	}
+	if _, err := newTencentParser(p); err == nil {
+		t.Fatal("缺 region 必须在构造期报错，不能拖到请求时")
 	}
 }
 
@@ -113,24 +125,35 @@ func TestReqTimeoutSeconds(t *testing.T) {
 	}
 }
 
-// 上面那个换算确实接到了 SDK 的 profile 上，而且总预算仍是毫秒。
-//
-// 取用侧只钉 p.timeout：ocr v1.3.193 的 client 上没有 GetProfile()，
-// 而换算这件事的真正守卫是 TestReqTimeoutSeconds，不必依赖 SDK 的取用侧 API。
-func TestNewTencentParser_ReqTimeoutWired(t *testing.T) {
+// 换算的结果确实落到了 SDK 的 profile 上（不只看换算本身）。
+// ocr v1.3.193 的 client 没有 GetProfile()，所以断言直接打在造 profile 的纯函数上。
+func TestTencentHTTPProfile_ReqTimeout(t *testing.T) {
 	for _, tc := range []struct{ ms, wantSec int }{
 		{110000, 110},
-		{999, 1},
+		{999, 1}, // 不足 1 秒也要兜到 1，不能是 0
 	} {
+		hp := tencentHTTPProfile(config.ParserParams{TimeoutMS: tc.ms})
+		if hp.ReqTimeout != tc.wantSec {
+			t.Errorf("profile 的 ReqTimeout 应为 %ds，得到 %ds", tc.wantSec, hp.ReqTimeout)
+		}
+		if hp.Endpoint != "ocr.tencentcloudapi.com" {
+			t.Errorf("profile 的 Endpoint 应为 ocr.tencentcloudapi.com，得到 %q", hp.Endpoint)
+		}
+	}
+}
+
+// 整段重试的总预算仍是毫秒（与单次调用的秒级 ReqTimeout 是两码事）。
+func TestNewTencentParser_ReqTimeoutWired(t *testing.T) {
+	for _, ms := range []int{110000, 999} {
 		p, err := newTencentParser(config.ParserParams{
 			Name: "t", Type: config.ParserTypeTencent,
-			SecretID: "id", SecretKey: "key", TimeoutMS: tc.ms,
+			SecretID: "id", SecretKey: "key", Region: "ap-guangzhou", TimeoutMS: ms,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.timeout.Milliseconds() != int64(tc.ms) {
-			t.Errorf("总预算应为 %dms，得到 %dms", tc.ms, p.timeout.Milliseconds())
+		if p.timeout.Milliseconds() != int64(ms) {
+			t.Errorf("总预算应为 %dms，得到 %dms", ms, p.timeout.Milliseconds())
 		}
 	}
 }
