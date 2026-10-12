@@ -25,6 +25,7 @@ var Register = fx.Options(
 
 	fx.Provide(NewEmbeddingRegistry),
 	fx.Provide(NewRerankRegistry),
+	fx.Provide(NewParserRegistry),
 )
 
 // 编译期断言：实现必须满足端口。
@@ -34,4 +35,6 @@ var (
 	_ interfaces.IRerank            = (*Rerank)(nil)
 	_ interfaces.IRerank            = (*nopRerank)(nil)
 	_ interfaces.IRerankRegistry    = (*rerankRegistry)(nil)
+	_ interfaces.IParser            = (*doclingParser)(nil)
+	_ interfaces.IParserRegistry    = (*parserRegistry)(nil)
 )
