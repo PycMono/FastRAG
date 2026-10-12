@@ -12,29 +12,6 @@ func (ks KnowledgeBases) IndexByID() map[uint64]*KnowledgeBase {
 	return out
 }
 
-// FilterByBizTags 按业务标签过滤。
-//
-// 语义刻意定得很窄：请求带了 biz_tags，就只留标签精确命中的库。
-// 不做「无标签的库视为通用、一律保留」——那种隐含规则会让调用方
-// 搞不清自己为什么召回多了。
-func (ks KnowledgeBases) FilterByBizTags(tags []string) KnowledgeBases {
-	if len(tags) == 0 {
-		return ks
-	}
-	want := make(map[string]struct{}, len(tags))
-	for _, t := range tags {
-		want[t] = struct{}{}
-	}
-
-	out := make(KnowledgeBases, 0, len(ks))
-	for _, kb := range ks {
-		if _, ok := want[kb.BizTag]; ok {
-			out = append(out, kb)
-		}
-	}
-	return out
-}
-
 // KnowledgeDocs 文档集合。
 type KnowledgeDocs []*KnowledgeDoc
 

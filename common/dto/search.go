@@ -8,10 +8,7 @@ type SearchDTO struct {
 	Account string   `json:"account" binding:"required,max=64"`
 	KBNos   []string `json:"kb_nos" binding:"required,min=1,max=10,dive,max=64"`
 	Query   string   `json:"query" binding:"required,max=1000"`
-
-	BizTags []string `json:"biz_tags" binding:"omitempty,max=10,dive,max=64"`
-
-	Limit int `json:"limit" binding:"omitempty,gte=1,lte=100"`
+	Limit   int      `json:"limit" binding:"omitempty,gte=1,lte=100"`
 
 	// RetrieveCount rerank 开启时，ES 召回多少条交给 rerank 精排。
 	// nil 表示用 search.default_retrieve_count，再缺省则 limit*2。

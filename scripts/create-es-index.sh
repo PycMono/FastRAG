@@ -15,11 +15,15 @@
 #
 # ─── 字段为什么这么定（改之前先读） ────────────────────────────────────────────
 #
-# · account / biz_tag / chunk_id 必须是 keyword，不能是 text。
+# · account / chunk_id 必须是 keyword，不能是 text。
 #   account 是**单索引多租户下唯一的隔离手段**（D2），隔离靠 term 查询打在它身上。
 #   一旦它变成 text，term 会按分词匹配，「demo」就能命中「demo-other」的文档 ——
-#   那是跨租户越权，不是召回变小。biz_tag（租户内再分域、过滤用）、
-#   chunk_id（主键语义，也是 _id 的来源）同理。
+#   那是跨租户越权，不是召回变小；chunk_id（主键语义，也是 _id 的来源）同理。
+#
+# ⚠️ 业务标签字段已随实体简化从代码与 mapping 中下线（2026-10-12），**但存量索引不重建**：
+#    已建好的索引里仍留着该字段（存量文档全是空串），服务不再写、也不再按它过滤，
+#    留着功能上无害。真正从 mapping 里摘掉需要新建索引 + _reindex，与本次简化无关，
+#    故不代劳；本脚本新建的索引不再声明该字段。
 #
 # · title / content / heading_path 是 text + IK。heading_path 是标题链，
 #   由结构感知切片产生，相当于廉价版的 contextual retrieval。
@@ -67,7 +71,6 @@ curl -sS --fail-with-body -XPUT 'http://127.0.0.1:9200/fastrag' \
       "doc_id":       { "type": "long" },
       "chunk_id":     { "type": "keyword" },
       "order":        { "type": "integer" },
-      "biz_tag":      { "type": "keyword" },
       "title":        { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
       "content":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
       "heading_path": { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },

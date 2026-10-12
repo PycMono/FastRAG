@@ -17,7 +17,6 @@ const (
 	FieldDocId       = "doc_id"       // 文档 ID（雪花），long
 	FieldChunkId     = "chunk_id"     // 切片 ID，keyword，也是 _id 的来源
 	FieldOrder       = "order"        // 切片在文档内的顺序，integer
-	FieldBizTag      = "biz_tag"      // 业务标签，租户内再分域的过滤，keyword
 	FieldTitle       = "title"        // 切片标题，text，IK 分词
 	FieldContent     = "content"      // 切片正文，text，IK 分词
 	FieldHeadingPath = "heading_path" // 标题链，text —— 结构感知切片产生，相当于廉价版的 contextual retrieval

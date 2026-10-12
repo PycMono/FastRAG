@@ -38,9 +38,6 @@ type DocIngestDTO struct {
 	// 空间里——维度不同会被 ES 拦下，维度相同但向量空间不同则是静默的
 	// 噪声排序。这是明确接受的代价（设计文档 §2、§8）。
 	Model string `json:"model" binding:"omitempty,max=64"`
-
-	// 这里**没有** biz_tag：切片上的 biz_tag 一律取自 KB（§7.2）。
-	// 让文档覆盖它会让这个文档按 KB 的 tag 搜不到、按自己的 tag 库又被筛掉。
 }
 
 // ChunkOptions 解析本次导入的切片参数：请求给了就用，没给的留零值，
@@ -64,7 +61,7 @@ type DocDeleteDTO struct {
 	DocName string `json:"doc_name" binding:"required,max=512"`
 }
 
-// KBDeleteDTO 知识库删除请求：软删 KB 及其全部文档，并清理 ES
+// KBDeleteDTO 知识库删除请求：硬删该 KB 的全部文档并清理 ES（KB 行本身由外部维护）
 type KBDeleteDTO struct {
 	Account string `json:"account" binding:"required,max=64"`
 	KBNo    string `json:"kb_no" binding:"required,max=64"`

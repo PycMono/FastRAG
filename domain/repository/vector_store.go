@@ -14,7 +14,6 @@ type VectorDoc struct {
 	KBID        uint64
 	DocID       uint64
 	Order       int
-	BizTag      string
 	Title       string
 	Content     string
 	HeadingPath string
@@ -37,7 +36,6 @@ type VectorFilter struct {
 type VectorSearchReq struct {
 	Account     string
 	KBIDs       []uint64
-	BizTags     []string
 	Query       string
 	QueryVec    []float32
 	TitleOnly   bool // search_mode = title 时为 true

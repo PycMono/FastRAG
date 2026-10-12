@@ -140,7 +140,7 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 //
 // Refresh 是**让这次删除真的删得掉**。ES 的 delete_by_query 只作用在已刷新的段上，
 // 而写入默认要等 30s 才刷新（§4.2）——一条切片如果在删除前 30s 内刚写进去，
-// 对这次删除就是「不存在」的：MySQL 那边文档已经软删，接口却回 deleted_chunks=0，
+// 对这次删除就是「不存在」的：MySQL 那边文档行已经硬删，接口却回 deleted_chunks=0，
 // 切片原样留在 ES 里占着召回位。最容易撞上的正是这条路：导入完发现不对，马上删。
 //
 // 刷新放在这里、而不是交给调用方，因为这是 ES 的段可见性规则，不是调用方的意图——
@@ -151,7 +151,7 @@ func (s *ESVectorStore) Refresh(ctx context.Context) error {
 // 与 DeleteExcept 里那个 WithRefresh(true) 是方向相反的一对，别只堵一头：
 // 这里的 Refresh 让删除**看得见**要删的东西，那里的 WithRefresh(true) 让删除的
 // **结果**被检索看见。DeleteByQuery 不需要后者——命中的文档在 MySQL 侧也已经
-// 软删了，检索侧的存活校验会把残留切片过滤掉（§7.3），删除结果早一步还是晚一步
+// 硬删了，检索侧的存活校验会把残留切片过滤掉（§7.3），删除结果早一步还是晚一步
 // 对检索可见，都不影响返回给用户的内容。
 //
 // 代价是整个索引刷新一次。删除不是热路径（一次调用对应一次用户动作），
@@ -639,9 +639,6 @@ func (s *ESVectorStore) filters(req repository.VectorSearchReq) []any {
 	if len(req.KBIDs) > 0 {
 		out = append(out, map[string]any{"terms": map[string]any{constants.FieldKbId: req.KBIDs}})
 	}
-	if len(req.BizTags) > 0 {
-		out = append(out, map[string]any{"terms": map[string]any{constants.FieldBizTag: req.BizTags}})
-	}
 	return out
 }
 
@@ -679,7 +676,6 @@ func vectorDocBody(d repository.VectorDoc) map[string]any {
 		constants.FieldDocId:       d.DocID,
 		constants.FieldChunkId:     d.ChunkID,
 		constants.FieldOrder:       d.Order,
-		constants.FieldBizTag:      d.BizTag,
 		constants.FieldTitle:       d.Title,
 		constants.FieldContent:     d.Content,
 		constants.FieldHeadingPath: d.HeadingPath,

@@ -149,7 +149,7 @@ func (s *stubIDService) NextIntID() int64 { s.next += 100; return s.next }
 
 // 首次导入：库里没有这一行 → 分配新 id、写 ES、清差集、新建文档行并 +1 doc_count。
 func TestEmbedAndStore_FirstImport(t *testing.T) {
-	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo", BizTag: "sales"}
+	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
 	docRepo := &stubDocRepo{existing: nil}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}

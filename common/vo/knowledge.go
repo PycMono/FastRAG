@@ -1,19 +1,5 @@
 package vo
 
-// KnowledgeBaseVO 知识库对外表示（本服务只读，不提供写接口）
-type KnowledgeBaseVO struct {
-	ID            uint64 `json:"id"`
-	No            string `json:"no"`
-	Account       string `json:"account"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	KnowledgeType string `json:"knowledge_type"`
-	SearchMode    string `json:"search_mode"`
-	BizTag        string `json:"biz_tag"`
-	DocCount      int64  `json:"doc_count"`
-	ChunkCount    int64  `json:"chunk_count"`
-}
-
 // SearchItemVO 一条检索结果
 //
 // 带 Content：内容下沉在 ES（D1），这里不需要回表取正文，

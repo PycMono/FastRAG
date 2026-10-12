@@ -97,9 +97,6 @@ func (s *Service) ingestDoc(
 	now := time.Now()
 	hash := chunks.ContentHash()
 
-	// biz_tag 只认 KB 上的那一个值，文档级别不允许覆盖（否则这篇谁都搜不到）。
-	bizTag := kb.BizTag
-
 	// ⑤ 定 doc_id。同名重导入必须沿用库里那一行的 id。
 	existing, err := s.docRepo.FindByName(ctx, kb.ID, docName)
 	if err != nil {
@@ -112,7 +109,7 @@ func (s *Service) ingestDoc(
 		docID = uint64(s.idGen.NextIntID()) // 首次导入：雪花预分配
 	}
 
-	vectors := factory.BuildVectorDocs(kb, docID, bizTag, chunks, titleVecs, contentVecs, now)
+	vectors := factory.BuildVectorDocs(kb, docID, chunks, titleVecs, contentVecs, now)
 
 	// ⑥ 【第一写】ES 写新切片。新内容先进去，旧切片原地不动。
 	if err := s.store.Save(ctx, vectors); err != nil {

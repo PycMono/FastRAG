@@ -35,7 +35,6 @@ func ChunkID(docID uint64, order int, content string) string {
 func BuildVectorDocs(
 	kb *entity.KnowledgeBase,
 	docID uint64,
-	bizTag string,
 	chunks entity.Chunks,
 	titleVecs, contentVecs [][]float32,
 	now time.Time,
@@ -55,7 +54,6 @@ func BuildVectorDocs(
 			KBID:        kb.ID,
 			DocID:       docID,
 			Order:       c.Order,
-			BizTag:      bizTag,
 			Title:       c.Title,
 			Content:     c.Content,
 			HeadingPath: c.HeadingPath,

@@ -24,7 +24,6 @@ type KnowledgeBase struct {
 	Description   string `gorm:"column:description;type:varchar(1024);not null;default:''"`
 	KnowledgeType string `gorm:"column:knowledge_type;type:varchar(32);not null;default:'ordinary'"`
 	SearchMode    string `gorm:"column:search_mode;type:varchar(32);not null;default:'title_and_content'"`
-	BizTag        string `gorm:"column:biz_tag;type:varchar(64);not null;default:''"`
 
 	// 冗余计数（列表页用，见 D3）。
 	// 列是有符号 BIGINT，差值本身就能为负；仓储侧仍用

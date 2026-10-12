@@ -69,7 +69,6 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	if err != nil {
 		return nil, err
 	}
-	kbs = kbs.FilterByBizTags(opts.BizTags)
 	if len(kbs) == 0 {
 		return empty, nil
 	}
@@ -177,7 +176,6 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 		Query:         in.Query,
 		Limit:         in.Limit,
 		RetrieveCount: retrieveCount,
-		BizTags:       in.BizTags,
 		DenseWeight:   weight,
 		MinScore:      in.MinScore,
 		Rerank:        in.RerankSwitch,
@@ -230,7 +228,6 @@ func (s *Service) buildReq(
 		// 组内必然同 account：FindByNos 加载时已按 account 过滤过
 		Account:       g.kbs[0].Account,
 		KBIDs:         ids,
-		BizTags:       opts.BizTags,
 		Query:         opts.Query,
 		QueryVec:      queryVec,
 		TitleOnly:     g.titleOnly,
@@ -250,7 +247,7 @@ func (s *Service) buildReq(
 //
 // 它同时兜住了「写一半失败」和「删一半失败」两种残留：
 //   - 孤儿：切片写进 ES 了，但 MySQL 文档行没落（第三写失败）→ 查不到 doc，丢弃；
-//   - 幽灵：MySQL 已软删，ES 还没清完 → 查不到 doc，丢弃。
+//   - 幽灵：文档行已硬删，ES 还没清完 → 查不到 doc，丢弃。
 //
 // 它的前提是 doc_id 稳定：全靠切片带的 doc_id 去查行，所以导入时必须
 // 复用已有行的 id。若重导入换了新 id，新切片查不到行被全部丢掉，
