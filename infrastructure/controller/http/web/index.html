@@ -190,6 +190,24 @@
   .pager button.cur:hover { background: var(--accent-dim); }
   .pager .gap { color: var(--muted); font-size: 12px; padding: 0 2px; }
 
+  /* 按文档浏览：列表行可点，详情是一段独立展开区 */
+  .doc-item { cursor: pointer; }
+  .doc-item:hover { border-color: var(--accent-dim); }
+  .hit .meta button { padding: 2px 9px; font-size: 11px; font-weight: 400; }
+
+  .detail-head {
+    display: flex; align-items: center; gap: 10px;
+    margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--border);
+  }
+  .detail-head .doc-title { flex: 1; font-weight: 600; font-size: 13.5px; word-break: break-all; }
+  .doc-src { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+  .doc-src a { color: var(--accent); }
+  .doc-content {
+    font-size: 12.5px; color: #c9d1d9; white-space: pre-wrap; word-break: break-word;
+    max-height: 420px; overflow: auto; padding: 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  }
+
   /* 手机：收字号与内边距，标题竖排，结果卡片别太挤 */
   @media (max-width: 640px) {
     header { padding: 14px clamp(12px, 4vw, 24px); flex-wrap: wrap; gap: 4px 10px; }
@@ -343,6 +361,41 @@
       </div>
     </div>
 
+    <div class="card">
+      <h2>按文档浏览 <span class="badge" id="docCount">0 篇</span></h2>
+      <div class="body">
+        <div class="row">
+          <button id="btnDocs">加载</button>
+          <span class="hint" id="docsHint"></span>
+        </div>
+        <div class="msg" id="docsMsg"></div>
+        <div class="results" id="docList">
+          <div class="empty">点「加载」列出该库下的文档。</div>
+        </div>
+        <div class="pager" id="docPager"></div>
+
+        <div id="docDetail" style="display:none">
+          <div class="detail-head">
+            <span class="doc-title" id="docTitle"></span>
+            <button class="ghost" id="btnCloseDoc">收起</button>
+          </div>
+          <div class="doc-src" id="docSrc"></div>
+          <div class="doc-content" id="docContent"></div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnChunks">看切片</button>
+            <span class="hint" id="chunksHint"></span>
+          </div>
+          <div class="msg" id="chunksMsg"></div>
+          <div class="results" id="chunkList"></div>
+          <div class="pager" id="chunkPager"></div>
+        </div>
+
+        <details class="raw" id="docRawWrap" style="display:none">
+          <summary>原始响应</summary><pre id="docRaw"></pre>
+        </details>
+      </div>
+    </div>
+
   </div>
 </main>
 
@@ -352,13 +405,9 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ── 统一响应封装是 {code, msg, data}，code === 0 表示成功（ginsdk.StatusOK）
-  async function call(path, body) {
-    const resp = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+  // 把一次 fetch 的结果解成 data。POST 与 GET 只差「请求怎么发」，成败判定
+  // 完全一样——所以这段单独抽出来。两处各抄一遍「code !== 0 就抛」早晚走岔。
+  async function decode(resp) {
     let parsed = null;
     const text = await resp.text();
     try { parsed = JSON.parse(text); } catch (_) { /* 非 JSON，下面统一报错 */ }
@@ -371,6 +420,26 @@
       throw new Error(`[${parsed.code}] ${parsed.msg}`);
     }
     return parsed.data;
+  }
+
+  async function call(path, body) {
+    return decode(await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  // 只读接口走 GET + query string（/api/v1/docs 那三条）。
+  // undefined / null / 空串的入参不拼进 query，省得后端收到 `account=` 这种空串
+  // ——DocListQuery 的 account 是 required，空串会被判参数错误。
+  async function callGET(path, params) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+    }
+    const s = qs.toString();
+    return decode(await fetch(s ? `${path}?${s}` : path));
   }
 
   function showMsg(el, kind, text) {
@@ -596,8 +665,19 @@
           <span>库 <code>${escapeHTML(it.kb_no || it.kb_id)}</code></span>
           <span>切片 <code>#${it.order}</code></span>
           <span>chunk_id <code>${escapeHTML(String(it.chunk_id).slice(0, 12))}…</code></span>
+          <button class="ghost" data-open="${it.doc_id}">看整篇</button>
         </div>
       </div>`).join('');
+
+    // 命中里直接能点开整篇：把视线先带到下面的文档卡片，再展开详情。
+    // doc_id 与 doc_name 不同——它是稳定主键，改名不影响
+    box.querySelectorAll('button[data-open]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        $('docDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        openDoc(parseInt(b.dataset.open, 10));
+      });
+    });
 
     renderPager(pages, start, slice.length, total);
   }
@@ -650,6 +730,221 @@
     renderPage();
     // 翻页后要把视线带回结果顶部，否则停在上一页底部，像是什么都没发生
     $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ── 按文档浏览 ──────────────────────────────────────────────────────────
+  //
+  // 三条只读接口的入口。与检索那一栏的区别：检索是「按词找片段」，
+  // 这里是「按库看全貌」——先列这个库有哪些文档，再点开看整篇 / 切片。
+
+  const DOC_PAGE_SIZE = 10;   // 与后端 PageQuery 的上限 100 无关，纯前端每页条数
+  const CHUNK_PAGE_SIZE = 200;
+  let docItems = [];
+  let docPage = 1;
+  let curDocID = 0;
+  let chunkOffset = 0;
+
+  $('btnDocs').addEventListener('click', loadDocList);
+  $('btnCloseDoc').addEventListener('click', () => { $('docDetail').style.display = 'none'; });
+  $('btnChunks').addEventListener('click', loadChunks);
+
+  const kbParams = () => ({
+    account: $('account').value.trim(),
+    kb_no: $('kb_no').value.trim(),
+  });
+
+  // 时间戳是 Unix **秒**（后端存的 int64），不是毫秒
+  function fmtTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+      `${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  async function loadDocList() {
+    const btn = $('btnDocs');
+    btn.disabled = true;
+    showMsg($('docsMsg'), 'warn', '<span class="spinner"></span>加载中…');
+    const t0 = performance.now();
+    try {
+      const data = await callGET('/api/v1/docs',
+        { ...kbParams(), page: docPage, page_size: DOC_PAGE_SIZE });
+      hideMsg($('docsMsg'));
+      $('docsHint').textContent = `${Math.round(performance.now() - t0)} ms`;
+      $('docRawWrap').style.display = '';
+      $('docRaw').textContent = JSON.stringify(data, null, 2);
+      docItems = (data && data.list) || [];
+      renderDocList((data && data.total) || 0);
+    } catch (e) {
+      showMsg($('docsMsg'), 'err', '加载失败：' + escapeHTML(e.message));
+      docItems = [];
+      $('docList').innerHTML = '<div class="empty">加载失败。</div>';
+      $('docCount').textContent = '0 篇';
+      $('docPager').className = 'pager';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  const docPages = () => Math.max(1, Math.ceil(docItems.length / DOC_PAGE_SIZE));
+
+  function renderDocList(total) {
+    $('docCount').textContent = total + ' 篇';
+    const box = $('docList');
+    if (!docItems.length) {
+      box.innerHTML = '<div class="empty">这一页没有文档（或 account / kb_no 填错了）。</div>';
+      $('docPager').className = 'pager';
+      return;
+    }
+    box.innerHTML = docItems.map((d) => `
+      <div class="hit doc-item" data-doc="${d.doc_id}">
+        <div class="top">
+          <span class="title${d.title ? '' : ' empty'}">${d.title ? escapeHTML(d.title) : '（无标题）'}</span>
+          <span class="score">${d.chunk_count} 片</span>
+        </div>
+        <div class="path">${escapeHTML(d.doc_name)}</div>
+        <div class="meta">
+          <span>更新 <code>${fmtTime(d.update_ts)}</code></span>
+          <span>${d.has_content ? '有原文' : '仅切片（format=chunks）'}</span>
+        </div>
+      </div>`).join('');
+    box.querySelectorAll('.doc-item').forEach((el) => {
+      el.addEventListener('click', () => openDoc(parseInt(el.dataset.doc, 10)));
+    });
+    renderDocPager(total, docItems.length);
+  }
+
+  function renderDocPager(total, shown) {
+    const pager = $('docPager');
+    const pages = docPages();
+    if (total <= DOC_PAGE_SIZE) { pager.className = 'pager'; return; }
+    const nums = pageList(docPage, pages).map((p) => p === '…'
+      ? '<span class="gap">…</span>'
+      : `<button data-dpage="${p}" class="${p === docPage ? 'cur' : ''}">${p}</button>`).join('');
+    pager.innerHTML =
+      `<span class="info">第 ${docPage}/${pages} 页 · 本页 ${shown} 条 · 共 ${total} 条</span>` +
+      `<span class="btns">` +
+      `<button data-dpage="${docPage - 1}" ${docPage <= 1 ? 'disabled' : ''}>上一页</button>` +
+      nums +
+      `<button data-dpage="${docPage + 1}" ${docPage >= pages ? 'disabled' : ''}>下一页</button>` +
+      `</span>`;
+    pager.className = 'pager show';
+    pager.querySelectorAll('button[data-dpage]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const next = Math.min(Math.max(parseInt(b.dataset.dpage, 10), 1), pages);
+        if (next === docPage) return;
+        docPage = next;
+        loadDocList();
+      });
+    });
+  }
+
+  async function openDoc(docID) {
+    curDocID = docID;
+    chunkOffset = 0;
+    $('docDetail').style.display = '';
+    $('docTitle').textContent = '…';
+    $('docSrc').textContent = '';
+    $('docContent').textContent = '';
+    $('chunkList').innerHTML = '<div class="empty">点「看切片」枚举这篇的切片。</div>';
+    $('chunkPager').className = 'pager';
+    $('chunksHint').textContent = '';
+    hideMsg($('chunksMsg'));
+    showMsg($('docsMsg'), 'warn', '<span class="spinner"></span>取原文…');
+    try {
+      const d = await callGET('/api/v1/docs/detail',
+        { account: $('account').value.trim(), doc_id: docID });
+      hideMsg($('docsMsg'));
+      $('docTitle').textContent = d.title || d.doc_name;
+      // 来源是**库级**的（一个 URL 一个库）：空串说明建库时没记，不是故障
+      $('docSrc').innerHTML = d.source_url
+        ? '来源 <a href="' + escapeHTML(d.source_url) + '" target="_blank" ' +
+          'rel="noopener noreferrer">' + escapeHTML(d.source_url) + '</a>'
+        : '来源（该库未记录 source_url）';
+      $('docContent').textContent = d.has_content
+        ? d.content
+        : '（这篇是 format=chunks 直接导入的，没存原文；点下面的「看切片」。）';
+      $('docDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      showMsg($('docsMsg'), 'err', '取原文失败：' + escapeHTML(e.message));
+    }
+  }
+
+  async function loadChunks() {
+    if (!curDocID) return;
+    const btn = $('btnChunks');
+    btn.disabled = true;
+    showMsg($('chunksMsg'), 'warn', '<span class="spinner"></span>枚举切片…');
+    try {
+      const data = await callGET('/api/v1/docs/chunks', {
+        account: $('account').value.trim(),
+        doc_id: curDocID,
+        limit: CHUNK_PAGE_SIZE,
+        offset: chunkOffset,
+      });
+      hideMsg($('chunksMsg'));
+      $('chunksHint').textContent = `共 ${data.total} 片`;
+      renderChunks(data);
+    } catch (e) {
+      showMsg($('chunksMsg'), 'err', '枚举失败：' + escapeHTML(e.message));
+      $('chunkList').innerHTML = '<div class="empty">枚举失败。</div>';
+      $('chunkPager').className = 'pager';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ⚠️ total=0 不是错误：ES 的可见性有两档延迟，刚导入的文档原文立刻能看、
+  // 切片要等下一轮刷新。这里必须说清楚，否则看起来像「导入把内容弄丢了」。
+  function renderChunks(data) {
+    const items = (data && data.items) || [];
+    const total = (data && data.total) || 0;
+    const box = $('chunkList');
+    if (!total) {
+      box.innerHTML = '<div class="empty">还没有切片。刚导入的话可能是 ES 还没刷新' +
+        '（最长约 30s），稍后再点一次；否则说明那次导入确实没落切片。</div>';
+      $('chunkPager').className = 'pager';
+      return;
+    }
+    const base = (data && data.offset) || 0;
+    box.innerHTML = items.map((c, i) => `
+      <div class="hit chunk-card">
+        <div class="top">
+          <span class="rank">${base + i + 1}</span>
+          <span class="title${c.title ? '' : ' empty'}">${c.title ? escapeHTML(c.title) : '（无标题）'}</span>
+          <span class="score">order ${c.order}</span>
+        </div>
+        ${c.heading_path ? `<div class="path">${escapeHTML(c.heading_path)}</div>` : ''}
+        <div class="content">${escapeHTML(c.content)}</div>
+      </div>`).join('');
+    renderChunkPager(total, base, items.length);
+  }
+
+  function renderChunkPager(total, base, shown) {
+    const pager = $('chunkPager');
+    const pages = Math.max(1, Math.ceil(total / CHUNK_PAGE_SIZE));
+    const cur = Math.floor(base / CHUNK_PAGE_SIZE) + 1;
+    if (pages <= 1) { pager.className = 'pager'; return; }
+    const nums = pageList(cur, pages).map((p) => p === '…'
+      ? '<span class="gap">…</span>'
+      : `<button data-cpage="${p}" class="${p === cur ? 'cur' : ''}">${p}</button>`).join('');
+    pager.innerHTML =
+      `<span class="info">第 ${cur}/${pages} 页 · 本页 ${shown} 片 · 共 ${total} 片</span>` +
+      `<span class="btns">` +
+      `<button data-cpage="${cur - 1}" ${cur <= 1 ? 'disabled' : ''}>上一页</button>` +
+      nums +
+      `<button data-cpage="${cur + 1}" ${cur >= pages ? 'disabled' : ''}>下一页</button>` +
+      `</span>`;
+    pager.className = 'pager show';
+    pager.querySelectorAll('button[data-cpage]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const next = Math.min(Math.max(parseInt(b.dataset.cpage, 10), 1), pages);
+        if (next === cur) return;
+        chunkOffset = (next - 1) * CHUNK_PAGE_SIZE;
+        loadChunks();
+      });
+    });
   }
 })();
 </script>
