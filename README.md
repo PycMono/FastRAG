@@ -368,7 +368,7 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
   -H 'Content-Type: application/json' \
   -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md"}'
 
-# 检索。dense_weight 省略则用配置默认值；<=0.01 只走 BM25，>=0.99 只走 kNN
+# 检索。dense_weight 省略则用配置默认值；<0.01 只走 BM25，>0.99 只走 kNN
 # rerank_switch=true 且 config.rerank.enabled=true 时会调用精排；
 # retrieve_count 控制精排前召回多少候选（默认 limit*2，上限 200）
 # embed_model / rerank_model 分别选两路用哪家，省略则各用各的 default；
