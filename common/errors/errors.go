@@ -49,6 +49,11 @@ const (
 	CodeParseFail = 10401 // 解析失败：上游超时 / 上游错误 / 返回体不可解析
 )
 
+// 文档读取相关错误码
+const (
+	CodeDocNotFound = 10501 // 文档不存在（含 id 存在但租户对不上——不区分，避免越权探测）
+)
+
 // ─── CodeError 基础 ──────────────────────────────────────────────────────────
 
 // CodeError 带错误码的错误接口
@@ -190,6 +195,11 @@ var (
 	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
 	ErrRerankFailed      = NewSysError(CodeRerankFail, "rerank service failed")
 	ErrParseFailed       = NewSysError(CodeParseFail, "文档解析失败")
+
+	// ErrDocNotFound 详情 / 切片找不到文档时用它。**id 存在但 account 对不上
+	// 也返回它**——分开就是送出一个「这个 id 存在吗」的可枚举探测接口，
+	// 与 10101 折叠「库不存在 / 租户不符」是同一条原则。
+	ErrDocNotFound = NewBizError(CodeDocNotFound, "document not found")
 )
 
 // NewParamError 生成带自定义文案的参数错误。

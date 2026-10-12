@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/PycMono/FastRAG/application/service/docview"
 	"github.com/PycMono/FastRAG/application/service/ingest"
 	"github.com/PycMono/FastRAG/application/service/search"
 	"go.uber.org/fx"
@@ -13,4 +14,5 @@ import (
 var Register = fx.Options(
 	fx.Provide(ingest.NewService),
 	fx.Provide(search.NewService),
+	fx.Provide(docview.NewService),
 )
