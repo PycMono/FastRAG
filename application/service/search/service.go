@@ -99,9 +99,9 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	//
 	//    两路各自从 rank=1 起算、按权重加权（见 Fuse 的注释）——不把其中一路
 	//    拼到另一路后面，那等于按路的顺序给了个固定的偏置。
+	// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
 	routes := make([]Route, 0, 2)
 	if len(r.BM25) > 0 {
-		// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
 		routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
 	}
 	if len(r.KNN) > 0 {
