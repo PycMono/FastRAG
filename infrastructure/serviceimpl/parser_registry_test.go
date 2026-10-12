@@ -1,13 +1,13 @@
 package serviceimpl
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/PycMono/FastRAG/infrastructure/config"
 )
 
-func TestParserRegistry_DefaultAndUnknown(t *testing.T) {
+// Get 给的就是 default 指的那家。
+func TestParserRegistry_ReturnsDefault(t *testing.T) {
 	conf := &config.Config{Parser: config.ParserConfig{
 		Default: "docling",
 		Backends: map[string]config.ParserEntry{
@@ -19,16 +19,32 @@ func TestParserRegistry_DefaultAndUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Get(""); err != nil {
-		t.Errorf("空名字应回落到 default，得到 %v", err)
+	if got := r.Get().Name(); got != "docling" {
+		t.Errorf("应取 default 那家，得到 %q", got)
 	}
+}
 
-	_, err = r.Get("nope")
-	if err == nil {
-		t.Fatal("未知名字必须报错，不能悄悄用默认那家")
+// 只造 default 那一家：非 default 的 entry 走 validate 的字段校验，但不构造。
+//
+// 这条是给 config.example.json 兜底的：示例里 tencent 条目的密钥是空的，
+// 而构造函数会拒绝空密钥——若启动期把每个 entry 都构造一遍，「cp 示例再启动」
+// 就直接起不来，示例文件也就失去了它的用途。
+// 在 P0（还没有 tencent 的 case）这条同样成立，且失败得更早。
+func TestParserRegistry_BuildsOnlyDefault(t *testing.T) {
+	conf := &config.Config{Parser: config.ParserConfig{
+		Default: "docling",
+		Backends: map[string]config.ParserEntry{
+			"docling": {Type: config.ParserTypeDocling, BaseURL: "http://127.0.0.1:5001", TimeoutMS: 1000},
+			"other":   {Type: "tencent", TimeoutMS: 1000}, // 非 default：不该参与构造
+		},
+	}}
+
+	r, err := NewParserRegistry(conf)
+	if err != nil {
+		t.Fatalf("非 default 的条目不该参与构造，得到 %v", err)
 	}
-	if !strings.Contains(err.Error(), "docling") {
-		t.Errorf("报错消息里应列出可用名字，得到 %v", err)
+	if got := r.Get().Name(); got != "docling" {
+		t.Errorf("应取 default 那家，得到 %q", got)
 	}
 }
 
@@ -45,13 +61,9 @@ func TestParserRegistry_GetReturnsDoclingWithJoinedURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := r.Get("d")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dp, ok := p.(*doclingParser)
+	dp, ok := r.Get().(*doclingParser)
 	if !ok {
-		t.Fatalf("期望 *doclingParser，得到 %T", p)
+		t.Fatalf("期望 *doclingParser，得到 %T", r.Get())
 	}
 	if dp.url != "http://127.0.0.1:5001/v1/convert/source" {
 		t.Errorf("端点应去掉多余的 / 再接后缀，得到 %q", dp.url)

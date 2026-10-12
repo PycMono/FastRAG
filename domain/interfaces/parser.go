@@ -34,10 +34,12 @@ type IParser interface {
 	Parse(ctx context.Context, req ParseReq) (ParseResult, error)
 }
 
-// IParserRegistry 按名字取解析后端。
+// IParserRegistry 给一个解析后端。
 //
-// 与 IEmbeddingRegistry 同构：名字来自请求体，取不到时返回参数错误——
-// 绝不能悄悄回落到默认那家。
+// 与 IEmbeddingRegistry 的差别在于**没有名字**：用哪家完全由
+// config.parser.default 决定（用户 2026-10-12 裁定：接口不带选后端的参数），
+// 所以这里既没有「按名字取」也没有「取不到」——一家都取不到的情况在启动期
+// 就被 config.validate 挡掉了。
 type IParserRegistry interface {
-	Get(name string) (IParser, error) // name 为空 → 配置里的 default
+	Get() IParser
 }

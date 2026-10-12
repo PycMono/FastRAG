@@ -38,11 +38,8 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 	}
 
 	// 用哪家解析后端完全由配置决定（config.parser.default）：请求不带这个参数，
-	// 想换后端就改配置重启。Get("") 即取 default。
-	parser, err := s.parsers.Get("")
-	if err != nil {
-		return nil, err
-	}
+	// 想换后端就改配置重启。
+	parser := s.parsers.Get()
 	if !supportsFormat(parser, in.URL) {
 		return nil, apperrors.NewParamError(
 			"解析后端 " + parser.Name() + " 不支持该文件类型: " + filenameOf(in.URL))

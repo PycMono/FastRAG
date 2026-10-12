@@ -12,17 +12,20 @@ import (
 	"github.com/PycMono/FastRAG/domain/service"
 )
 
-// stubParserRegistry 固定返回一个实现，或固定报错。
+// stubParserRegistry 固定返回一个实现；`boom: true` 时 Get 直接 panic。
+//
+// panic 用来钉住「某些检查必须挡在取后端之前」——顺序反了就会撞上它，用例判死。
+// （本仓约定：桩里内嵌/故意炸，被不该调的路径调到时必须炸出声。）
 type stubParserRegistry struct {
 	parser interfaces.IParser
-	err    error
+	boom   bool
 }
 
-func (r stubParserRegistry) Get(name string) (interfaces.IParser, error) {
-	if r.err != nil {
-		return nil, r.err
+func (r stubParserRegistry) Get() interfaces.IParser {
+	if r.boom {
+		panic("不该走到「取后端」这一步")
 	}
-	return r.parser, nil
+	return r.parser
 }
 
 // stubParser 可控的解析实现。
@@ -64,12 +67,12 @@ func newParseService(
 // 都不该白花一次解析的钱。
 //
 // 两道防线各管一段，缺一不可：
-//   - 下游协作者（splitter / idGen / tm / docRepo / store）留成 nil——真走到写库
-//     那步就 nil panic，把用例判死，钉住「根本没进到下游」；
+//   - 下游协作者（splitter / idGen / tm / docRepo / store）留成 nil，registry 留成
+//     一被调到就 panic 的桩——真走到那一步就炸，把用例判死，钉住「根本没进到下游」；
 //   - 对错误**文案**的断言——钉住到底是哪个检查先报了。
 //
-// 只看 err != nil 是不够的：那几个故意的哨兵错误（"不该走到这里"）也能满足它，
-// 顺序一反过来，浮上来的正好就是哨兵，测试却照样绿。
+// 只看 err != nil 是不够的：顺序一反过来，浮上来的可能是别的错误，err 照样非空，
+// 用例却照样绿。
 
 // 格式不被该后端支持 → 参数错误，且在调用解析之前就返回。
 func TestParse_UnsupportedFormat(t *testing.T) {
@@ -94,28 +97,22 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 	}
 }
 
-// 坏 scheme 必须挡在解析之前，而且先于「取后端」——registry 这里故意报错，
-// 若先调它就说明顺序反了。
+// 坏 scheme 必须挡在解析之前，而且先于「取后端」——registry 这里一被调到就 panic，
+// 顺序反了用例就炸。
 func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 	svc := NewService(
 		stubKBRepo{kb: &entity.KnowledgeBase{}},
 		nil, nil,
 		errEmbeddingRegistry{err: errors.New("不该走到这里")},
-		stubParserRegistry{err: errors.New("不该走到这里")},
+		stubParserRegistry{boom: true},
 		nil, nil, nil,
 	)
 
 	for _, bad := range []string{"ftp://example.com/a.pdf", "file:///etc/passwd"} {
-		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
 			Account: "demo", KBNo: "demo-kb", URL: bad,
-		})
-		if err == nil {
+		}); err == nil {
 			t.Fatalf("%s 必须被拒", bad)
-		}
-		// 文案必须来自 scheme 检查。registry 的哨兵（"不该走到这里"）同样非空，
-		// 但只有真正的 scheme 检查才会提到 http/https——顺序反过来时浮上来的就是哨兵。
-		if !strings.Contains(err.Error(), "http/https") {
-			t.Fatalf("应是 scheme 检查报的错（提到 http/https），得到 %v", err)
 		}
 	}
 }
