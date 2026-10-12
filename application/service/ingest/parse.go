@@ -75,9 +75,11 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 	}
 
 	// 解析产物恒是 markdown，走结构感知切片器（与 format=markdown 同一条路）。
-	return s.ingestDoc(ctx, kb, docName, func() (entity.Chunks, error) {
-		return s.splitter.Split(res.Markdown, constants.FormatMarkdown, opts)
-	}, in.Model, in.Refresh)
+	// content 存的就是这份 markdown——与随后被切片的**是同一份**，不是两次解析。
+	return s.ingestDoc(ctx, kb, docName, deriveTitle(res.Markdown, docName), res.Markdown,
+		func() (entity.Chunks, error) {
+			return s.splitter.Split(res.Markdown, constants.FormatMarkdown, opts)
+		}, in.Model, in.Refresh)
 }
 
 // supportsFormat 判 URL 的扩展名是否在该后端声明的格式内。

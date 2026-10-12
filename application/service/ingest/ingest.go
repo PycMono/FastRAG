@@ -38,9 +38,17 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		return nil, err
 	}
 
-	return s.ingestDoc(ctx, kb, in.DocName, func() (entity.Chunks, error) {
-		return s.split(in, opts)
-	}, in.Model, in.Refresh)
+	// 原文一并落库（台账）。markdown/text 就是请求里的 content 本身，
+	// chunks 路径没有整篇原文——存空串，别把切片拼起来充数。
+	content := ""
+	if in.Format != constants.FormatChunks {
+		content = in.Content
+	}
+
+	return s.ingestDoc(ctx, kb, in.DocName, titleOfDoc(in.DocName), content,
+		func() (entity.Chunks, error) {
+			return s.split(in, opts)
+		}, in.Model, in.Refresh)
 }
 
 // ingestSource 产出这次要落库的 chunks。两条导入路径的差异全在这里：
@@ -64,11 +72,19 @@ type ingestSource func() (entity.Chunks, error)
 func (s *Service) ingestDoc(
 	ctx context.Context,
 	kb *entity.Knowledge,
-	docName string,
+	docName, title, content string,
 	src ingestSource,
 	model string,
 	refresh bool,
 ) (*vo.DocIngestVO, error) {
+	// ⓪ 原文上限守卫。放在最前面——比 src() 还早：一次坏参数不该先付一次切片
+	//    或解析的钱，更不能走到 ⑥ 那次 ES 写之后才发现。**拒绝，不截断**。
+	if len(content) > constants.MaxContentBytes {
+		return nil, apperrors.NewParamError(fmt.Sprintf(
+			"原文 %d 字节超过上限 %d，请拆分文档后分批导入",
+			len(content), constants.MaxContentBytes))
+	}
+
 	// 先拿到要落的 chunks——两条路径的切片行为差异全部封装在 src 里。
 	chunks, err := src()
 	if err != nil {
@@ -141,7 +157,7 @@ func (s *Service) ingestDoc(
 	}
 
 	// ⑨ 【第三写】MySQL 写文档行 + 回写 KB 计数。实体到这里才构造，不存在中间态。
-	doc := factory.NewDoc(docID, kb, docName, hash, len(chunks), now)
+	doc := factory.NewDoc(docID, kb, docName, title, content, hash, len(chunks), now)
 
 	var created bool
 	if err := s.tm.Transaction(ctx, func(txCtx context.Context) error {

@@ -16,7 +16,7 @@ import (
 func NewDoc(
 	docID uint64,
 	kb *entity.Knowledge,
-	name, contentHash string,
+	name, title, content, contentHash string,
 	chunkCount int,
 	now time.Time,
 ) *entity.KnowledgeDoc {
@@ -26,6 +26,8 @@ func NewDoc(
 		KBID:        kb.ID,
 		Account:     kb.Account,
 		Name:        name,
+		Title:       title,
+		Content:     content,
 		ContentHash: contentHash,
 		ChunkCount:  chunkCount,
 		CreateTs:    ts,

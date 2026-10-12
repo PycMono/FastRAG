@@ -26,6 +26,13 @@ type KnowledgeDoc struct {
 	Account string `gorm:"column:account;type:varchar(64);not null"`
 	Name    string `gorm:"column:name;type:varchar(512);not null"` // 文档身份 = (KBID, Name)，同名重导入即更新
 
+	// Title 只是展示字段，**不参与任何判定**——一旦它参与身份，「改标题」就会
+	// 变成「新文档」，而「同名重导入 = 更新、doc_id 不变」正是这套写侧逻辑的支点。
+	Title string `gorm:"column:title;type:varchar(255);not null;default:''"`
+	// Content 整篇原文（markdown 或纯文本）。format=chunks 进来的存**空串**——
+	// 服务端手里从来没有过完整正文，把切片按 order 拼起来是伪造，不是原文。
+	Content string `gorm:"column:content;type:mediumtext;not null"`
+
 	ContentHash string `gorm:"column:content_hash;type:char(64);not null"` // SHA256
 	ChunkCount  int    `gorm:"column:chunk_count;type:int;not null;default:0"`
 

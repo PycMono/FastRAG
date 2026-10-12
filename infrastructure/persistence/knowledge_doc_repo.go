@@ -78,9 +78,11 @@ func (r *KnowledgeDocRepo) FindByIDs(
 //	SELECT ... FOR UPDATE  ← 拿行锁 + 旧 chunk_count
 //	INSERT ... ON DUPLICATE KEY UPDATE content_hash/chunk_count/update_ts
 //
-// 只更新那三列，**绝不动 id 和 create_ts**：
+// 只更新那几列，**绝不动 id 和 create_ts**：
 //   - id 一动，ES 里那批切片的 doc_id 就指向一个不存在的行了；
 //   - create_ts 一动，「文档创建时间」这个对外字段就变成"最后导入时间"。
+//
+// content / title 跟着一起覆盖：同名重导入视作更新，台账也要跟着最新那一版走。
 func (r *KnowledgeDocRepo) Save(
 	ctx context.Context, doc *entity.KnowledgeDoc,
 ) (oldChunkCount int, created bool, err error) {
@@ -126,6 +128,8 @@ func (r *KnowledgeDocRepo) Save(
 			// 写上是为了让意图在代码里读得出来
 			Columns: []clause.Column{{Name: "kb_id"}, {Name: "name"}},
 			DoUpdates: clause.Assignments(map[string]any{
+				"title":        doc.Title,
+				"content":      doc.Content,
 				"content_hash": doc.ContentHash,
 				"chunk_count":  doc.ChunkCount,
 				"update_ts":    doc.UpdateTs,

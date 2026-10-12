@@ -20,6 +20,12 @@ const (
 	DefaultMinChunk   = 50
 )
 
+// 单篇原文的字节上限：列是 MEDIUMTEXT（16MB），留一半余量。
+//
+// 超限**拒绝导入并报错**，不截断——静默截断会让详情页显示的正文与
+// 检索命中的切片来自两个不同的世界，而这种不一致完全看不出来。
+const MaxContentBytes = 8 << 20 // 8 MiB
+
 // 检索默认值
 const (
 	DefaultSearchLimit = 10

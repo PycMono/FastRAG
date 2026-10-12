@@ -2,10 +2,13 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/PycMono/FastRAG/common/constants"
 	"github.com/PycMono/FastRAG/common/dto"
+	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/repository"
@@ -271,5 +274,70 @@ func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
 	}
 	if reg.name != "m2" {
 		t.Errorf("取实现要用请求给的名字，得到 %q", reg.name)
+	}
+}
+
+// 原文进台账：content 存的就是请求里的正文本身，title 用 doc_name。
+func TestIngest_DocContentIsLedgered(t *testing.T) {
+	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	docRepo := &stubDocRepo{existing: nil}
+	svc := NewService(
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		docRepo, &stubStore{},
+		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{},
+		service.NewSplitter(), &stubIDService{}, &stubTm{})
+
+	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
+		Account: "demo", KBNo: "demo-kb", DocName: "手册.md",
+		Format: constants.FormatMarkdown, Content: "# 手册\n\n正文正文正文",
+	})
+	if err != nil {
+		t.Fatalf("Ingest 报错：%v", err)
+	}
+	if docRepo.saved == nil {
+		t.Fatal("Save 没被调到")
+	}
+	if docRepo.saved.Content != "# 手册\n\n正文正文正文" {
+		t.Errorf("content = %q，期望请求里的正文原样", docRepo.saved.Content)
+	}
+	if docRepo.saved.Title != "手册.md" {
+		t.Errorf("title = %q，期望 doc_name（markdown 路径不从正文取 H1）", docRepo.saved.Title)
+	}
+}
+
+// 上限守卫：超限**拒收**，且必须早于切片与任何一次 ES 写。
+// 用 src 闭包里 t.Fatal 钉住顺序——守卫若挪到 src 之后，这条用例会直接失败。
+func TestIngestDoc_RejectsOversizedContent(t *testing.T) {
+	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	docRepo := &stubDocRepo{}
+	store := &stubStore{}
+	svc := NewService(
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		docRepo, store,
+		okEmbeddingRegistry{e: stubEmbedding{dim: 4}},
+		stubParserRegistry{},
+		service.NewSplitter(), &stubIDService{}, &stubTm{})
+
+	_, err := svc.ingestDoc(context.Background(), kb, "big.md", "big.md",
+		strings.Repeat("x", constants.MaxContentBytes+1),
+		func() (entity.Chunks, error) {
+			t.Fatal("src 被调到了：上限守卫必须在切片/解析之前")
+			return nil, nil
+		}, "", false)
+
+	if err == nil {
+		t.Fatal("超限没报错")
+	}
+	// 断言错误码而不是文案：文案会变，码是线上契约
+	var ce apperrors.CodeError
+	if !errors.As(err, &ce) || ce.Code() != apperrors.CodeInvalidParam {
+		t.Errorf("错误码不对：err = %v，期望 %d（参数错误）", err, apperrors.CodeInvalidParam)
+	}
+	if len(store.calls) != 0 {
+		t.Errorf("ES 被写了 %v：超限守卫必须在任何一次写之前", store.calls)
+	}
+	if docRepo.saveCalls != 0 {
+		t.Errorf("MySQL 被写了 %d 次：超限守卫必须在任何一次写之前", docRepo.saveCalls)
 	}
 }
