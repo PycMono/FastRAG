@@ -60,7 +60,7 @@ func newParseService(
 
 // ─── 顺序：纯参数错误必须挡在解析之前 ────────────────────────────────────────
 //
-// 解析是本次请求里最贵、最慢的一步。名字写错、格式不支持、scheme 不对，
+// 解析是本次请求里最贵、最慢的一步。格式不支持、scheme 不对、模型名写错，
 // 都不该白花一次解析的钱。
 //
 // 两道防线各管一段，缺一不可：
@@ -70,32 +70,6 @@ func newParseService(
 //
 // 只看 err != nil 是不够的：那几个故意的哨兵错误（"不该走到这里"）也能满足它，
 // 顺序一反过来，浮上来的正好就是哨兵，测试却照样绿。
-
-// 未知解析后端必须在写任何东西之前返回——不能先切片、先算向量、先写 ES。
-func TestParse_UnknownParser_FailsEarly(t *testing.T) {
-	svc := NewService(
-		stubKBRepo{kb: &entity.KnowledgeBase{}},
-		nil, // docRepo
-		nil, // store
-		errEmbeddingRegistry{err: errors.New("不该走到这里")},
-		stubParserRegistry{err: errors.New(`没有名为 "nope" 的解析后端。可用：[docling]`)},
-		nil, // splitter
-		nil, // idGen
-		nil, // tm
-	)
-
-	_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "demo-kb", URL: "https://example.com/a.pdf", Parser: "nope",
-	})
-	if err == nil {
-		t.Fatal("未知 parser 必须报错")
-	}
-	// 文案必须点出是「取后端」这一步报的：embedding 的哨兵（"不该走到这里"）
-	// 也能让 err != nil 成立，但它不可能提到请求里的名字 nope。
-	if !strings.Contains(err.Error(), "nope") {
-		t.Fatalf("应是取后端报的错（提到 nope），得到 %v", err)
-	}
-}
 
 // 格式不被该后端支持 → 参数错误，且在调用解析之前就返回。
 func TestParse_UnsupportedFormat(t *testing.T) {

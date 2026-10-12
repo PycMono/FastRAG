@@ -21,7 +21,7 @@ import (
 
 // Parse 解析 URL 上的文档并入库。等同 Ingest，但 chunks 来自解析结果而不是请求体。
 //
-// 顺序是刻意的：所有「纯参数」错误（未知后端、格式不支持、坏模型名、切片参数）
+// 顺序是刻意的：所有「纯参数」错误（格式不支持、坏模型名、切片参数）
 // 都在调用解析后端之前报完——解析是本次请求里最贵、最慢的一步，
 // 不该为一个拼错的名字白花一次解析的钱。
 func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngestVO, error) {
@@ -37,7 +37,9 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 		return nil, apperrors.NewParamError("url 只支持 http/https: " + in.URL)
 	}
 
-	parser, err := s.parsers.Get(in.Parser)
+	// 用哪家解析后端完全由配置决定（config.parser.default）：请求不带这个参数，
+	// 想换后端就改配置重启。Get("") 即取 default。
+	parser, err := s.parsers.Get("")
 	if err != nil {
 		return nil, err
 	}
