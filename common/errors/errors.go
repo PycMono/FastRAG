@@ -189,7 +189,7 @@ var (
 	ErrVectorStoreFailed = NewSysError(CodeVectorStoreFail, "vector store failed")
 	ErrSearchFailed      = NewSysError(CodeSearchFail, "search failed")
 	ErrRerankFailed      = NewSysError(CodeRerankFail, "rerank service failed")
-	ErrParseFailed       = NewSysError(CodeParseFail, "doc parse failed")
+	ErrParseFailed       = NewSysError(CodeParseFail, "文档解析失败")
 )
 
 // NewParamError 生成带自定义文案的参数错误。

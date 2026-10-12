@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PycMono/FastRAG/common/dto"
+	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/service"
@@ -34,11 +35,17 @@ type stubParser struct {
 	formats []string
 	md      string
 	err     error
+	// gotReq 非 nil 时，把收到的请求记到它指向的变量里：钉住应用层→适配器的接线
+	// （尤其是 Filename——腾讯适配器靠它映射 FileType，见 parse.go 的调用点）。
+	gotReq *interfaces.ParseReq
 }
 
 func (p stubParser) Name() string      { return p.name }
 func (p stubParser) Formats() []string { return p.formats }
-func (p stubParser) Parse(context.Context, interfaces.ParseReq) (interfaces.ParseResult, error) {
+func (p stubParser) Parse(_ context.Context, req interfaces.ParseReq) (interfaces.ParseResult, error) {
+	if p.gotReq != nil {
+		*p.gotReq = req
+	}
 	if p.err != nil {
 		return interfaces.ParseResult{}, p.err
 	}
@@ -183,10 +190,20 @@ func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 			&stubTm{},
 		)
 
-		if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
 			Account: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
-		}); err == nil {
+		})
+		if err == nil {
 			t.Fatalf("markdown=%q 必须报错，不能当成功返回", md)
+		}
+		// 空文档是上游的锅：必须报解析失败码 10401，且是 SysError 类——不能退化成
+		// 切片器那句「content 不能为空」的 ParamError(10001)，把上游问题错记成调用方问题。
+		sys, ok := apperrors.AsSysError(err)
+		if !ok {
+			t.Fatalf("markdown=%q 应报系统错误(SysError)，得到 %T: %v", md, err, err)
+		}
+		if sys.Code() != apperrors.CodeParseFail {
+			t.Fatalf("markdown=%q 应报解析失败码 %d，得到 %d", md, apperrors.CodeParseFail, sys.Code())
 		}
 		// 光报错还不够：真正要防的是「空文档被写进 ES」。空 markdown 必须在切片那步
 		// 就停住，一次写都不该发生。
@@ -242,6 +259,39 @@ func TestParse_DerivesDocNameFromURL(t *testing.T) {
 	}
 	if out.DocName != "报告.pdf" {
 		t.Errorf("doc_name 应取 URL 末段并做百分号解码，得到 %q", out.DocName)
+	}
+}
+
+// 应用层必须把 URL 末段作为 Filename 传进 parser.Parse——这是让腾讯适配器能工作的
+// 唯一一根线（它靠扩展名映射 FileType）。删掉 parse.go 里那行 Filename，别处测试仍全绿，
+// 但腾讯后端运行时每条请求都会报 ParamError；此用例专门守着这道缝。
+func TestParse_PassesURLBasenameAsFilename(t *testing.T) {
+	kb := &entity.KnowledgeBase{ID: 7, No: "kb-1", Account: "demo"}
+	var got interfaces.ParseReq
+	svc := newParseService(
+		stubParserRegistry{parser: stubParser{
+			name: "tencent", md: "# 标题\n正文正文正文", gotReq: &got,
+		}},
+		&stubDocRepo{}, &stubStore{},
+		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
+		&stubTm{},
+	)
+
+	url := "https://example.com/docs/report.pdf"
+	if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
+		Account: "demo", KBNo: "kb-1", URL: url,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 断言收到的正是纯函数 filenameOf 对同一 URL 的产物，而非某个被写死的常量。
+	if want := filenameOf(url); got.Filename != want {
+		t.Fatalf("parser.Parse 收到的 Filename 应为 URL 末段 %q，得到 %q", want, got.Filename)
+	}
+	if got.Filename != "report.pdf" {
+		t.Fatalf("Filename 应为 report.pdf，得到 %q（腾讯适配器靠它映射 FileType）", got.Filename)
+	}
+	if got.URL != url {
+		t.Errorf("parser.Parse 收到的 URL 应为 %q，得到 %q", url, got.URL)
 	}
 }
 

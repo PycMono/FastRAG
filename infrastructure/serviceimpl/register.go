@@ -9,8 +9,8 @@ import (
 
 // Register 注册 service impl 层组件。
 //
-// embedding 与 rerank 都注册成"注册表"而不是单个实现：配置里可以同时存在
-// 多组服务商，应用层在请求入口按名字取用。
+// embedding、rerank、parser 都注册成"注册表"而不是单个实现：配置里可以同时存在
+// 多组服务商，应用层在请求入口取用（parser 由 config.parser.default 选定，不带名字）。
 //
 // 没有限流装饰器。本期不做限流（A4.9），embedding 直接暴露给调用方，
 // 唯一的背压是批量导入那个固定 4 并发的工作池（§5.5）。

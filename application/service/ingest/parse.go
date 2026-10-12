@@ -66,6 +66,14 @@ func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngest
 		return nil, err
 	}
 
+	// 空文档是上游的锅，不是调用方的：Docling 只挡恰好为空串、腾讯的 fetchMarkdown
+	// 连空串都照返回 nil error，纯空白则两家都漏。统一在这里判空，免得空结果漏到切片器
+	// 被它报成 ParamError（10001）——那会把上游失败错记成调用方参数错误（§9）。
+	if strings.TrimSpace(res.Markdown) == "" {
+		return nil, apperrors.NewSysError(apperrors.CodeParseFail,
+			"解析结果为空：上游返回了空文档")
+	}
+
 	// 解析产物恒是 markdown，走结构感知切片器（与 format=markdown 同一条路）。
 	return s.ingestDoc(ctx, kb, docName, func() (entity.Chunks, error) {
 		return s.splitter.Split(res.Markdown, constants.FormatMarkdown, opts)
