@@ -196,7 +196,7 @@ func (s *Service) split(
 // 实现是参数而不是 Service 的字段：Service 是单例，逐请求的东西不能往里写。
 //
 // title_vec 与 content_vec 分开存：标题短、噪声低，适合精排；
-// 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路。
+// 正文长、信息全，适合召回。检索时两路都查。
 func (s *Service) embedChunks(
 	ctx context.Context, e interfaces.IEmbedding, chunks entity.Chunks,
 ) (titleVecs, contentVecs [][]float32, err error) {

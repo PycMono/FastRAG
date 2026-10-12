@@ -22,7 +22,7 @@ func TestKNNClauses(t *testing.T) {
 		NumCandidates: 200,
 	}
 
-	t.Run("content 模式发标题+正文两条子句", func(t *testing.T) {
+	t.Run("发标题+正文两条子句", func(t *testing.T) {
 		clauses := store.knnClauses(req)
 		if len(clauses) != 2 {
 			t.Fatalf("期望 2 条 kNN 子句，得到 %d 条", len(clauses))
@@ -36,19 +36,6 @@ func TestKNNClauses(t *testing.T) {
 			if got != want[i] {
 				t.Errorf("第 %d 条子句的 field = %v，期望 %v", i, got, want[i])
 			}
-		}
-	})
-
-	t.Run("title 模式只发标题一条", func(t *testing.T) {
-		titleOnly := req
-		titleOnly.TitleOnly = true
-
-		clauses := store.knnClauses(titleOnly)
-		if len(clauses) != 1 {
-			t.Fatalf("期望 1 条 kNN 子句，得到 %d 条", len(clauses))
-		}
-		if got := clauses[0].(map[string]any)["field"]; got != constants.FieldTitleVec {
-			t.Errorf("field = %v，期望 %v", got, constants.FieldTitleVec)
 		}
 	})
 
@@ -104,10 +91,10 @@ func TestSummarizeQueryVec(t *testing.T) {
 		name string
 		body map[string]any
 	}{
-		{"数组形态（content 模式）", map[string]any{
+		{"数组形态", map[string]any{
 			"knn": []any{clause(constants.FieldTitleVec), clause(constants.FieldContentVec)},
 		}},
-		{"单对象形态（title 模式）", map[string]any{
+		{"单对象形态", map[string]any{
 			"knn": clause(constants.FieldTitleVec),
 		}},
 	}

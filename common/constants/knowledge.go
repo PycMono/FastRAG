@@ -7,12 +7,6 @@ const (
 	FormatChunks   = "chunks"   // 给已切好的切片，只做索引
 )
 
-// 检索模式（knowledge_base.search_mode）
-const (
-	SearchModeTitle           = "title"             // 只查标题
-	SearchModeTitleAndContent = "title_and_content" // 标题 + 正文
-)
-
 // 知识库类型（knowledge_base.knowledge_type）
 const (
 	KnowledgeTypeOrdinary = "ordinary"

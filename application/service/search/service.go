@@ -82,37 +82,30 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		}
 	}
 
-	// ③ 分组检索：按 search_mode 把库分组，每组各发一次请求。
+	// ③ 检索：一次请求，ES 内部出两路（BM25 + kNN）。
 	//
-	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义。
-	//    最多两组，组内字段一致所以能合成一次请求。
+	//    曾经按各 KB 的检索模式分组、每组发一次请求——那是为了不让
+	//    「标题-only」的库被按正文检索（静默改写语义）。检索模式下线之后
+	//    只剩一种，分组也随之消失，这里就是一次请求。
 	//
 	//    fetchSize 在 rerank 开启时大于 limit，让 ES 多召回一些候选交给 rerank 精排。
 	fetchSize := opts.effectiveRetrieveCount()
-	groups := groupBySearchMode(kbs)
-	pool := make([]repository.SearchResult, 0, len(groups))
-	for _, g := range groups {
-		r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec, fetchSize))
-		if err != nil {
-			return nil, err
-		}
-		pool = append(pool, r)
+	r, err := s.store.Search(ctx, s.buildReq(kbs, opts, queryVec, fetchSize))
+	if err != nil {
+		return nil, err
 	}
 
 	// ④ 应用层加权 RRF 融合
 	//
-	//    逐组逐路喂进去，**不先把各组拼成一个大列表**——那样后一组的
-	//    第一名会被排到前一组所有命中之后，等于按分组顺序给了个固定的偏置
-	//    （见 Fuse 的注释）。每组两路各自从 rank=1 起算就不偏。
-	routes := make([]Route, 0, 2*len(pool))
-	for _, r := range pool {
+	//    两路各自从 rank=1 起算、按权重加权（见 Fuse 的注释）——不把其中一路
+	//    拼到另一路后面，那等于按路的顺序给了个固定的偏置。
+	routes := make([]Route, 0, 2)
+	if len(r.BM25) > 0 {
 		// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
-		if len(r.BM25) > 0 {
-			routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
-		}
-		if len(r.KNN) > 0 {
-			routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
-		}
+		routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
+	}
+	if len(r.KNN) > 0 {
+		routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
 	}
 	merged := Fuse(routes, s.tuning.RankConstant, fetchSize*fusionOversample)
 
@@ -182,55 +175,23 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
 	}.normalize()
 }
 
-// searchModeGroup 一组 search_mode 相同的库。
-type searchModeGroup struct {
-	titleOnly bool
-	kbs       entity.KnowledgeBases
-}
-
-// groupBySearchMode 按「是否只查标题」把库分组。
-//
-// 为什么不取并集：只要有一个库开了正文检索，就全局按正文检索的话，
-// 那些建库时明确声明「只用标题」的库就被按正文搜了——召回里会冒出
-// 一堆标题对不上、正文里却有这个词的切片。那是静默改写语义。
-func groupBySearchMode(kbs entity.KnowledgeBases) []searchModeGroup {
-	var contentSearch, titleSearch entity.KnowledgeBases
-	for _, kb := range kbs {
-		if kb.UsesTitleOnly() {
-			titleSearch = append(titleSearch, kb)
-		} else {
-			contentSearch = append(contentSearch, kb)
-		}
-	}
-
-	groups := make([]searchModeGroup, 0, 2)
-	if len(contentSearch) > 0 {
-		groups = append(groups, searchModeGroup{titleOnly: false, kbs: contentSearch})
-	}
-	if len(titleSearch) > 0 {
-		groups = append(groups, searchModeGroup{titleOnly: true, kbs: titleSearch})
-	}
-	return groups
-}
-
 func (s *Service) buildReq(
-	g searchModeGroup,
+	kbs entity.KnowledgeBases,
 	opts searchOptions,
 	queryVec []float32,
 	fetchSize int,
 ) repository.VectorSearchReq {
-	ids := make([]uint64, 0, len(g.kbs))
-	for _, kb := range g.kbs {
+	ids := make([]uint64, 0, len(kbs))
+	for _, kb := range kbs {
 		ids = append(ids, kb.ID)
 	}
 
 	return repository.VectorSearchReq{
-		// 组内必然同 account：FindByNos 加载时已按 account 过滤过
-		Account:       g.kbs[0].Account,
+		// 所有库同 account：FindByNos 加载时已按 account 过滤过
+		Account:       kbs[0].Account,
 		KBIDs:         ids,
 		Query:         opts.Query,
 		QueryVec:      queryVec,
-		TitleOnly:     g.titleOnly,
 		DenseWeight:   opts.DenseWeight,
 		BM25Top:       fetchSize,
 		KNNTops:       fetchSize,

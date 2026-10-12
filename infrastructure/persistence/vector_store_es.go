@@ -393,9 +393,9 @@ func (s *ESVectorStore) logSearch(ctx context.Context, route string, body map[st
 // 只有前者的话，日志里看到 route=knn 也仍然不知道向量路到底召回没有——
 // 2026-10-09 就被问过一次「是不是真查到数据了」。
 //
-// top_score 对向量路是**各条 kNN 子句余弦相似度之和**，content 模式下有
-// 标题+正文两条子句，所以量程是 0~2 而不是 0~1；title 模式只有一条，是 0~1。
-// 对 BM25 路则是无上界的相关性分。三者的数不能横向比。
+// top_score 对向量路是**各条 kNN 子句余弦相似度之和**，标题+正文两条子句，
+// 所以量程是 0~2 而不是 0~1。对 BM25 路则是无上界的相关性分，两者量纲不同，
+// 不能横向比。
 func (s *ESVectorStore) logSearchResult(
 	ctx context.Context, route string, hits []repository.VectorHit, err error,
 ) {
@@ -427,8 +427,8 @@ func (s *ESVectorStore) logSearchResult(
 // 1024 个 float32 原样打出来会把日志刷爆，而排查「有没有走向量路」只需要知道
 // 维度对不对、数值是不是全零。原 body 要原样发给 ES，所以只能拷贝不能改。
 //
-// knn 有两种形态都要认：**数组**（content 模式，标题+正文两条子句）和
-// **单对象**（title 模式一条）。只认其中一种的话，另一种形态会在日志里
+// knn 有**数组**与**单对象**两种形态：本服务总是发数组（标题+正文两条子句），
+// 但单对象 ES 也收，所以两种都认。只认其中一种的话，另一种形态会在日志里
 // 原样吐出 1024 个数——而日志恰恰是排查这类问题时唯一能看的东西。
 func summarizeQueryVec(body map[string]any) map[string]any {
 	out := make(map[string]any, len(body))
@@ -547,10 +547,6 @@ func (s *ESVectorStore) bm25Body(req repository.VectorSearchReq) map[string]any 
 	// boost 的取值：标题命中比正文命中强得多——一份文档里正文到处都是
 	// 常见词，标题才真正说明这篇在讲什么
 	fields := []string{constants.FieldTitle + "^3", constants.FieldHeadingPath + "^2", constants.FieldContent}
-	if req.TitleOnly {
-		// search_mode = title：不查正文
-		fields = []string{constants.FieldTitle + "^3", constants.FieldHeadingPath + "^2"}
-	}
 
 	should := make([]any, 0, len(fields))
 	for _, f := range fields {
@@ -577,7 +573,7 @@ func (s *ESVectorStore) bm25Body(req repository.VectorSearchReq) map[string]any 
 
 // knnBody 向量路。
 //
-// knn 这里传的是**数组**：content 模式下标题向量和正文向量各出一条子句，
+// knn 这里传的是**数组**：标题向量和正文向量各出一条子句，
 // ES 把两条子句的分数**相加**后出一个榜单（实测 0.969 + 0.840 = 1.809）。
 //
 // 为什么要两条子句：只查 content_vec 时，「标题讲这件事、正文恰好没重复这个词」
@@ -587,9 +583,6 @@ func (s *ESVectorStore) bm25Body(req repository.VectorSearchReq) map[string]any 
 // 对齐的是 go-ai-knowledge 的做法——它在 ES 原生 RRF 里给 title_vec / content_vec
 // 各挂一个 retriever。区别只在融合口径：它是按**名次**融合，这里是按**分数**相加。
 // 相加的语义是「两处都像」压过「一处极像」，也正是 ES 官方对多字段 kNN 的推荐用法。
-//
-// title 模式（search_mode = title）仍然只发一条：那条路的语义就是「不碰正文」
-// （§7.2），顺带查 content_vec 等于把只按标题建的库悄悄按正文检索。
 func (s *ESVectorStore) knnBody(req repository.VectorSearchReq) map[string]any {
 	return map[string]any{
 		"size":    req.KNNTops,
@@ -598,12 +591,9 @@ func (s *ESVectorStore) knnBody(req repository.VectorSearchReq) map[string]any {
 	}
 }
 
-// knnClauses 按检索模式决定查几个向量字段，逐条构造 kNN 子句。
+// knnClauses 逐条构造 kNN 子句，标题、正文各一条向量字段。
 func (s *ESVectorStore) knnClauses(req repository.VectorSearchReq) []any {
 	fields := []string{constants.FieldTitleVec, constants.FieldContentVec}
-	if req.TitleOnly {
-		fields = []string{constants.FieldTitleVec}
-	}
 
 	k := req.KNNTops
 	numCandidates := req.NumCandidates

@@ -140,11 +140,10 @@ func newSearchServiceForTest(
 
 func defaultKB() *entity.KnowledgeBase {
 	return &entity.KnowledgeBase{
-		ID:         1,
-		No:         "demo-kb",
-		Account:    "demo",
-		Name:       "测试知识库",
-		SearchMode: "title_and_content",
+		ID:      1,
+		No:      "demo-kb",
+		Account: "demo",
+		Name:    "测试知识库",
 	}
 }
 
