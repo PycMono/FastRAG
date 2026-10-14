@@ -13,15 +13,15 @@ import (
 func (s *Service) Detail(
 	ctx context.Context, q *dto.DocDetailQuery,
 ) (*vo.DocDetailVO, error) {
-	doc, err := s.liveDoc(ctx, q.DocID, q.Account)
+	doc, err := s.liveDoc(ctx, q.DocID, q.Tenant)
 	if err != nil {
 		return nil, err
 	}
 
 	// source_url 是**库级**的，只能回 KB 行取（文档表里根本没有这一列）。
-	// KB 行查不到、或 account 不符 → 10101：一条查得到原文、却查不到所属库的
+	// KB 行查不到、或 tenant 不符 → 10101：一条查得到原文、却查不到所属库的
 	// 文档本身就是不一致，不该假装正常返回
-	kb, err := s.kbRepo.FindByID(ctx, doc.KBID, q.Account)
+	kb, err := s.kbRepo.FindByID(ctx, doc.KBID, q.Tenant)
 	if err != nil {
 		return nil, err
 	}

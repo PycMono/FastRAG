@@ -39,3 +39,18 @@ func TestDocParseDTO_ChunkOptions_OutOfRange(t *testing.T) {
 		t.Fatal("chunk_size 越界必须报参数错误")
 	}
 }
+
+// URL 的 scheme 只有 http/https 放行：binding 的 `url` tag 拦不住 ftp://，
+// 这里补齐（§5、§9）。
+func TestDocParseDTO_Validate_Scheme(t *testing.T) {
+	for _, u := range []string{"http://a.com/x.pdf", "https://a.com/x.pdf", "HTTPS://a.com/x"} {
+		if err := (&DocParseDTO{URL: u}).Validate(); err != nil {
+			t.Errorf("%q 应放行，得到 %v", u, err)
+		}
+	}
+	for _, u := range []string{"ftp://a.com/x", "file:///etc/passwd", "", "://a.com", "a.com/x.pdf"} {
+		if err := (&DocParseDTO{URL: u}).Validate(); err == nil {
+			t.Errorf("%q 应拒绝", u)
+		}
+	}
+}

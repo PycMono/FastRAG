@@ -36,9 +36,9 @@ func NewService(
 func (s *Service) List(
 	ctx context.Context, q *dto.DocListQuery,
 ) (*vo.PageResult[vo.DocListItemVO], error) {
-	// FindByNo 已经把「库不存在」与「account 对不上」折叠成同一个 10101，
-	// 所以这里不再（也不该）自己判一次 account——多判一次就是多一处能漏的口子
-	kb, err := s.kbRepo.FindByNo(ctx, q.KBNo, q.Account)
+	// FindByNo 已经把「库不存在」与「tenant 对不上」折叠成同一个 10101，
+	// 所以这里不再（也不该）自己判一次 tenant——多判一次就是多一处能漏的口子
+	kb, err := s.kbRepo.FindByNo(ctx, q.KBNo, q.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -66,19 +66,19 @@ func (s *Service) List(
 	return vo.NewPageResult(total, list, q.Page, q.Limit()), nil
 }
 
-// liveDoc 按 doc_id 取一篇「属于该 account」的文档。
+// liveDoc 按 doc_id 取一篇「属于该 tenant」的文档。
 //
-// 租户校验补在这里，是因为 FindByID **刻意不带 account 过滤**（底层仓储不该
-// 替调用方做租户判断）。行不存在、或 account 对不上，都返回同一个
+// 租户校验补在这里，是因为 FindByID **刻意不带 tenant 过滤**（底层仓储不该
+// 替调用方做租户判断）。行不存在、或 tenant 对不上，都返回同一个
 // ErrDocNotFound——分开就是告诉探测者「这个 id 是存在的」。
 func (s *Service) liveDoc(
-	ctx context.Context, docID uint64, account string,
+	ctx context.Context, docID uint64, tenant string,
 ) (*entity.KnowledgeDoc, error) {
 	doc, err := s.docRepo.FindByID(ctx, docID)
 	if err != nil {
 		return nil, err
 	}
-	if doc == nil || doc.Account != account {
+	if doc == nil || doc.Tenant != tenant {
 		// 不存在，或存在但不属于你：同一个错
 		return nil, apperrors.ErrDocNotFound
 	}

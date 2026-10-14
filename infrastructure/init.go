@@ -72,26 +72,26 @@ func core(conf *config.Config) fx.Option {
 		domain.Register,
 		service.Register,
 
-		fx.Invoke(checkTrustRequestAccount),
+		fx.Invoke(checkTrustRequestTenant),
 	)
 }
 
-// checkTrustRequestAccount 是一道防误部署的闸门（§6.1）。
+// checkTrustRequestTenant 是一道防误部署的闸门（§6.1）。
 //
-// 本服务不做鉴权——account 就是请求体里的一个普通字符串参数。
+// 本服务不做鉴权——tenant 就是请求体里的一个普通字符串参数。
 // 能构造请求体的人就能读写任意租户的数据。这个设计只有在「服务只跑在可信内网、
 // 由调用方自己完成对最终用户的鉴权」这个前提下才成立。
 //
 // 问题在于，把服务直接摆到公网上是个太容易犯的错——改一行 nginx 配置就够了，
 // 而代码本身不会报任何错。所以这里把前提变成一个必须显式承认的开关：
-// 没配 trust_request_account = true 就拒绝启动。
+// 没配 trust_request_tenant = true 就拒绝启动。
 //
 // 用 fx.Invoke 而不是放在 main 里手写 if：这样入口都会过这道闸门，漏不掉。
-func checkTrustRequestAccount(conf *config.Config) error {
-	if !conf.Security.TrustRequestAccount {
+func checkTrustRequestTenant(conf *config.Config) error {
+	if !conf.Security.TrustRequestTenant {
 		return apperrors.NewSysError(apperrors.CodeInternal,
-			"拒绝启动：security.trust_request_account 未置为 true。\n"+
-				"本服务不做鉴权，account 直接取自请求体，任何能构造请求的人都能读写任意租户。\n"+
+			"拒绝启动：security.trust_request_tenant 未置为 true。\n"+
+				"本服务不做鉴权，tenant 直接取自请求体，任何能构造请求的人都能读写任意租户。\n"+
 				"确认它只对内网可信调用方开放（且调用方已自行完成用户鉴权）后，"+
 				"在配置里显式写上 true。")
 	}

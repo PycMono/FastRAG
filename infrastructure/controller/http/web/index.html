@@ -230,7 +230,7 @@
 
 <header>
   <h1>FastRAG 演示台</h1>
-  <span class="sub">上传 markdown → 混合检索（BM25 + kNN + 应用层 RRF）</span>
+  <span class="sub">上传 markdown 或按 URL 解析 → 混合检索（BM25 + kNN + 应用层 RRF）</span>
   <span class="health" id="health">探针检查中…</span>
 </header>
 
@@ -243,8 +243,8 @@
       <div class="body">
         <div class="row">
           <label class="field">
-            <span>account（租户）</span>
-            <input type="text" id="account" value="demo">
+            <span>tenant（租户）</span>
+            <input type="text" id="tenant" value="demo">
           </label>
           <label class="field">
             <span>kb_no（知识库编号）</span>
@@ -252,7 +252,7 @@
           </label>
         </div>
         <div class="msg warn show" style="margin-top:0">
-          本服务不做鉴权：<code>account</code> 就是请求体里的普通字段，填谁就是谁。
+          本服务不做鉴权：<code>tenant</code> 就是请求体里的普通字段，填谁就是谁。
         </div>
       </div>
     </div>
@@ -287,6 +287,10 @@
               <span>chunk_size（可留空）</span>
               <input type="number" id="chunk_size" placeholder="800">
             </label>
+            <label class="field">
+              <span>model（可留空，留空 = 走 config 的 embedding.default）</span>
+              <input type="text" id="ingest_model" placeholder="例如 bge-m3">
+            </label>
           </div>
           <div class="check">
             <input type="checkbox" id="refresh" checked>
@@ -302,6 +306,41 @@
             <summary>原始响应</summary><pre id="ingestRaw"></pre>
           </details>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>按 URL 导入 <span class="badge">POST /api/v1/docs/parse</span></h2>
+      <div class="body">
+        <label class="field">
+          <span>url（PDF / docx / pptx…，由服务端解析成 markdown 再入库）</span>
+          <input type="text" id="parse_url" placeholder="https://arxiv.org/pdf/1706.03762v7">
+        </label>
+        <label class="field">
+          <span>doc_name（可留空，默认取 URL 末段）</span>
+          <input type="text" id="parse_doc_name" placeholder="留空 = 1706.03762v7.pdf">
+        </label>
+        <label class="field">
+          <span>model（可留空，留空 = 走 config 的 embedding.default）</span>
+          <input type="text" id="parse_model" placeholder="例如 bge-m3">
+        </label>
+        <div class="msg warn" style="margin:0 0 10px">
+          正文由解析后端来（哪家由 <code>config.parser.default</code> 定），走的是和上面
+          <b>同一条</b>下游：切分 → 向量化 → 写 ES → 写 MySQL。它<b>同步</b>等解析，几十秒很正常。
+          解析后端对来源地址可能有白名单（内网 / 私有地址会被拒），失败先看服务端日志。
+        </div>
+        <div class="check">
+          <input type="checkbox" id="parse_refresh" checked>
+          <label for="parse_refresh">refresh：写完立刻刷新索引，返回即可检索、切片也立刻能看</label>
+        </div>
+        <div class="actions">
+          <button id="btnParse">解析并导入</button>
+          <span class="hint" id="parseHint"></span>
+        </div>
+        <div class="msg" id="parseMsg"></div>
+        <details class="raw" id="parseRawWrap" style="display:none">
+          <summary>原始响应</summary><pre id="parseRaw"></pre>
+        </details>
       </div>
     </div>
 
@@ -431,8 +470,8 @@
   }
 
   // 只读接口走 GET + query string（/api/v1/docs 那三条）。
-  // undefined / null / 空串的入参不拼进 query，省得后端收到 `account=` 这种空串
-  // ——DocListQuery 的 account 是 required，空串会被判参数错误。
+  // undefined / null / 空串的入参不拼进 query，省得后端收到 `tenant=` 这种空串
+  // ——DocListQuery 的 tenant 是 required，空串会被判参数错误。
   async function callGET(path, params) {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) {
@@ -483,7 +522,7 @@
   pingHealth();
 
   // 支持 ?q=xxx 直达一次检索：填上 query 自动搜。分享演示链接和 README 截图用。
-  // 只认 q——演示态不该背着一堆隐藏配置，account/kb 这些还是用页面上的默认值。
+  // 只认 q——演示态不该背着一堆隐藏配置，tenant/kb 这些还是用页面上的默认值。
   const urlQ = new URLSearchParams(location.search).get('q');
   if (urlQ) {
     $('query').value = urlQ;
@@ -539,7 +578,7 @@
     if (!content.trim()) { return showMsg($('ingestMsg'), 'err', '正文不能为空'); }
 
     const body = {
-      account: $('account').value.trim(),
+      tenant: $('tenant').value.trim(),
       kb_no: $('kb_no').value.trim(),
       doc_name: docName,
       format: $('format').value,
@@ -548,6 +587,10 @@
     };
     const size = parseInt($('chunk_size').value, 10);
     if (size > 0) body.split_options = { chunk_size: size };
+    // 留空就不传：服务端用 config 的 embedding.default。填了就以这里为准——
+    // 同一个库里的向量必须同一家模型算，混着来检索会牛头不对马嘴。
+    const ingestModel = $('ingest_model').value.trim();
+    if (ingestModel) body.model = ingestModel;
 
     btn.disabled = true;
     showMsg($('ingestMsg'), 'warn', '<span class="spinner"></span>导入中：切分 → 向量化 → 写 ES → 写 MySQL…');
@@ -571,6 +614,67 @@
     }
   });
 
+  // ── 按 URL 导入（服务端解析） ────────────────────────────────────────────
+  //
+  // 和上面的「导入文档」是**同一条下游**（正文从解析后端来，之后一样切分 →
+  // 向量化 → 写 ES → 写 MySQL），响应形状也一致（DocIngestVO）——所以这里
+  // 刻意只写「URL 这一段」，成功的后续处理和导入那条一样，不复用函数是因为
+  // 两处的提示文案不同（一个说解析耗时，一个说直接导入），抽成参数反而更难读。
+  $('btnParse').addEventListener('click', async () => {
+    const btn = $('btnParse');
+    const url = $('parse_url').value.trim();
+    if (!url) { return showMsg($('parseMsg'), 'err', 'url 不能为空'); }
+    // 服务端也拦（binding 的 url tag 拦不住 ftp://，靠 DTO.Validate 兜底），
+    // 这里先拦一道只是省一次白跑的往返
+    if (!/^https?:\/\//i.test(url)) {
+      return showMsg($('parseMsg'), 'err', 'url 只支持 http/https');
+    }
+
+    const body = {
+      tenant: $('tenant').value.trim(),
+      kb_no: $('kb_no').value.trim(),
+      url: url,
+      refresh: $('parse_refresh').checked,
+    };
+    const parseName = $('parse_doc_name').value.trim();
+    if (parseName) body.doc_name = parseName;   // 留空由服务端取 URL 末段
+    const parseModel = $('parse_model').value.trim();
+    if (parseModel) body.model = parseModel;    // 同上：留空走 config 默认
+
+    btn.disabled = true;
+    showMsg($('parseMsg'), 'warn',
+      '<span class="spinner"></span>解析中：后端下载 → 转 markdown → 切分 → 向量化 → 写 ES…'
+      + '（同步等，几十秒很正常）');
+    const t0 = performance.now();
+
+    try {
+      const data = await call('/api/v1/docs/parse', body);
+      const ms = Math.round(performance.now() - t0);
+      showMsg($('parseMsg'), 'ok',
+        `解析导入成功（${ms} ms）：<code>doc_id=${data.doc_id}</code>，` +
+        `${data.chunk_count} 个切片，${data.created ? '新建' : '覆盖更新'}` +
+        ($('parse_refresh').checked ? '，索引已刷新，可以马上检索。' : '，最多等 30s 才能搜到。'));
+      $('parseHint').textContent = '';
+      $('parseRawWrap').style.display = '';
+      $('parseRaw').textContent = JSON.stringify(data, null, 2);
+
+      // 导入完最想看的就是「切出来长什么样」，所以直接把它追到「按文档浏览」里：
+      // 开这一篇（连带原文和 source_url）+ 枚举切片。这两步各自吞自己的错
+      // （loadDocList / openDoc / loadChunks 内部都有 try/catch），上面的成功
+      // 提示不会被它们的失败抹掉。也**不**动 docPage：页码是用户自己翻的，
+      // openDoc 按 doc_id 直接开，跟当前在第几页无关。
+      await loadDocList();
+      if (data.doc_id) {
+        await openDoc(data.doc_id);
+        await loadChunks();
+      }
+    } catch (e) {
+      showMsg($('parseMsg'), 'err', '解析失败：' + escapeHTML(e.message));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   // ── 检索 ─────────────────────────────────────────────────────────────────
   $('btnSearch').addEventListener('click', doSearch);
   $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
@@ -582,7 +686,7 @@
     if (!query) { return showMsg($('searchMsg'), 'err', 'query 不能为空'); }
 
     const body = {
-      account: $('account').value.trim(),
+      tenant: $('tenant').value.trim(),
       kb_nos: [kbNo],
       query: query,
       limit: parseInt($('limit').value, 10) || 10,
@@ -671,11 +775,15 @@
 
     // 命中里直接能点开整篇：把视线先带到下面的文档卡片，再展开详情。
     // doc_id 与 doc_name 不同——它是稳定主键，改名不影响
+    //
+    // ⚠️ 原样传递，**不要 parseInt**：doc_id 是 19 位雪花，超了 JS 的 2^53，
+    // 转成 Number 会变成另一个数（...948288 → ...948300），回后端就是 10501。
+    // 服务端已经把它当字符串吐（vo 里的 `,string`），这里保持不透明字符串即可。
     box.querySelectorAll('button[data-open]').forEach((b) => {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         $('docDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
-        openDoc(parseInt(b.dataset.open, 10));
+        openDoc(b.dataset.open);
       });
     });
 
@@ -743,20 +851,21 @@
   let docPage = 1;            // 当前请求的页码
   let docTotal = 0;           // 服务端 total：整个库的文档总数
   let docPageCount = 1;       // 服务端 pages：准确总页数
-  let curDocID = 0;
+  // doc_id 是**字符串**（19 位雪花，JS 的数字放不下），不是数字
+  let curDocID = '';
   let chunkOffset = 0;
 
-  // 「全新加载」才把页码归 1：点「加载」按钮、或换了 account / kb_no。归 1 放在
+  // 「全新加载」才把页码归 1：点「加载」按钮、或换了 tenant / kb_no。归 1 放在
   // 事件处理里、**不**放进 loadDocList 内部——分页器自己的翻页要带着目标页码去
   // 请求（走 renderDocPager 里的 loadDocList()，不经这里），不能被打回第 1 页。
   $('btnDocs').addEventListener('click', () => { docPage = 1; loadDocList(); });
-  ['account', 'kb_no'].forEach((id) =>
+  ['tenant', 'kb_no'].forEach((id) =>
     $(id).addEventListener('input', () => { docPage = 1; }));
   $('btnCloseDoc').addEventListener('click', () => { $('docDetail').style.display = 'none'; });
   $('btnChunks').addEventListener('click', loadChunks);
 
   const kbParams = () => ({
-    account: $('account').value.trim(),
+    tenant: $('tenant').value.trim(),
     kb_no: $('kb_no').value.trim(),
   });
 
@@ -820,7 +929,7 @@
     $('docCount').textContent = docTotal + ' 篇';
     const box = $('docList');
     if (!docItems.length) {
-      box.innerHTML = '<div class="empty">这一页没有文档（或 account / kb_no 填错了）。</div>';
+      box.innerHTML = '<div class="empty">这一页没有文档（或 tenant / kb_no 填错了）。</div>';
       $('docPager').className = 'pager';
       return;
     }
@@ -836,8 +945,9 @@
           <span>${d.has_content ? '有原文' : '仅切片（format=chunks）'}</span>
         </div>
       </div>`).join('');
+    // 同上：doc_id 是字符串，别 parseInt
     box.querySelectorAll('.doc-item').forEach((el) => {
-      el.addEventListener('click', () => openDoc(parseInt(el.dataset.doc, 10)));
+      el.addEventListener('click', () => openDoc(el.dataset.doc));
     });
     renderDocPager(docItems.length);
   }
@@ -881,7 +991,7 @@
     showMsg($('docsMsg'), 'warn', '<span class="spinner"></span>取原文…');
     try {
       const d = await callGET('/api/v1/docs/detail',
-        { account: $('account').value.trim(), doc_id: docID });
+        { tenant: $('tenant').value.trim(), doc_id: docID });
       hideMsg($('docsMsg'));
       $('docTitle').textContent = d.title || d.doc_name;
       // 来源是**库级**的（一个 URL 一个库）：空串说明建库时没记，不是故障
@@ -905,7 +1015,7 @@
     showMsg($('chunksMsg'), 'warn', '<span class="spinner"></span>枚举切片…');
     try {
       const data = await callGET('/api/v1/docs/chunks', {
-        account: $('account').value.trim(),
+        tenant: $('tenant').value.trim(),
         doc_id: curDocID,
         limit: CHUNK_PAGE_SIZE,
         offset: chunkOffset,

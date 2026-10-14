@@ -39,14 +39,14 @@ type BatchError struct {
 // 用 kb_no 而不是 kb_id：这一层还没查库，拿不到自增主键。
 // kb_no 到 kb_id 是一对一，所以在这里做去重等价。
 type docKey struct {
-	Account string
+	Tenant  string
 	KBNo    string
 	DocName string
 }
 
 // docKeyOf 取一条导入请求的同一性键。
 func docKeyOf(in *dto.DocIngestDTO) docKey {
-	return docKey{Account: in.Account, KBNo: in.KBNo, DocName: in.DocName}
+	return docKey{Tenant: in.Tenant, KBNo: in.KBNo, DocName: in.DocName}
 }
 
 // BatchIngest 批量导入：受限并发 + 单条错误隔离。

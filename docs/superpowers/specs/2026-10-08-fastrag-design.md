@@ -23,9 +23,9 @@
 【查询】  query ──► ES 混合检索 ──► 存活校验 ──► 返回
 ```
 
-> ⚠️ **部署前提（先看这条）**：本服务**不做鉴权**，`account` 是请求体里的普通参数（§6）。
+> ⚠️ **部署前提（先看这条）**：本服务**不做鉴权**，`tenant` 是请求体里的普通参数（§6）。
 > 能改请求体的人就能读写任意租户。**只能部署在可信内网**，且调用方必须自己完成对最终用户的鉴权。
-> 为防止"不知道这件事的人"把它摆到公网上，启动时会检查 `security.trust_request_account`，
+> 为防止"不知道这件事的人"把它摆到公网上，启动时会检查 `security.trust_request_tenant`，
 > 未显式置 `true` 直接拒绝启动（§6.1）。
 
 ---
@@ -44,10 +44,10 @@
 > 删除做成 `POST .../delete` 而不是 `DELETE`，是因为删除要带 `doc_name`（中文、含空格、可能很长），
 > 塞进 URL 需要额外编码规则；放进 body 就没有这个问题。这是有意的取舍，不是漏改。
 
-**边界**：从"干净的文本"接手；**假设知识库已存在**——`knowledge_base` 由外部预置，本服务**只读**它（拿 `kb_id` / `account` / `name` / `search_mode` / `biz_tag`），不提供建库、发布、版本管理的接口。`kb_no` 由建库方在建库时分配，FastRAG 只消费、不生成。
+**边界**：从"干净的文本"接手；**假设知识库已存在**——`knowledge_base` 由外部预置，本服务**只读**它（拿 `kb_id` / `tenant` / `name` / `type`），不提供建库、发布、版本管理的接口。`kb_no` 由建库方在建库时分配，FastRAG 只消费、不生成。
 
 > **`knowledge_base` 的列所有权**：本服务**只写** `doc_count` / `chunk_count` / `update_ts` 三列（计数冗余，§5.1 第 ⑧ 步）。
-> 其余列（`name` / `search_mode` / `biz_tag` / `split_options` / `delete_ts` …）归**建库方**所有，本服务只读不写。
+> 其余列（`name` / `type` / `split_options` …）归**建库方**所有，本服务只读不写。
 > 这条要跟建库方对齐——否则两边各写各的，同一行的 `update_ts` 会互相覆盖。
 
 导入接口接受两种形态，走同一条下游链路（ES 写切片 → ES 清旧切片 → MySQL 计数），形态 A 多一步切片：
@@ -56,7 +56,7 @@
 // 形态 A：给 markdown，FastRAG 负责切
 POST /api/v1/docs
 {
-  "account": "acc_001",                                      // 租户，调用方直接给（§6）
+  "tenant": "acc_001",                                      // 租户，调用方直接给（§6）
   "kb_no": "KB20261008001",
   "doc_name": "产品手册.md",
   "format": "markdown",
@@ -67,7 +67,7 @@ POST /api/v1/docs
 // 形态 B：给已切好的切片，FastRAG 只索引
 POST /api/v1/docs
 {
-  "account": "acc_001",
+  "tenant": "acc_001",
   "kb_no": "KB20261008001",
   "doc_name": "产品手册.md",
   "format": "chunks",
@@ -78,7 +78,7 @@ POST /api/v1/docs
 }
 ```
 
-`account` 是**普通请求参数**，不走鉴权链、不做身份解析（§6）；它与 `kb_no` 一起定位知识库。
+`tenant` 是**普通请求参数**，不走鉴权链、不做身份解析（§6）；它与 `kb_no` 一起定位知识库。
 
 ---
 
@@ -88,9 +88,9 @@ POST /api/v1/docs
 
 ES 文档存 `title` + `content` + 向量，查询命中后直接返回，不去 MySQL 取正文。省一次跨存储往返（代价：ES 存储翻倍）。
 
-### D2 · 单索引多租户，靠 `term(account)` 过滤
+### D2 · 单索引多租户，靠 `term(tenant)` 过滤
 
-所有租户的切片进同一个物理索引 `fastrag`，每条切片带 `account`（`keyword`），查询**强制**加 `term(account)`。
+所有租户的切片进同一个物理索引 `fastrag`，每条切片带 `tenant`（`keyword`），查询**强制**加 `term(tenant)`。
 
 - 一租户一索引在 SaaS 租户数成千上万时，分片数、cluster state、小索引开销、跨租户检索都会失控。
 - 分桶 + 大租户独占是为亿级准备的复杂度，本期不需要。
@@ -230,7 +230,7 @@ FastRAG/
 `knowledge_base.go` / `knowledge_doc.go` 上直接挂着 `gorm:"column:..."` 和 `TableName()`，
 **没有独立的 `po/` 与 `mapper/` 两层**——对齐 `micro-framework` 的做法（它的 `domain/entity/**`
 同样是 GORM 模型）。理由是这两层在本项目里只买到「实体不被 DDL 细节污染」这一个好处，
-代价却是加一列要改三个文件，而 `po.IsSystem int8` ↔ `entity.IsSystem bool` 这类不一致
+代价却是加一列要改三个文件，而 `po` 与 `entity` 之间「同一列、两种表示」的不一致
 **编译期查不出来**——正是本项目最忌讳的那种静默偏差。
 
 两条随之而来的约束：
@@ -276,7 +276,7 @@ func core(conf *config.Config) fx.Option {
 
         // 唯一一道启动期闸门：配置未显式声明"可信内网"就拒绝启动（§6.1）。
         // 启动期**不碰 ES**——索引由人先建好（§9.4），服务只在第一次用到时报错。
-        fx.Invoke(checkTrustRequestAccount),
+        fx.Invoke(checkTrustRequestTenant),
     )
 }
 ```
@@ -309,41 +309,35 @@ serviceimpl 侧是 `interfaces.IEmbedding`（`NewOpenAIEmbedding`）/
 CREATE TABLE `knowledge_base` (
   `id`              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `no`              VARCHAR(64)  NOT NULL COMMENT '对外编号',
-  `account`         VARCHAR(64)  NOT NULL COMMENT '租户',
+  `tenant`         VARCHAR(64)  NOT NULL COMMENT '租户',
   `name`            VARCHAR(255) NOT NULL,
   `description`     VARCHAR(1024) DEFAULT '',
-  `knowledge_type`  VARCHAR(32)  NOT NULL DEFAULT 'ordinary' COMMENT 'ordinary/qa',
-  `search_mode`     VARCHAR(32)  NOT NULL DEFAULT 'title_and_content' COMMENT 'title/title_and_content',
-  `biz_tag`         VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '业务标签，租户内再分域，单值',
+  `type`            VARCHAR(32)  NOT NULL DEFAULT 'ordinary' COMMENT 'ordinary/qa',
   `split_options`   JSON         DEFAULT NULL COMMENT '切片参数快照',
 
   -- 冗余计数（列表页用，见 D3）
   `doc_count`       BIGINT       NOT NULL DEFAULT 0,
   `chunk_count`     BIGINT       NOT NULL DEFAULT 0,
 
-  `is_system`       TINYINT      NOT NULL DEFAULT 0,
   `create_ts`       BIGINT       NOT NULL,
   `update_ts`       BIGINT       NOT NULL,
-  `delete_ts`       BIGINT       NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_no` (`no`, `delete_ts`),
-  KEY `idx_account` (`account`)
+  UNIQUE KEY `uk_no` (`no`),
+  KEY `idx_tenant` (`tenant`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ② 文档
 CREATE TABLE `knowledge_doc` (
   `id`              BIGINT UNSIGNED NOT NULL COMMENT '雪花 ID，写入前预分配',
   `kb_id`           BIGINT UNSIGNED NOT NULL,
-  `account`         VARCHAR(64)  NOT NULL,
+  `tenant`         VARCHAR(64)  NOT NULL,
   `name`            VARCHAR(512) NOT NULL COMMENT '文档名。同名重导入 = 更新，doc_id 不变',
   `content_hash`    CHAR(64)     NOT NULL COMMENT '内容指纹',
   `chunk_count`     INT          NOT NULL DEFAULT 0,
   `create_ts`       BIGINT       NOT NULL,
   `update_ts`       BIGINT       NOT NULL,
-  `delete_ts`       BIGINT       NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_kb_name` (`kb_id`, `name`, `delete_ts`),
-  KEY `idx_kb_delete` (`kb_id`, `delete_ts`)
+  UNIQUE KEY `uk_kb_name` (`kb_id`, `name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -378,12 +372,11 @@ CREATE TABLE `knowledge_doc` (
   },
   "mappings": {
     "properties": {
-      "account":      { "type": "keyword" },
+      "tenant":      { "type": "keyword" },
       "kb_id":        { "type": "long" },
       "doc_id":       { "type": "long" },
       "chunk_id":     { "type": "keyword" },
       "order":        { "type": "integer" },
-      "biz_tag":      { "type": "keyword" },
 
       "title":        { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
       "content":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
@@ -418,8 +411,8 @@ CREATE TABLE `knowledge_doc` (
 
 | 字段 | 用途 |
 |---|---|
-| `account` | 租户隔离 filter（D2）。**必须 `keyword`，写成 `text` 就是越权** |
-| `kb_id` / `biz_tag` | KB 过滤 / 租户内再分域过滤，均 keyword |
+| `tenant` | 租户隔离 filter（D2）。**必须 `keyword`，写成 `text` 就是越权** |
+| `kb_id` | KB 过滤，keyword |
 | `doc_id` | 存活校验的关键——收集后批量查 `knowledge_doc` |
 | `chunk_id` | 作 `_id`，生成规则见 §5.3 |
 | `content` | 内容下沉（D1），查询直接返回 |
@@ -483,8 +476,8 @@ func (s *Service) Ingest(
         return nil, err
     }
 
-    // 1) 定位 KB + 校验租户归属（account 来自请求参数，见 §6）
-    kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
+    // 1) 定位 KB + 校验租户归属（tenant 来自请求参数，见 §6）
+    kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Tenant)
     if err != nil {
         return nil, err
     }
@@ -513,7 +506,6 @@ func (s *Service) Ingest(
 
     now := time.Now()
     hash := contentHash(chunks)
-    bizTag := kb.BizTag // 只认 KB 上的值，文档级不允许覆盖（§7.2）
 
     // 4) 定 doc_id：**同名重导入沿用库里那一行的 id**，只有首次导入才分配。
     //    换新 id 会让新切片成为孤儿、旧切片又删不掉——见 §5.3。
@@ -528,7 +520,7 @@ func (s *Service) Ingest(
     } else {
         docID = uint64(s.idGen.NextIntID())
     }
-    vectors := factory.BuildVectorDocs(kb, docID, bizTag, chunks, titleVecs, contentVecs, now)
+    vectors := factory.BuildVectorDocs(kb, docID, chunks, titleVecs, contentVecs, now)
 
     // 5) 【第一写】ES 写切片。新内容先进去，旧内容原地不动——
     //    这样写失败时这篇文档仍然可查（只是内容还是旧的），重试即可。
@@ -553,7 +545,7 @@ func (s *Service) Ingest(
     //
     //    失败不影响正确性：旧切片多留一会儿，下次重导入会再清一遍（§5.2）。
     if _, err := s.store.DeleteExcept(ctx, repository.VectorFilter{
-        Account: kb.Account, DocID: docID,
+        Tenant: kb.Tenant, DocID: docID,
     }, factory.ChunkIDs(vectors)); err != nil {
         logsdk.Warn(ctx, "清理旧切片失败，不影响检索正确性", logsdk.Any("doc_id", docID))
     }
@@ -657,21 +649,21 @@ ES 写新切片 ──────► 刷新 ──────► ES 删旧切�
 
 ### 5.4 删除编排
 
-顺序：**MySQL（软删）→ ES（清理）**。
+顺序：**MySQL（删行）→ ES（清理）**。
 
 ```text
-删文档:  MySQL 软删(delete_ts)  ──►  ES DeleteByQuery(doc_id)  ──►  计数回退
-删 KB :  MySQL 软删(kb)         ──►  ES DeleteByQuery(kb_id)   ──►  doc 一并软删
+删文档:  MySQL 删行(硬删)  ──►  ES DeleteByQuery(doc_id)  ──►  计数回退
+删 KB :  MySQL 删行(kb)     ──►  ES DeleteByQuery(kb_id)   ──►  doc 一并删行
 ```
 
 | 失败点 | 后果 | 是否安全 |
 |---|---|---|
-| MySQL 软删成功，ES 未删 | 幽灵切片 | ✅ 存活校验按 `doc.Deleted()` 过滤（§7.3） |
-| ES 先删成功，MySQL 软删失败 | 文档在、切片没了 → 漏召回 | ⚠️ 所以 MySQL 必须在前 |
+| MySQL 删行成功，ES 未删 | 幽灵切片 | ✅ 存活校验按「文档行查不到」过滤（§7.3） |
+| ES 先删成功，MySQL 删行失败 | 文档在、切片没了 → 漏召回 | ⚠️ 所以 MySQL 必须在前 |
 
-MySQL 软删权威且即时，ES 清理可延迟、可重试。
+MySQL 删行权威且即时，ES 清理可延迟、可重试。
 
-> 删除**不需要** §5.2 ② 前那次刷新。同样的可见性问题在这里不成害：没被删掉的切片其文档行已经软删，§7.3 的存活校验会把它挡在结果之外——删不掉只是留下幽灵切片，不会返回错内容。重导入则不同，那里删不掉会**真的返回旧内容**，所以只有那条路径要付刷新的代价。
+> 删除**不需要** §5.2 ② 前那次刷新。同样的可见性问题在这里不成害：没被删掉的切片其文档行已经删掉，§7.3 的存活校验会把它挡在结果之外——删不掉只是留下幽灵切片，不会返回错内容。重导入则不同，那里删不掉会**真的返回旧内容**，所以只有那条路径要付刷新的代价。
 
 删除走的是 `DeleteByQuery`（删全部），**不是** §5.2 第 ② 步的 `DeleteExcept`（按 `_id` 留一部分）。
 两者别混：删除的语义是"这篇文档的东西一件不留"，任何"保留集合"都是 bug。
@@ -713,7 +705,7 @@ B 写 setB ──┘
 
 > **调用方不要让同一个文档的两份导入同时在途。**
 
-首次导入的并发创建同理：两个请求都 `FindByName` 查不到，各自分配 id，MySQL 的唯一键 `(kb_id, name, delete_ts)` 只让一个建行成功；落败那套切片 `doc_id` 指向不存在的行，被存活校验丢掉（内容安全，只是白跑一次 embedding），但 `chunk_count` 会被后写的那次覆盖成落败者的切片数——**计数漂移，本期不自动校正**（§11 场景 5）。
+首次导入的并发创建同理：两个请求都 `FindByName` 查不到，各自分配 id，MySQL 的唯一键 `(kb_id, name)` 只让一个建行成功；落败那套切片 `doc_id` 指向不存在的行，被存活校验丢掉（内容安全，只是白跑一次 embedding），但 `chunk_count` 会被后写的那次覆盖成落败者的切片数——**计数漂移，本期不自动校正**（§11 场景 5）。
 
 这是"去掉一致性增强"的直接代价（§2 D4）。要根除它，得让"谁的切片算数"有一个串行化点，也就是 §13 待定 9 那套代次协议，或一个跨请求的锁。
 
@@ -721,23 +713,23 @@ B 写 setB ──┘
 
 ## 6. 租户参数
 
-**不做鉴权**。`account` 就是请求体里的一个普通字段，谁调谁填：
+**不做鉴权**。`tenant` 就是请求体里的一个普通字段，谁调谁填：
 
 ```text
-调用方 ──► { "account": "acc_001", "kb_no": "...", ... }
+调用方 ──► { "tenant": "acc_001", "kb_no": "...", ... }
               │
               FastRAG 直接当成可信输入
               │
-              仓储层每个方法都带 account 条件，SQL 里 `account = ?`
+              仓储层每个方法都带 tenant 条件，SQL 里 `tenant = ?`
 ```
 
-1. `account` 来自请求参数，**没有中间件、没有 token 解析、没有身份注入**。
-2. 所有仓储方法签名都带 `account`（如 `FindByNo(ctx, no, account)`），SQL 里带 `account = ?`——**租户条件不漏写这件事由数据访问层保证**，不靠每个用例自己记得加。
-3. `kb_no` 是对外编号不是凭证；两者必须自洽（`kb_no` 指向的库其 `account` 必须等于传入值），不自洽时返回 **404 `ErrKnowledgeBaseNotFound`，不是 403**。
+1. `tenant` 来自请求参数，**没有中间件、没有 token 解析、没有身份注入**。
+2. 所有仓储方法签名都带 `tenant`（如 `FindByNo(ctx, no, tenant)`），SQL 里带 `tenant = ?`——**租户条件不漏写这件事由数据访问层保证**，不靠每个用例自己记得加。
+3. `kb_no` 是对外编号不是凭证；两者必须自洽（`kb_no` 指向的库其 `tenant` 必须等于传入值），不自洽时返回 **404 `ErrKnowledgeBaseNotFound`，不是 403**。
    - 403 等于承认"这个 `kb_no` 存在，只是不归你"——那就把一个可枚举的租户探测接口送出去了。404 让"库不存在"和"库不归你"**不可区分**（附录 A4.3 里两种情况返回同一个错误）。
    - 代价：调用方拿到 404 时分不清是编号写错了还是租户串了。这是有意的——排障要靠日志，不靠响应码。
 
-> ⚠️ **这意味着 FastRAG 不提供越权防护**：能改请求体的人就能读写任意租户。它只能在**可信内网**暴露，且调用方自己已完成对最终用户的鉴权。日后要对外时，再把 `account` 改为从 token 解析——仓储层的 `account = ?` 不用动。
+> ⚠️ **这意味着 FastRAG 不提供越权防护**：能改请求体的人就能读写任意租户。它只能在**可信内网**暴露，且调用方自己已完成对最终用户的鉴权。日后要对外时，再把 `tenant` 改为从 token 解析——仓储层的 `tenant = ?` 不用动。
 
 ### 6.1 启动期强制开关
 
@@ -746,7 +738,7 @@ B 写 setB ──┘
 ```jsonc
 {
   "security": {
-    "trust_request_account": false   // 默认 false
+    "trust_request_tenant": false   // 默认 false
   }
 }
 ```
@@ -754,14 +746,14 @@ B 写 setB ──┘
 | 取值 | 行为 |
 |---|---|
 | `false`（默认） | **拒绝启动**，打印一段说明为什么、以及怎么改 |
-| `true` | 正常启动，并按上文的"可信输入"处理 `account` |
+| `true` | 正常启动，并按上文的"可信输入"处理 `tenant` |
 
 拒绝时的日志（这是运维唯一会看到的提示，写清楚）：
 
 ```text
-本服务不提供越权防护：account 来自请求体，任何人都能读写任意租户。
+本服务不提供越权防护：tenant 来自请求体，任何人都能读写任意租户。
 它只能在可信内网部署，且调用方已完成对最终用户的鉴权。
-确认这一点后，把配置 security.trust_request_account 置为 true。
+确认这一点后，把配置 security.trust_request_tenant 置为 true。
 ```
 
 默认值取 `false` 是刻意的：让"开箱即跑"这件事在**部署**（有人看着日志）时失败，而不是在**生产**（没人看日志）时静默地不设防。本地开发要跑，就在配置里写一行 `true`。
@@ -785,12 +777,11 @@ func (s *Service) Search(
         return nil, err
     }
 
-    // 1) 加载 KB（account 来自请求参数，仓储层强制带 account 条件，见 §6）
-    kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Account)
+    // 1) 加载 KB（tenant 来自请求参数，仓储层强制带 tenant 条件，见 §6）
+    kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Tenant)
     if err != nil {
         return nil, err
     }
-    kbs = kbs.FilterByBizTags(opts.BizTags)
     if len(kbs) == 0 {
         return &vo.SearchResultVO{Items: []*vo.SearchItemVO{}}, nil
     }
@@ -804,28 +795,19 @@ func (s *Service) Search(
         }
     }
 
-    // 3) 按 search_mode 分组检索：最多两组，组内字段一致所以能合成一次请求。
-    //    不取并集——那会悄悄把「只查标题」的库按正文搜（§7.2）
-    groups := groupBySearchMode(kbs)
-    pool := make([]repository.SearchResult, 0, len(groups))
-    for _, g := range groups {
-        r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec))
-        if err != nil {
-            return nil, err
-        }
-        pool = append(pool, r)
+    // 3) 一次检索：所有库都是标题 + 正文一起搜，没有按库分组的维度。
+    r, err := s.store.Search(ctx, s.buildReq(kbs, opts, queryVec))
+    if err != nil {
+        return nil, err
     }
 
     // 4) 应用层加权 RRF 融合（Fuse 在同包 rrf.go，A3.2）
-    //    逐组逐路喂进去；各组先拼成一个大列表会按分组顺序给出固定偏置
-    routes := make([]Route, 0, 2*len(pool))
-    for _, r := range pool {
-        if len(r.BM25) > 0 {
-            routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
-        }
-        if len(r.KNN) > 0 {
-            routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
-        }
+    routes := make([]Route, 0, 2)
+    if len(r.BM25) > 0 {
+        routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
+    }
+    if len(r.KNN) > 0 {
+        routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
     }
     merged := Fuse(routes, s.tuning.RankConstant, opts.Limit*fusionOversample)
 
@@ -915,46 +897,23 @@ func fuseRRF(lists []RankedList, rankConstant int) []vo.ScoredChunkID {
 {
   "bool": {
     "filter": [
-      { "term":  { "account": "acc_001" } },
+      { "term":  { "tenant": "acc_001" } },
       { "terms": { "kb_id": [101, 102] } }
     ]
   }
 }
 ```
 
-`term(account)` 是硬隔离，绝不能省（D2）；指定了 `biz_tag` 时再加一个 `term(biz_tag)`。
+`term(tenant)` 是硬隔离，绝不能省（D2）。
 
-**`search_mode` 落地**：
-
-| `search_mode` | BM25 路字段 | kNN 路向量 |
-|---|---|---|
-| `title` | `title` + `heading_path` | `title_vec` |
-| `title_and_content` | `title` + `content` + `heading_path` | `content_vec`（默认） |
-
-**多库混查时按 `search_mode` 分组检索，不要取并集。** 一次查 3 个库，其中 1 个是 `title` 模式，如果直接"任一库开了内容检索就全局按内容检索"，就等于**悄悄改写了那 2 个标题模式库的语义**——它们建库时明确说了"只用标题"，结果被按正文搜了，召回里冒出一堆标题对不上、正文里却出现关键词的切片。
-
-正确做法（融合本来就在应用层，分组几乎不增加复杂度）：
-
-```text
-kbs ──► 按 search_mode 分组 ──┬─► [title 组]             ──► Search(field=title_vec)    ─┐
-                             └─► [title_and_content 组] ──► Search(field=content_vec)  ─┤
-                                                                                       ▼
-                                       每组各留两路（BM25 / kNN），各自按名次独立成表
-                                                                                       │
-                                                                                       ▼
-                                                     加权 RRF（每路 rank 从 1 起，Σ w_r/(k+rank)）
-```
-
-分组依据是"检索字段组合"，不是库本身——同一个库里所有切片模式相同，所以分组天然按库来。`dense_weight` 的短路判定（下表）对每个分组独立生效：某组只该发 BM25 时，该组就只发一个请求。
-
-**代价**：N 种 `search_mode` 就是 N 次 ES 请求，而不是 1 次。实际取值只有两种，且两组请求可以并行发。若某天 `search_mode` 变成每库可配的细粒度开关，这里要重新想——但那是产品形态变了，不是实现变了。
+所有库一律**标题 + 正文一起检索**——早先那个按库配置的检索模式维度（`title` / `title_and_content`）已下线，检索只剩一种形态：BM25 走 `title` + `content` + `heading_path`，kNN 走 `title_vec` 和 `content_vec`，两路分数相加。所以多库混查就是**一次** ES 请求，不存在按库分组、更不存在「取并集会把标题库按正文搜」的问题。
 
 **`dense_weight` 调度**：
 
 | `dense_weight` | 行为 |
 |---|---|
-| `<= 0.01` | 只发 BM25 |
-| `>= 0.99` | 只发 kNN |
+| `< 0.01` | 只发 BM25 |
+| `> 0.99` | 只发 kNN |
 | 其他 | 两路都发，加权后融合 |
 
 ### 7.3 存活校验
@@ -985,10 +944,7 @@ func (s *SearchService) filterAlive(
     for _, h := range hits {
         doc, ok := docMap[h.DocID]
         if !ok {
-            continue                        // 孤儿：切片写了但文档行没落（§5.2 ③ 失败）
-        }
-        if doc.Deleted() {
-            continue                        // 幽灵：MySQL 已软删，ES 还没清完（§5.4）
+            continue                        // 孤儿 / 幽灵：文档行查不到（§5.2 ③ 失败、或删除后又冒出的幽灵切片）
         }
         kb, ok := kbMap[h.KBID]
         if !ok {
@@ -1006,7 +962,7 @@ func (s *SearchService) filterAlive(
 
 这一步是整个设计的**兜底**：MySQL 的文档行是唯一的存活依据，前两步写挂了、删除清漏了，都在这里被静默丢掉——检索宁可少返回，也不返回错内容。
 
-> **`FindByIDs` 刻意不过滤 `delete_ts`**：上面两种丢弃要靠它返回的行来区分（孤儿 / 已删）。SQL 里加 `delete_ts = 0` 会让"已删"和"不存在"变成同一个 `!ok`，日志里就查不出到底是哪一种。
+> **`FindByIDs` 不再有任何过滤**：文档行已改为硬删，删掉的行与从没建过的行在这里都表现为"查不到"，已无法区分孤儿与幽灵——两者一律按"文档行不存在"丢弃即可。
 >
 > **这一层的有效性依赖 `doc_id` 稳定**：它靠切片带的 `doc_id` 去查文档行，所以 §5.1 第 ④ 步必须复用已有行的 id（§5.3）。一旦重导入换了新 id，新切片查不到行、全被这里丢掉，而旧切片查得到行、原样返回。
 >
@@ -1078,20 +1034,20 @@ func (s *SearchService) filterAlive(
 见 D2。隔离靠字段不靠物理隔离：
 
 ```json
-{ "term": { "account": "acc_001" } }
+{ "term": { "tenant": "acc_001" } }
 ```
 
-`account` 必须 `keyword`，且每个查询都必须带——这是唯一的租户隔离手段，漏了就是越权。仓储层每个方法都带 `account` 参数，越权在数据访问层就失败（§6）。
+`tenant` 必须 `keyword`，且每个查询都必须带——这是唯一的租户隔离手段，漏了就是越权。仓储层每个方法都带 `tenant` 参数，越权在数据访问层就失败（§6）。
 
 ### 9.2 扩容路径（预留，不实现）
 
-切片量上来后，把 `account → index` 的映射从"恒等"换成"分桶/独占"，查询侧改成按 `terms(account)` 分组、分组并行。只动 `IVectorStore` 实现与少量编排，领域层与应用用例不变——这也是 `IVectorStore` 做成接口的原因。
+切片量上来后，把 `tenant → index` 的映射从"恒等"换成"分桶/独占"，查询侧改成按 `terms(tenant)` 分组、分组并行。只动 `IVectorStore` 实现与少量编排，领域层与应用用例不变——这也是 `IVectorStore` 做成接口的原因。
 
 #### 关于 ES 的 `_routing`（评估过，本期不用）
 
 ES 有个 `_routing`，把文档按 routing 值哈希钉到某个分片。看起来很像"按租户分片"，所以单独说清楚——**它不是隔离手段**。
 
-本地 ES 9.5.5 实测（6 租户 / 3 分片 / `routing=account`）：
+本地 ES 9.5.5 实测（6 租户 / 3 分片 / `routing=tenant`）：
 
 ```text
 分片 0: acc_4, acc_5
@@ -1102,7 +1058,7 @@ routing=acc_1 的查询命中: ['acc_1','acc_2','acc_3']    ← 另外两个租�
 match_all（不带 routing）命中: 全部 6 条                ← routing 完全不过滤
 ```
 
-routing 买到的是**分片局部性**（扫 1 个分片而不是 3 个），`term(account)` 一个字都不能省。而它带来的新风险是**静默漏数据**：
+routing 买到的是**分片局部性**（扫 1 个分片而不是 3 个），`term(tenant)` 一个字都不能省。而它带来的新风险是**静默漏数据**：
 
 ```text
 routing=acc_1（数据在分片 1）去查 acc_6（数据在分片 2） → 0 条，不报错
@@ -1111,7 +1067,7 @@ routing=acc_1（数据在分片 1）去查 acc_6（数据在分片 2） → 0 �
 
 所以真要用，mapping 必须带 `"_routing": {"required": true}`，否则漏填的文档从此刻起用 routing 永远查不到（实测漏填会 400 `routing_missing_exception`，这个开关必须开）。
 
-不用它的理由：① 它就是 D2 里判过"亿级才需要"的分桶复杂度；② 它**让热分片更严重**——大租户语料全压一个分片，而默认 routing 至少均匀散；③ 它是**单向门**，`_routing` 写入时定死，事后加 = 全量重导。租户分布还不知道的情况下，没有理由现在锁死。等真出现"跨租户查询扇出成瓶颈"，加 `_routing` + `required`、查询侧带 `routing=account`、重导一次即可。
+不用它的理由：① 它就是 D2 里判过"亿级才需要"的分桶复杂度；② 它**让热分片更严重**——大租户语料全压一个分片，而默认 routing 至少均匀散；③ 它是**单向门**，`_routing` 写入时定死，事后加 = 全量重导。租户分布还不知道的情况下，没有理由现在锁死。等真出现"跨租户查询扇出成瓶颈"，加 `_routing` + `required`、查询侧带 `routing=tenant`、重导一次即可。
 
 ### 9.3 已知代价
 
@@ -1150,10 +1106,10 @@ routing=acc_1（数据在分片 1）去查 acc_6（数据在分片 2） → 0 �
 ```text
 ES 的 action.auto_create_index 默认为 true
   └─► 一次写入打到不存在的索引 ──► ES 自己建一个**动态 mapping** 的索引
-        · 无 IK 分词 · 无 dense_vector · account 是 text
+        · 无 IK 分词 · 无 dense_vector · tenant 是 text
         · bulk 返回成功，没有任何提示
         · 检索时才以"字段不存在"这类面目全非的错误浮现
-        · account 变 text 尤其危险：term 查询会按分词匹配，
+        · tenant 变 text 尤其危险：term 查询会按分词匹配，
           「demo」能命中「demo-other」的文档 —— 那是跨租户越权，不是召回变小
 ```
 
@@ -1275,7 +1231,7 @@ type IEmbedding interface {
   },
   "security": {
     // 必须显式为 true 才启动，见 §6.1。默认 false = 拒绝启动
-    "trust_request_account": false
+    "trust_request_tenant": false
   }
 }
 ```
@@ -1289,7 +1245,7 @@ type IEmbedding interface {
 > 不是配置项本身的差异：`shards: 1 / replicas: 0`（单机一台 ES，副本数给 1 只会一直黄）、
 > `batch_size: 16 / timeout_ms: 60000`（本地 Ollama 首次加载模型慢，超时给宽一点）、
 > `bm25_top / knn_top / num_candidates = 50 / 50 / 200`（demo 语料小，取小值省算力）、
-> `trust_request_account: true`（§6.1 的闸门，本机跑必须显式打开）。
+> `trust_request_tenant: true`（§6.1 的闸门，本机跑必须显式打开）。
 > **上面那段保留的是"生产该怎么填"，不是"现在填了什么"**——两者的取舍不同，
 > 混在一起读会以为 `replicas: 1` 已经在跑了。
 
@@ -1301,7 +1257,7 @@ type IEmbedding interface {
 
 > **I1**：查询**不会返回 MySQL 里不存在或已删除的文档的内容**。孤儿切片、幽灵切片都会被存活校验丢掉（§7.3）。
 > **I2**：查询返回的每一条，其文档在 MySQL 中必然存在且未删除。
-> **I3**：`doc.BizTag` 与 `account` 一样是硬边界——ES 侧 `term` 过滤 + 仓储层 `account` 条件，两者都不靠应用层自觉。
+> **I3**：`tenant` 是硬边界——ES 侧 `term` 过滤 + 仓储层 `tenant` 条件，都不靠应用层自觉。
 
 > ⚠️ **I1/I2 到此为止，不包含"内容只有单一版本"。** 本期刻意不做一致性增强，于是有两类内容层面的缺口——见下表第 3、4、5 行与 §2 D4：
 >
@@ -1317,7 +1273,7 @@ type IEmbedding interface {
 | 3 | ② `DeleteExcept` 失败 | 无 | 旧切片残留 → 同一文档返回新旧两份内容 | 不影响"不返回错文档"，但会重复召回；下次重导入再清 |
 | 4 | 重导入 ① 与 ② 之间 | 无 | 同上：窗口内新旧切片同时可见 | 设计使然（§5.2）。**修它要引入代次机制，本期不做** |
 | 5 | 并发导入同一文档 | 无 | 行**已存在**时：两次 `DeleteExcept` 互删，只剩交集 → **内容被截断**。行**不存在**时：MySQL 唯一键只让一个建行，落败者的切片成孤儿（安全），但 `chunk_count` 被覆盖成落败者的切片数 → 计数漂移 | 明确不支持（§5.5）。**调用方必须按 `doc_name` 去重**；漂移部分本期不自动校正 |
-| 6 | 文档删除，ES 删失败 | 无 | 幽灵切片 | 存活校验按 `doc.Deleted()` 过滤（§7.3） |
+| 6 | 文档删除，ES 删失败 | 无 | 幽灵切片 | 存活校验按「文档行查不到」过滤（§7.3） |
 | 7 | 计数漂移 | 人工核对 | 列表页数字不准 | 本期不自动校正 |
 | 8 | embedding 不可用 | 调用失败 | 导入 / 检索阻塞 | 瞬时抖动（连接重置 / 上游 5xx / 429）由 §10.2 的 1 次重试兜住；**持续不可用仍阻塞**，调用方自行重试（§10.3）。无熔断、无限流 |
 | 9 | mapping 变更（换维度） | 人工 | 需全量重导 | 停写 → 新建索引 → 重导 → 切 |
@@ -1345,14 +1301,14 @@ type IEmbedding interface {
 - [ ] 切片：结构感知（markdown 标题树）
 - [ ] ES 单索引 `fastrag`，由 `scripts/create-es-index.sh` 预先建好（服务不建，§9.4）
 - [ ] 导入：`POST /api/v1/docs`（ES 切片 → ES 清旧切片差集 → MySQL 文档行 + 计数，§5.2）
-- [ ] 检索：混合检索（kNN + BM25，应用层 RRF 融合）——`term(account)` 在 ES 侧过滤，存活校验在应用层（§7.3）
+- [ ] 检索：混合检索（kNN + BM25，应用层 RRF 融合）——`term(tenant)` 在 ES 侧过滤，存活校验在应用层（§7.3）
 - [ ] **验收**：给一篇 markdown，导入后**在一个刷新周期内**（默认 30s）检索到，且内容与源文一致
 
 ### P1 · 多租户与运维
 
-- [ ] 租户隔离：仓储层强制带 `account` 条件（§6）
-- [ ] 启动期强制开关 `security.trust_request_account`（§6.1）
-- [ ] 删除编排：文档 / KB 软删 + ES `DeleteByQuery`（§5.4）
+- [ ] 租户隔离：仓储层强制带 `tenant` 条件（§6）
+- [ ] 启动期强制开关 `security.trust_request_tenant`（§6.1）
+- [ ] 删除编排：文档 / KB 硬删 + ES `DeleteByQuery`（§5.4）
 - [ ] 批量导入（受限并发 + 单文档错误隔离 + 批内同名拒绝，A3.1）
 - [ ] 计数校正
 - [ ] **验收**：两个租户的数据互相搜不到；删文档后立刻搜不到；**冒烟回路 ①导入→②检索→③重导入→④再检索 只搜得到新内容**（连做两轮，判定表见 §12.1）
@@ -1363,7 +1319,6 @@ type IEmbedding interface {
 - [ ] 写侧限流（Redis 滑窗 / 令牌桶）——**demo 阶段明确不做**，见 §10.3
 - [ ] embedding 调用熔断（重试已做：1 次，见 §10.2）
 - [ ] Rerank 集成
-- [ ] `biz_tag` 多值 / 元数据过滤
 - [ ] `IVectorStore` 第二实现（Milvus / Qdrant）
 
 ### 12.1 验收基线
@@ -1478,17 +1433,16 @@ P0/P1 的"验收"如果不写数，就只是"跑通了"。下面这一节的意�
 |---|---|---|---|
 | 1 | embedding 模型与维度 | **已定：`bge-m3`，1024 维**（本机 Ollama 提供，`/v1/embeddings`）。索引已按 1024 建好，两者对齐**实测过**：一次请求塞 2 条文本，回来 2 个 1024 维向量 | 换模型 = 必须重建索引重导（`dims` 建好后改不了，§9.4、§11 场景 9） |
 | 2 | 检索深翻页 | 只做 top-N | 单路 `search_after` + 客户端二次融合 |
-| 3 | `account` 形态 | 字符串 | 纯数字 ID（`_routing` 若要启用，数字型更省） |
+| 3 | `tenant` 形态 | 字符串 | 纯数字 ID（`_routing` 若要启用，数字型更省） |
 | 4 | `rank_constant` | 60（RFC 标准值，**未调**） | 需用语料评测集验证（§12.1） |
-| 5 | `biz_tag` 单值 vs 多值 | 单值 | 多值需改 JSON 列 + ES 多值 keyword |
 | 6 | 是否需要 gRPC 接入 | 先只做 HTTP | 同时提供 gRPC |
 | 7 | **写侧限流** | **不做（demo）** | Redis 滑窗；或调用侧网关限流（§10.3） |
 | 8 | **embedding 失败重试** | **已做：1 次**（固定 100ms 退避，与 rerank 一致，§10.2） | 熔断；以及"指数退避 + 更多次数"——那是扛持续性故障的，真遇到再上（§11 场景 8） |
 | 9 | **写侧一致性（代次切换）** | **不做**——重导入/并发写同一文档时，新旧切片可能同时在 ES 里，检索会重复召回。**窗口已从"一个刷新周期"压到"一次请求内的几十毫秒"**（A4.6 的 `WithRefresh(true)`），但没消除 | 四步协议：MySQL 预占 `ver`（`ver+1` 读回，唯一串行化点）→ ES 写带 `ver` 的切片 → 删 `ver` 更小的 → MySQL 带 `ver` 条件提交。代价：`knowledge_doc` 多一列、ES mapping 多一字段、仓储多两个方法（`ReserveVer`/`CommitIngest`）、查询侧多一次比对。**要等核心功能做完再上**（§2 D4） |
-| 10 | **多 `search_mode` 混查的并行度** | 每种模式一组，组间串行 | 组间并行（§7.2） |
 | 11 | **可见性 SLA** | 一个刷新周期（30s）；重导入路径必刷，首次导入可传 `refresh: true`（§4.2） | `refresh_interval: 1s`（贵）；或把 `_refresh` 收窄到具体分片 |
 | 12 | 租户 / 切片规模 | 假设值，**待产品确认** | 直接决定分片数与是否启用 `_routing`（§12.1） |
 | 13 | **服务端口** | `8080`（仓库 `config.json`）。本机 8080 上原本还挂着另一个无关项目，**已停掉**，现在 8080 由本服务独占。冒烟期间曾临时跑在 8090 | 改配置即可。注意 `startHTTPServer` 的探测只挡得住**完全冲突**，挡不住 `*:8080` 与 `127.0.0.1:8080` 的**部分重叠**（A4.16） |
+| 14 | **文档解析导入** | **P0 + P1 均已落地**：`POST /api/v1/docs/parse` 收一个可公网下载的 URL，交配置选定的后端（`config.parser.default`；接口不带选后端的参数，改配置重启即换；`type` 有自部署 Docling 与腾讯云 OCR 两种，`docling` / `tencent`）解析成 markdown，再走既有的切片 → 向量化 → ES → MySQL 链路。产物恒为 markdown | — |
 
 ---
 
@@ -1565,13 +1519,7 @@ const (
 	FormatChunks   = "chunks"   // 给已切好的切片，只做索引
 )
 
-// 检索模式（knowledge_base.search_mode）
-const (
-	SearchModeTitle           = "title"             // 只查标题
-	SearchModeTitleAndContent = "title_and_content" // 标题 + 正文
-)
-
-// 知识库类型（knowledge_base.knowledge_type）
+// 知识库类型（knowledge_base.type）
 const (
 	KnowledgeTypeOrdinary = "ordinary"
 	KnowledgeTypeQA       = "qa"
@@ -1659,9 +1607,9 @@ type SplitOptionsDTO struct {
 
 // DocIngestDTO 文档导入请求
 //
-// Account 是普通参数（§6），不做鉴权解析。
+// Tenant 是普通参数（§6），不做鉴权解析。
 type DocIngestDTO struct {
-	Account      string          `json:"account" binding:"required,max=64"`
+	Tenant      string          `json:"tenant" binding:"required,max=64"`
 	KBNo         string          `json:"kb_no" binding:"required,max=64"`
 	DocName      string          `json:"doc_name" binding:"required,max=512"`
 	Format       string          `json:"format" binding:"required,oneof=markdown text chunks"`
@@ -1672,21 +1620,18 @@ type DocIngestDTO struct {
 	// Refresh 为 true 时，写完 ES 立刻刷新索引，返回即可检索（§4.2）。
 	// 默认 false：常规导入按 30s 的刷新周期，不付这次刷新的钱。
 	Refresh bool `json:"refresh"`
-
-	// 这里**没有** biz_tag：切片上的 biz_tag 一律取自 KB（§7.2）。
-	// 让文档覆盖它会让这个文档按 KB 的 tag 搜不到、按自己的 tag 库又被筛掉。
 }
 
 // DocDeleteDTO 文档删除请求
 type DocDeleteDTO struct {
-	Account string `json:"account" binding:"required,max=64"`
+	Tenant string `json:"tenant" binding:"required,max=64"`
 	KBNo    string `json:"kb_no" binding:"required,max=64"`
 	DocName string `json:"doc_name" binding:"required,max=512"`
 }
 
-// KBDeleteDTO 知识库删除请求：软删 KB 及其全部文档，并清理 ES
+// KBDeleteDTO 知识库删除请求：删除 KB 及其全部文档，并清理 ES
 type KBDeleteDTO struct {
-	Account string `json:"account" binding:"required,max=64"`
+	Tenant string `json:"tenant" binding:"required,max=64"`
 	KBNo    string `json:"kb_no" binding:"required,max=64"`
 }
 ```
@@ -1701,15 +1646,13 @@ package dto
 // 只接受 limit，不接受 offset——RRF 融合在应用层，ES 的 from/size
 // 作用不到融合后的排名（§7.4）。
 type SearchDTO struct {
-	Account string   `json:"account" binding:"required,max=64"`
+	Tenant string   `json:"tenant" binding:"required,max=64"`
 	KBNos   []string `json:"kb_nos" binding:"required,min=1,max=10,dive,max=64"`
 	Query   string   `json:"query" binding:"required,max=1000"`
 
-	BizTags []string `json:"biz_tags" binding:"omitempty,max=10,dive,max=64"`
-
 	Limit int `json:"limit" binding:"omitempty,gte=1,lte=100"`
 
-	// DenseWeight 向量路权重：<=0.01 只走 BM25，>=0.99 只走 kNN，其余两路加权融合。
+	// DenseWeight 向量路权重：<0.01 只走 BM25，>0.99 只走 kNN，其余两路加权融合。
 	// nil 表示用配置里的默认值。
 	DenseWeight *float64 `json:"dense_weight" binding:"omitempty,gte=0,lte=1"`
 
@@ -1721,20 +1664,6 @@ type SearchDTO struct {
 
 ```go
 package vo
-
-// KnowledgeBaseVO 知识库对外表示（本服务只读，不提供写接口）
-type KnowledgeBaseVO struct {
-	ID            uint64 `json:"id"`
-	No            string `json:"no"`
-	Account       string `json:"account"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	KnowledgeType string `json:"knowledge_type"`
-	SearchMode    string `json:"search_mode"`
-	BizTag        string `json:"biz_tag"`
-	DocCount      int64  `json:"doc_count"`
-	ChunkCount    int64  `json:"chunk_count"`
-}
 
 // SearchItemVO 一条检索结果
 //
@@ -1882,7 +1811,6 @@ import (
 type SearchOptions struct {
 	Query       string
 	Limit       int
-	BizTags     []string
 	DenseWeight float64
 	Rerank      bool
 }
@@ -1921,35 +1849,21 @@ func (o SearchOptions) UseKNN() bool  { return o.DenseWeight >= 0.01 }
 ```go
 package knowledge
 
-import "github.com/PycMono/FastRAG/common/constants"
-
 // KnowledgeBase 知识库聚合根。
 //
 // 本服务**只读**它：KB 由外部预置，这里不做创建/发布/版本（§1.2）。
 type KnowledgeBase struct {
-	ID            uint64 // 内部主键，join 用
-	No            string // 对外编号，接口用
-	Account       string // 租户
-	Name          string
-	Description   string
-	KnowledgeType string
-	SearchMode    string
-	BizTag        string
-	SplitOptions  []byte // 切片参数快照（JSON 原文）
-	DocCount      int64
-	ChunkCount    int64
-	IsSystem      bool
-	CreateTs      int64
-	UpdateTs      int64
-	DeleteTs      int64
-}
-
-// Deleted 是否已软删。
-func (kb *KnowledgeBase) Deleted() bool { return kb.DeleteTs > 0 }
-
-// UsesTitleOnly 检索模式是否只查标题。
-func (kb *KnowledgeBase) UsesTitleOnly() bool {
-	return kb.SearchMode == constants.SearchModeTitle
+	ID           uint64 // 内部主键，join 用
+	No           string // 对外编号，接口用
+	Tenant      string // 租户
+	Name         string
+	Description  string
+	Type         string
+	SplitOptions []byte // 切片参数快照（JSON 原文）
+	DocCount     int64
+	ChunkCount   int64
+	CreateTs     int64
+	UpdateTs     int64
 }
 ```
 
@@ -1965,17 +1879,13 @@ package knowledge
 type KnowledgeDoc struct {
 	ID          uint64 // 雪花 ID，写入前预分配
 	KBID        uint64
-	Account     string
+	Tenant     string
 	Name        string // 文档身份 = (KBID, Name)，同名重导入即更新
 	ContentHash string // SHA256
 	ChunkCount  int
 	CreateTs    int64
 	UpdateTs    int64
-	DeleteTs    int64
 }
-
-// Deleted 是否已软删。存活校验靠它丢弃幽灵切片（§7.3）。
-func (d *KnowledgeDoc) Deleted() bool { return d.DeleteTs > 0 }
 
 // IsSameContent 内容是否未变（可跳过重灌）。
 func (d *KnowledgeDoc) IsSameContent(hash string) bool {
@@ -2046,7 +1956,7 @@ import (
 // （§5.2 ③）。这样实体从诞生起就是终态，不存在"先建行、后填内容"的中间态，
 // 也就不存在"ES 写失败但库里已经记了新计数"的谎报窗口。
 //
-// 禁止在别处直接 &KnowledgeDoc{}——CreateTs / DeleteTs 漏填就是脏数据。
+// 禁止在别处直接 &KnowledgeDoc{}——CreateTs 漏填就是脏数据。
 func NewDoc(
 	docID uint64,
 	kb *knowledgeentity.KnowledgeBase,
@@ -2058,13 +1968,12 @@ func NewDoc(
 	return &knowledgeentity.KnowledgeDoc{
 		ID:          docID,
 		KBID:        kb.ID,
-		Account:     kb.Account,
+		Tenant:     kb.Tenant,
 		Name:        name,
 		ContentHash: contentHash,
 		ChunkCount:  chunkCount,
 		CreateTs:    ts,
 		UpdateTs:    ts,
-		DeleteTs:    0,
 	}
 }
 ```
@@ -2116,7 +2025,6 @@ func ChunkID(docID uint64, order int, content string) string {
 func BuildVectorDocs(
 	kb *knowledgeentity.KnowledgeBase,
 	docID uint64,
-	bizTag string,
 	chunks knowledgeentity.Chunks,
 	titleVecs, contentVecs [][]float32,
 	now time.Time,
@@ -2132,11 +2040,10 @@ func BuildVectorDocs(
 	for i, c := range chunks {
 		docs[i] = knowledgerepo.VectorDoc{
 			ChunkID:     ChunkID(docID, c.Order, c.Content),
-			Account:     kb.Account,
+			Tenant:     kb.Tenant,
 			KBID:        kb.ID,
 			DocID:       docID,
 			Order:       c.Order,
-			BizTag:      bizTag,
 			Title:       c.Title,
 			Content:     c.Content,
 			HeadingPath: c.HeadingPath,
@@ -2184,17 +2091,17 @@ import (
 // IKnowledgeBaseRepo 知识库仓储（只读）。
 //
 // KB 由外部预置，本服务不提供写方法。
-// 所有方法都带 account 条件（§6）——租户条件不漏写由这一层保证。
+// 所有方法都带 tenant 条件（§6）——租户条件不漏写由这一层保证。
 type IKnowledgeBaseRepo interface {
 	// LoadByNo 按对外编号加载。
 	//
-	// account 不匹配与库不存在**返回同一个 ErrKnowledgeBaseNotFound**（§6.1、A4.3）——
+	// tenant 不匹配与库不存在**返回同一个 ErrKnowledgeBaseNotFound**（§6.1、A4.3）——
 	// 分开的话就是送出一个可枚举的租户探测接口。
-	LoadByNo(ctx context.Context, no, account string) (*knowledgeentity.KnowledgeBase, error)
+	LoadByNo(ctx context.Context, no, tenant string) (*knowledgeentity.KnowledgeBase, error)
 
 	// LoadByNos 批量加载，用于一次检索涉及多个 KB 的场景。
-	// 返回结果只含属于 account 且未删除的 KB，缺失的静默跳过。
-	LoadByNos(ctx context.Context, nos []string, account string) (knowledgeentity.KnowledgeBases, error)
+	// 返回结果只含属于 tenant 且未删除的 KB，缺失的静默跳过。
+	LoadByNos(ctx context.Context, nos []string, tenant string) (knowledgeentity.KnowledgeBases, error)
 
 	// ApplyChunkDelta 按差值更新 chunk_count。
 	// 用差值而非无条件 +1：重导入时先扣旧值，避免计数漂移（D3）。
@@ -2229,8 +2136,8 @@ type IKnowledgeDocRepo interface {
 
 	// LoadByIDs 批量加载，供检索时的存活校验使用。
 	//
-	// 刻意**不过滤** delete_ts：调用方要靠返回的行区分「不存在」和「已删」两种情况，
-	// SQL 里加 delete_ts = 0 会把它们混成一个 (nil, nil)，日志里就查不出是哪种（§7.3）。
+	// 刻意**不加任何过滤**：文档行已改为硬删。
+	// 调用方要的就是「这批 doc_id 里哪些还有行」——查不到即孤儿或幽灵切片（§7.3）。
 	LoadByIDs(ctx context.Context, ids []uint64) (knowledgeentity.KnowledgeDocs, error)
 
 	// Save 写入/更新文档行（§5.2 ③）。
@@ -2247,11 +2154,14 @@ type IKnowledgeDocRepo interface {
 	// 否则中途挤进来的另一次导入会让差值算错，KB 计数就永久性偏了（A4.4）。
 	Save(ctx context.Context, doc *knowledgeentity.KnowledgeDoc) (oldChunkCount int, created bool, err error)
 
-	// SoftDelete 按 (kbID, name) 软删，返回受影响的文档。
-	SoftDelete(ctx context.Context, kbID uint64, name string, now int64) (*knowledgeentity.KnowledgeDoc, error)
+	// Delete 按 (kbID, name) 硬删，返回被删掉的那一行。
+	//
+	// 返回整行不是为了留痕——行已经没了——而是调用方需要它的 ChunkCount
+	// 去扣 KB 的冗余计数。删完就取不到了，所以必须先查后删。
+	Delete(ctx context.Context, kbID uint64, name string) (*knowledgeentity.KnowledgeDoc, error)
 
-	// SoftDeleteByKBID 软删某 KB 下所有文档，返回文档数。
-	SoftDeleteByKBID(ctx context.Context, kbID uint64, account string, now int64) (int64, error)
+	// DeleteByKBID 硬删某 KB 下的所有文档，返回删除的行数。
+	DeleteByKBID(ctx context.Context, kbID uint64, tenant string) (int64, error)
 
 	// CountByKBID 统计某 KB 下未删除的文档数，供计数校正使用。
 	CountByKBID(ctx context.Context, kbID uint64) (int64, error)
@@ -2276,11 +2186,10 @@ import "context"
 // VectorDoc 一份待写入的切片文档。
 type VectorDoc struct {
 	ChunkID     string
-	Account     string
+	Tenant     string
 	KBID        uint64
 	DocID       uint64
 	Order       int
-	BizTag      string
 	Title       string
 	Content     string
 	HeadingPath string
@@ -2291,22 +2200,20 @@ type VectorDoc struct {
 
 // VectorFilter 删除条件。零值字段表示「不过滤」。
 //
-// 全是等值条件：account / kb_id / doc_id。三个都空是「删全库」，
+// 全是等值条件：tenant / kb_id / doc_id。三个都空是「删全库」，
 // 实现会拒绝（见 A4.6）——那几乎一定是调用方漏传了参数。
 type VectorFilter struct {
-	Account string
+	Tenant string
 	KBID    uint64
 	DocID   uint64
 }
 
 // VectorSearchReq 检索请求。
 type VectorSearchReq struct {
-	Account    string
-	KBIDs      []uint64
-	BizTags    []string
-	Query      string
-	QueryVec   []float32
-	TitleOnly  bool // search_mode = title 时为 true
+	Tenant     string
+	KBIDs       []uint64
+	Query       string
+	QueryVec    []float32
 	DenseWeight float64
 
 	BM25Top       int
@@ -2499,42 +2406,16 @@ func (ks KnowledgeBases) IndexByID() map[uint64]*KnowledgeBase {
 	return out
 }
 
-// FilterByBizTags 按业务标签过滤。
-//
-// 语义刻意定得很窄：请求带了 biz_tags，就只留标签精确命中的库。
-// 不做「无标签的库视为通用、一律保留」——那种隐含规则会让调用方
-// 搞不清自己为什么召回多了。
-func (ks KnowledgeBases) FilterByBizTags(tags []string) KnowledgeBases {
-	if len(tags) == 0 {
-		return ks
-	}
-	want := make(map[string]struct{}, len(tags))
-	for _, t := range tags {
-		want[t] = struct{}{}
-	}
-
-	out := make(KnowledgeBases, 0, len(ks))
-	for _, kb := range ks {
-		if _, ok := want[kb.BizTag]; ok {
-			out = append(out, kb)
-		}
-	}
-	return out
-}
-
 // KnowledgeDocs 文档集合。
 type KnowledgeDocs []*KnowledgeDoc
 
-// AliveMap 返回「未删除」文档的 ID → 文档。
+// AliveMap 返回 doc_id → 文档。
 //
-// 存活校验（§7.3）就靠这一张表：查不到 = 孤儿切片，已软删 = 幽灵切片，
-// 两种都丢掉。
+// 存活校验（§7.3）就靠这一张表：行查不到 = 孤儿或幽灵切片，丢弃。
+// 文档行是硬删，查回来的每一行都是活的，不需要再判「删没删」。
 func (ds KnowledgeDocs) AliveMap() map[uint64]*KnowledgeDoc {
 	out := make(map[uint64]*KnowledgeDoc, len(ds))
 	for _, d := range ds {
-		if d.Deleted() {
-			continue
-		}
 		out[d.ID] = d
 	}
 	return out
@@ -3034,8 +2915,8 @@ func NewService(
 // **并发同名导入不在本方法的保护范围内**（§5.5）：两次并发调用可能互相删掉
 // 对方的切片，只剩交集。调用方必须按 doc_name 去重。
 func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocIngestVO, error) {
-	// ① 定位 KB。kb_no 指向的库 account 不等于传入值，在这里就被挡掉（§6）
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	// ① 定位 KB。kb_no 指向的库 tenant 不等于传入值，在这里就被挡掉（§6）
+	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -3065,15 +2946,6 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	now := time.Now()
 	hash := contentHash(chunks)
 
-	// biz_tag **只认 KB 上的那一个值**，文档级别不允许覆盖。
-	//
-	// 允许覆盖会让文档变得「谁都搜不到」：检索侧先用 KB 的 tag 筛库
-	// （§7.1 ①），再在 ES 里 terms(biz_tag) 过滤。一个把 tag 覆盖成 finance
-	// 的文档，落在 kb.biz_tag = sales 的库里——按 sales 搜，库进来了但这条被
-	// ES 过滤掉；按 finance 搜，库本身就被筛掉了，这条根本没机会。
-	// 两头都够不着，而且不报错（§7.2）。
-	bizTag := kb.BizTag
-
 	// ④ 定 doc_id。**同名重导入必须沿用库里那一行的 id。**
 	//
 	//    切片、DeleteExcept、存活校验全都以 doc_id 为轴。换一个新 id 的后果是
@@ -3093,7 +2965,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		docID = uint64(s.idGen.NextIntID()) // 首次导入：雪花预分配，不需要 DB 往返
 	}
 
-	vectors := factory.BuildVectorDocs(kb, docID, bizTag, chunks, titleVecs, contentVecs, now)
+	vectors := factory.BuildVectorDocs(kb, docID, chunks, titleVecs, contentVecs, now)
 
 	// ⑤ 【第一写】ES 写新切片（§5.2 ①）
 	//
@@ -3101,7 +2973,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	//    （只是内容还是旧的），重试导入即可。
 	if err := s.store.Save(ctx, vectors); err != nil {
 		logsdk.Error(ctx, "切片写入失败，文档内容未变",
-			logsdk.Any("account", kb.Account),
+			logsdk.Any("tenant", kb.Tenant),
 			logsdk.Any("kb_no", kb.No),
 			logsdk.Any("doc_id", docID),
 			logsdk.Err(err),
@@ -3140,7 +3012,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	//    失败不影响正确性：旧切片多留一会儿，下次重导入会再清一遍。
 	//    代价是这篇文档可能短暂地返回新旧两份内容（§11 场景 3）。
 	if _, err := s.store.DeleteExcept(ctx, knowledgerepo.VectorFilter{
-		Account: kb.Account, DocID: docID,
+		Tenant: kb.Tenant, DocID: docID,
 	}, factory.ChunkIDs(vectors)); err != nil {
 		logsdk.Warn(ctx, "清理旧切片失败，不影响检索正确性",
 			logsdk.Any("doc_id", docID),
@@ -3177,7 +3049,7 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 		// 被 §7.3 的存活校验挡在检索之外。这是「可过滤」的一侧：
 		// 不会返回错内容，只是这篇暂时搜不到。等对账重算（§11 场景 2）
 		logsdk.Error(ctx, "写入文档行失败，该文档当前不可检索，等对账重算",
-			logsdk.Any("account", kb.Account),
+			logsdk.Any("tenant", kb.Tenant),
 			logsdk.Any("kb_no", kb.No),
 			logsdk.Any("doc_id", docID),
 			logsdk.Err(err),
@@ -3193,18 +3065,16 @@ func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocInge
 	}, nil
 }
 
-// DeleteDoc 软删文档并清理 ES（§5.4：MySQL 必须在前）。
+// DeleteDoc 硬删文档并清理 ES（§5.4：MySQL 必须在前）。
 func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocDeleteVO, error) {
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UnixMilli()
-
 	var doc *knowledgeentity.KnowledgeDoc
 	if err := s.tm.Transaction(ctx, func(txCtx context.Context) error {
-		d, err := s.docRepo.SoftDelete(txCtx, kb.ID, in.DocName, now)
+		d, err := s.docRepo.Delete(txCtx, kb.ID, in.DocName)
 		if err != nil {
 			return err
 		}
@@ -3218,9 +3088,9 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 	}
 
 	// ES 清理放到事务之后：MySQL 是权威且即时的，ES 可以迟、可以重试。
-	// 这一步失败只会留下幽灵切片，被存活校验按 doc.Deleted() 过滤掉（§5.4）
+	// 这一步失败只会留下幽灵切片，被存活校验按「文档行查不到」过滤掉（§5.4）
 	deleted, err := s.store.DeleteByQuery(ctx, knowledgerepo.VectorFilter{
-		Account: kb.Account, DocID: doc.ID,
+		Tenant: kb.Tenant, DocID: doc.ID,
 	})
 	if err != nil {
 		logsdk.Error(ctx, "清理 ES 切片失败，将留下幽灵切片",
@@ -3233,24 +3103,23 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 
 // DeleteKB 清理某个知识库在本服务里的全部派生数据。
 //
-// KB 行本身由外部系统维护（§1.2），这里只负责：本服务的文档软删 + ES 切片清理。
+// KB 行本身由外部系统维护（§1.2），这里只负责：本服务的文档硬删 + ES 切片清理。
 // 一旦引入删除动作就必须走这里——只删 MySQL 的话，ES 里会堆满查不到来源的幽灵切片。
 func (s *Service) DeleteKB(ctx context.Context, in *dto.KBDeleteDTO) error {
-	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Account)
+	kb, err := s.kbRepo.LoadByNo(ctx, in.KBNo, in.Tenant)
 	if err != nil {
 		return err
 	}
 
-	now := time.Now().UnixMilli()
 	if err := s.tm.Transaction(ctx, func(txCtx context.Context) error {
-		_, err := s.docRepo.SoftDeleteByKBID(txCtx, kb.ID, kb.Account, now)
+		_, err := s.docRepo.DeleteByKBID(txCtx, kb.ID, kb.Tenant)
 		return err
 	}); err != nil {
 		return err
 	}
 
 	if _, err := s.store.DeleteByQuery(ctx, knowledgerepo.VectorFilter{
-		Account: kb.Account, KBID: kb.ID,
+		Tenant: kb.Tenant, KBID: kb.ID,
 	}); err != nil {
 		logsdk.Error(ctx, "清理 ES 切片失败", logsdk.Any("kb_id", kb.ID), logsdk.Err(err))
 	}
@@ -3279,7 +3148,7 @@ type BatchError struct {
 // 用 kb_no 而不是 kb_id：这一层还没查库，拿不到自增主键。
 // kb_no 到 kb_id 是一对一（§4.1），所以在这里做去重等价。
 type docKey struct {
-	Account string
+	Tenant string
 	KBNo    string
 	DocName string
 }
@@ -3295,7 +3164,7 @@ type docKey struct {
 func duplicateDocNames(items []*dto.DocIngestDTO) map[docKey]struct{} {
 	count := make(map[docKey]int, len(items))
 	for _, in := range items {
-		count[docKey{in.Account, in.KBNo, in.DocName}]++
+		count[docKey{in.Tenant, in.KBNo, in.DocName}]++
 	}
 	dup := make(map[docKey]struct{})
 	for k, n := range count {
@@ -3324,7 +3193,7 @@ func (s *Service) BatchIngest(ctx context.Context, items []*dto.DocIngestDTO) *B
 	sem := make(chan struct{}, batchConcurrency)
 
 	for _, item := range items {
-		if _, isDup := dup[docKey{item.Account, item.KBNo, item.DocName}]; isDup {
+		if _, isDup := dup[docKey{item.Tenant, item.KBNo, item.DocName}]; isDup {
 			res.Failed++
 			res.Errors = append(res.Errors, &BatchError{
 				DocName: item.DocName,
@@ -3406,7 +3275,7 @@ func (s *Service) split(
 // embedChunks 算两路向量。
 //
 // title_vec 与 content_vec 分开存：标题短、噪声低，适合精排；
-// 正文长、信息全，适合召回。检索时按 search_mode 决定用哪一路（§7.2）。
+// 正文长、信息全，适合召回。检索时 kNN 一律用 content_vec（§7.2）。
 func (s *Service) embedChunks(
 	ctx context.Context, chunks knowledgeentity.Chunks,
 ) (titleVecs, contentVecs [][]float32, err error) {
@@ -3463,8 +3332,7 @@ const fusionOversample = 4
 
 // Route 一路检索结果 + 它在融合里的权重。
 //
-// 「一路」= 一个分组的一条检索路径（BM25 或 kNN）。分组见 §7.2：
-// 不同 search_mode 的库不并集检索，所以多库查询会产生多路。
+// 「一路」= 一条检索路径（BM25 或 kNN），一次查询最多两路，见 §7.2。
 type Route struct {
 	Hits   []knowledgerepo.VectorHit
 	Weight float64
@@ -3588,12 +3456,11 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	}
 	empty := &vo.SearchResultVO{Items: []*vo.SearchItemVO{}}
 
-	// ① 加载 KB。不属于该 account 的库在仓储层就被丢掉了（§6）
-	kbs, err := s.kbRepo.LoadByNos(ctx, in.KBNos, in.Account)
+	// ① 加载 KB。不属于该 tenant 的库在仓储层就被丢掉了（§6）
+	kbs, err := s.kbRepo.LoadByNos(ctx, in.KBNos, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
-	kbs = kbs.FilterByBizTags(opts.BizTags)
 	if len(kbs) == 0 {
 		return empty, nil
 	}
@@ -3607,34 +3474,20 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		}
 	}
 
-	// ③ 分组检索：按 search_mode 把库分组，每组各发一次请求
-	//
-	//    不取并集——那会悄悄把标题模式的库按正文搜，等于改写了它的语义（§7.2）。
-	//    最多两组，组内字段一致所以能合成一次请求。
-	groups := groupBySearchMode(kbs)
-	pool := make([]knowledgerepo.SearchResult, 0, len(groups))
-	for _, g := range groups {
-		r, err := s.store.Search(ctx, s.buildReq(g, opts, queryVec))
-		if err != nil {
-			return nil, err
-		}
-		pool = append(pool, r)
+	// ③ 一次检索：所有库都是标题 + 正文一起搜，没有按库分组的维度（§7.2）
+	r, err := s.store.Search(ctx, s.buildReq(kbs, opts, queryVec))
+	if err != nil {
+		return nil, err
 	}
 
 	// ④ 应用层加权 RRF 融合
-	//
-	//    逐组逐路喂进去，**不先把各组拼成一个大列表**——那样后一组的
-	//    第一名会被排到前一组所有命中之后，等于按分组顺序给了个固定的偏置
-	//    （A3.2 的 Fuse 注释）。每组两路各自从 rank=1 起算就不偏。
-	routes := make([]Route, 0, 2*len(pool))
-	for _, r := range pool {
-		// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
-		if len(r.BM25) > 0 {
-			routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
-		}
-		if len(r.KNN) > 0 {
-			routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
-		}
+	routes := make([]Route, 0, 2)
+	// 空的一路（dense_weight 把它短路掉了）不占位，权重为 0 的路 Fuse 会跳过
+	if len(r.BM25) > 0 {
+		routes = append(routes, Route{Hits: r.BM25, Weight: 1 - opts.DenseWeight})
+	}
+	if len(r.KNN) > 0 {
+		routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
 	}
 	merged := Fuse(routes, s.tuning.RankConstant, opts.Limit*fusionOversample)
 
@@ -3666,61 +3519,27 @@ func (s *Service) resolveOptions(in *dto.SearchDTO) (value_object.SearchOptions,
 	return value_object.SearchOptions{
 		Query:       in.Query,
 		Limit:       in.Limit,
-		BizTags:     in.BizTags,
 		DenseWeight: weight,
 		Rerank:      in.RerankSwitch,
 	}.Normalize()
 }
 
-// searchModeGroup 一组 search_mode 相同的库。
-type searchModeGroup struct {
-	titleOnly bool
-	kbs       knowledgeentity.KnowledgeBases
-}
-
-// groupBySearchMode 按「是否只查标题」把库分组。
-//
-// 为什么不取并集：只要有一个库开了正文检索，就全局按正文检索的话，
-// 那些建库时明确声明「只用标题」的库就被按正文搜了——召回里会冒出
-// 一堆标题对不上、正文里却有这个词的切片。那是静默改写语义（§7.2）。
-func groupBySearchMode(kbs knowledgeentity.KnowledgeBases) []searchModeGroup {
-	var contentSearch, titleSearch knowledgeentity.KnowledgeBases
-	for _, kb := range kbs {
-		if kb.UsesTitleOnly() {
-			titleSearch = append(titleSearch, kb)
-		} else {
-			contentSearch = append(contentSearch, kb)
-		}
-	}
-
-	groups := make([]searchModeGroup, 0, 2)
-	if len(contentSearch) > 0 {
-		groups = append(groups, searchModeGroup{titleOnly: false, kbs: contentSearch})
-	}
-	if len(titleSearch) > 0 {
-		groups = append(groups, searchModeGroup{titleOnly: true, kbs: titleSearch})
-	}
-	return groups
-}
-
 func (s *Service) buildReq(
-	g searchModeGroup,
+	kbs knowledgeentity.KnowledgeBases,
 	opts value_object.SearchOptions,
 	queryVec []float32,
 ) knowledgerepo.VectorSearchReq {
-	ids := make([]uint64, 0, len(g.kbs))
-	for _, kb := range g.kbs {
+	ids := make([]uint64, 0, len(kbs))
+	for _, kb := range kbs {
 		ids = append(ids, kb.ID)
 	}
 
 	return knowledgerepo.VectorSearchReq{
-		// 组内必然同 account：LoadByNos 加载时已按 account 过滤过（§6）
-		Account:       g.kbs[0].Account,
+		// 同一次请求里的库必然同 tenant：LoadByNos 加载时已按 tenant 过滤过（§6）
+		Tenant:       kbs[0].Tenant,
 		KBIDs:         ids,
-		BizTags:       opts.BizTags,
 		Query:         opts.Query,
 		QueryVec:      queryVec,
-		TitleOnly:     g.titleOnly,
 		DenseWeight:   opts.DenseWeight,
 		BM25Top:       s.tuning.BM25Top,
 		KNNTops:       s.tuning.KNNTops,
@@ -3737,7 +3556,7 @@ func (s *Service) buildReq(
 //
 // 它同时兜住了「写一半失败」和「删一半失败」两种残留：
 //   - 孤儿：切片写进 ES 了，但 MySQL 文档行没落（§5.2 ③ 失败）→ 查不到 doc，丢弃；
-//   - 幽灵：MySQL 已软删，ES 还没清完（§5.4）→ 查不到 doc，丢弃。
+//   - 幽灵：MySQL 已删行，ES 还没清完（§5.4）→ 查不到 doc，丢弃。
 //
 // 它的前提是 doc_id 稳定：全靠切片带的 doc_id 去查行，所以 §5.1 第 ④ 步
 // 必须复用已有行的 id（§5.3）。若重导入换了新 id，新切片查不到行被全部丢掉，
@@ -3865,8 +3684,8 @@ type ReconcileResult struct {
 //
 // **只信 MySQL**，不去 ES 数切片：ES 是弱一致的那一侧（§5.2），
 // 拿它当权威会把孤儿切片算进真实数据里。
-func (s *Service) Reconcile(ctx context.Context, kbNo, account string) (*ReconcileResult, error) {
-	kb, err := s.kbRepo.LoadByNo(ctx, kbNo, account)
+func (s *Service) Reconcile(ctx context.Context, kbNo, tenant string) (*ReconcileResult, error) {
+	kb, err := s.kbRepo.LoadByNo(ctx, kbNo, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -3917,7 +3736,7 @@ type Config struct {
 // 默认零值 = false = 拒绝启动。这是刻意的：让「开箱即跑」这个动作
 // 在部署时（有人看日志）失败，而不是在生产时静默地不设防。
 type SecurityConfig struct {
-	TrustRequestAccount bool `json:"trust_request_account"`
+	TrustRequestTenant bool `json:"trust_request_tenant"`
 }
 
 // ESConfig Elasticsearch 配置
@@ -4016,7 +3835,7 @@ import (
 
 // KnowledgeBaseRepo 知识库仓储（只读）。
 //
-// 这一层是租户隔离的最后一道闸：所有语句都带 account = ?，
+// 这一层是租户隔离的最后一道闸：所有语句都带 tenant = ?，
 // 漏写在 code review 里能看出来，靠每个用例自己记得加则看不出来（§6）。
 type KnowledgeBaseRepo struct {
 	provider sqlsdk.Provider
@@ -4031,11 +3850,11 @@ func (r *KnowledgeBaseRepo) db(ctx context.Context) *gorm.DB {
 }
 
 func (r *KnowledgeBaseRepo) LoadByNo(
-	ctx context.Context, no, account string,
+	ctx context.Context, no, tenant string,
 ) (*knowledgeentity.KnowledgeBase, error) {
 	var row po.KnowledgeBase
 	err := r.db(ctx).
-		Where("no = ? AND account = ? AND delete_ts = 0", no, account).
+		Where("no = ? AND tenant = ?", no, tenant).
 		First(&row).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -4051,7 +3870,7 @@ func (r *KnowledgeBaseRepo) LoadByNo(
 }
 
 func (r *KnowledgeBaseRepo) LoadByNos(
-	ctx context.Context, nos []string, account string,
+	ctx context.Context, nos []string, tenant string,
 ) (knowledgeentity.KnowledgeBases, error) {
 	if len(nos) == 0 {
 		return nil, nil
@@ -4059,7 +3878,7 @@ func (r *KnowledgeBaseRepo) LoadByNos(
 
 	var rows []po.KnowledgeBase
 	if err := r.db(ctx).
-		Where("no IN ? AND account = ? AND delete_ts = 0", nos, account).
+		Where("no IN ? AND tenant = ?", nos, tenant).
 		Find(&rows).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
@@ -4166,7 +3985,7 @@ func (r *KnowledgeDocRepo) LoadByName(
 ) (*knowledgeentity.KnowledgeDoc, error) {
 	var row po.KnowledgeDoc
 	err := r.db(ctx).
-		Where("kb_id = ? AND name = ? AND delete_ts = 0", kbID, name).
+		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&row).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -4188,9 +4007,8 @@ func (r *KnowledgeDocRepo) LoadByIDs(
 	}
 
 	var rows []po.KnowledgeDoc
-	// 这里刻意**不**加 delete_ts = 0：软删的也要捞回来，
-	// 统一交给 AliveMap 判断。带上条件的话，「文档被删了」会退化成
-	// 「文档不存在」，两条不同的异常路径混成一条，排查时看不出真相
+	// 这里刻意**不加任何过滤**：文档行是硬删。
+	// 调用方要的就是「这批 doc_id 里哪些还有行」，查不到 = 孤儿或幽灵切片
 	if err := r.db(ctx).Where("id IN ?", ids).Find(&rows).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
@@ -4220,17 +4038,17 @@ func (r *KnowledgeDocRepo) Save(
 		var cur po.KnowledgeDoc
 		e := r.db(txCtx).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("kb_id = ? AND name = ? AND delete_ts = 0", doc.KBID, doc.Name).
+			Where("kb_id = ? AND name = ?", doc.KBID, doc.Name).
 			First(&cur).Error
 
 		switch {
 		case errors.Is(e, gorm.ErrRecordNotFound):
-			// 没有活着的同名行 → 本次插入一行新的。oldChunkCount 自然是 0
+			// 没有同名的行 → 本次插入一行新的。oldChunkCount 自然是 0。
 			//
-			// 含「软删后同名重建」：软删那行 delete_ts != 0，不在这条查询的范围内，
-			// 唯一键 (kb_id, name, delete_ts) 因此被让了出来，落库的是一行**新 id**
-			// 的行。调用方那边 LoadByName 同样查不到，于是分配了新雪花——两边一致。
-			// 对调用方而言这确实是新建（doc_id 变了），报 created = true 是实话。
+			// 文档行是硬删，被删掉的行已经不在了，所以「删掉后同名重建」也走这条：
+			// 唯一键 (kb_id, name) 空了出来，落库的是一行**新 id**。调用方那边
+			// LoadByName 同样查不到，于是分配了新雪花——两边一致。对调用方而言
+			// 这确实是新建（doc_id 变了），报 created = true 是实话。
 			created = true
 		case e != nil:
 			return apperrors.ErrInternal.Wrap(e)
@@ -4251,7 +4069,7 @@ func (r *KnowledgeDocRepo) Save(
 		if err := r.db(txCtx).Clauses(clause.OnConflict{
 			// MySQL 会忽略 Columns，实际走「任意唯一键冲突即更新」；
 			// 写上是为了让意图在代码里读得出来
-			Columns: []clause.Column{{Name: "kb_id"}, {Name: "name"}, {Name: "delete_ts"}},
+			Columns: []clause.Column{{Name: "kb_id"}, {Name: "name"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"content_hash": doc.ContentHash,
 				"chunk_count":  doc.ChunkCount,
@@ -4269,12 +4087,12 @@ func (r *KnowledgeDocRepo) Save(
 	return oldChunkCount, created, nil
 }
 
-func (r *KnowledgeDocRepo) SoftDelete(
-	ctx context.Context, kbID uint64, name string, now int64,
+func (r *KnowledgeDocRepo) Delete(
+	ctx context.Context, kbID uint64, name string,
 ) (*knowledgeentity.KnowledgeDoc, error) {
 	var row po.KnowledgeDoc
 	err := r.db(ctx).
-		Where("kb_id = ? AND name = ? AND delete_ts = 0", kbID, name).
+		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&row).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -4284,24 +4102,23 @@ func (r *KnowledgeDocRepo) SoftDelete(
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
 
-	// 只置 delete_ts，不挪 name。唯一键是 (kb_id, name, delete_ts)，
-	// 置了新时间戳就等于把老键让了出来，同名重导入自然会插一行新的
+	// 硬删整行。返回的是删之前查出来的那一行——调用方要它的 ChunkCount
+	// 去扣 KB 的冗余计数，删完就取不到了，所以必须先查后删。
 	if err := r.db(ctx).
-		Where("id = ? AND delete_ts = 0", row.Id).
-		Updates(map[string]any{"delete_ts": now, "update_ts": now}).Error; err != nil {
+		Where("id = ?", row.Id).
+		Delete(&po.KnowledgeDoc{}).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}
 
-	row.DeleteTs, row.UpdateTs = now, now
 	return mapper.ToKnowledgeDoc(&row), nil
 }
 
-func (r *KnowledgeDocRepo) SoftDeleteByKBID(
-	ctx context.Context, kbID uint64, account string, now int64,
+func (r *KnowledgeDocRepo) DeleteByKBID(
+	ctx context.Context, kbID uint64, tenant string,
 ) (int64, error) {
 	tx := r.db(ctx).
-		Where("kb_id = ? AND account = ? AND delete_ts = 0", kbID, account).
-		Updates(map[string]any{"delete_ts": now, "update_ts": now})
+		Where("kb_id = ? AND tenant = ?", kbID, tenant).
+		Delete(&po.KnowledgeDoc{})
 	if tx.Error != nil {
 		return 0, apperrors.ErrInternal.Wrap(tx.Error)
 	}
@@ -4311,7 +4128,7 @@ func (r *KnowledgeDocRepo) SoftDeleteByKBID(
 func (r *KnowledgeDocRepo) CountByKBID(ctx context.Context, kbID uint64) (int64, error) {
 	var n int64
 	if err := r.db(ctx).
-		Where("kb_id = ? AND delete_ts = 0", kbID).
+		Where("kb_id = ?", kbID).
 		Count(&n).Error; err != nil {
 		return 0, apperrors.ErrInternal.Wrap(err)
 	}
@@ -4324,7 +4141,7 @@ func (r *KnowledgeDocRepo) SumChunkCountByKBID(ctx context.Context, kbID uint64)
 	var sum sql.NullInt64
 	if err := r.db(ctx).
 		Select("COALESCE(SUM(chunk_count), 0) AS total").
-		Where("kb_id = ? AND delete_ts = 0", kbID).
+		Where("kb_id = ?", kbID).
 		Scan(&sum).Error; err != nil {
 		return 0, apperrors.ErrInternal.Wrap(err)
 	}
@@ -4351,21 +4168,17 @@ import (
 // 真要写 KB 时再加，那时也该顺手想清楚「谁能改 KB」。
 func ToKnowledgeBase(row *po.KnowledgeBase) *knowledgeentity.KnowledgeBase {
 	return &knowledgeentity.KnowledgeBase{
-		ID:            row.Id,
-		No:            row.No,
-		Account:       row.Account,
-		Name:          row.Name,
-		Description:   row.Description,
-		KnowledgeType: row.KnowledgeType,
-		SearchMode:    row.SearchMode,
-		BizTag:        row.BizTag,
-		SplitOptions:  row.SplitOptions,
-		DocCount:      row.DocCount,
-		ChunkCount:    row.ChunkCount,
-		IsSystem:      row.IsSystem == 1,
-		CreateTs:      row.CreateTs,
-		UpdateTs:      row.UpdateTs,
-		DeleteTs:      row.DeleteTs,
+		ID:           row.Id,
+		No:           row.No,
+		Tenant:      row.Tenant,
+		Name:         row.Name,
+		Description:  row.Description,
+		Type:         row.Type,
+		SplitOptions: row.SplitOptions,
+		DocCount:     row.DocCount,
+		ChunkCount:   row.ChunkCount,
+		CreateTs:     row.CreateTs,
+		UpdateTs:     row.UpdateTs,
 	}
 }
 
@@ -4381,13 +4194,12 @@ func ToKnowledgeDoc(row *po.KnowledgeDoc) *knowledgeentity.KnowledgeDoc {
 	return &knowledgeentity.KnowledgeDoc{
 		ID:          row.Id,
 		KBID:        row.KbId,
-		Account:     row.Account,
+		Tenant:     row.Tenant,
 		Name:        row.Name,
 		ContentHash: row.ContentHash,
 		ChunkCount:  row.ChunkCount,
 		CreateTs:    row.CreateTs,
 		UpdateTs:    row.UpdateTs,
-		DeleteTs:    row.DeleteTs,
 	}
 }
 
@@ -4403,13 +4215,12 @@ func ToKnowledgeDocPO(doc *knowledgeentity.KnowledgeDoc) *po.KnowledgeDoc {
 	return &po.KnowledgeDoc{
 		Id:          doc.ID,
 		KbId:        doc.KBID,
-		Account:     doc.Account,
+		Tenant:     doc.Tenant,
 		Name:        doc.Name,
 		ContentHash: doc.ContentHash,
 		ChunkCount:  doc.ChunkCount,
 		CreateTs:    doc.CreateTs,
 		UpdateTs:    doc.UpdateTs,
-		DeleteTs:    doc.DeleteTs,
 	}
 }
 ```
@@ -4900,10 +4711,6 @@ func (s *ESVectorStore) bm25Body(req knowledgerepo.VectorSearchReq) map[string]a
 	// boost 的取值：标题命中比正文命中强得多——一份文档里正文到处都是
 	// 常见词，标题才真正说明这篇在讲什么
 	fields := []string{FieldTitle + "^3", FieldHeadingPath + "^2", FieldContent}
-	if req.TitleOnly {
-		// search_mode = title：不查正文
-		fields = []string{FieldTitle + "^3", FieldHeadingPath + "^2"}
-	}
 
 	should := make([]any, 0, len(fields))
 	for _, f := range fields {
@@ -4918,7 +4725,7 @@ func (s *ESVectorStore) bm25Body(req knowledgerepo.VectorSearchReq) map[string]a
 			"bool": map[string]any{
 				// filter 里的条件不参与打分，只做范围限定。
 				// 租户隔离必须走这里——放进 must 的话，
-				// 一个 account 的匹配会把 BM25 分数整体抬高
+				// 一个 tenant 的匹配会把 BM25 分数整体抬高
 				"filter":               s.filters(req),
 				"should":               should,
 				"minimum_should_match": 1,
@@ -4930,10 +4737,8 @@ func (s *ESVectorStore) bm25Body(req knowledgerepo.VectorSearchReq) map[string]a
 
 // knnBody 向量路。
 func (s *ESVectorStore) knnBody(req knowledgerepo.VectorSearchReq) map[string]any {
+	// 所有库一律用正文向量——早先「只查标题」的模式已下线
 	field := FieldContentVec
-	if req.TitleOnly {
-		field = FieldTitleVec
-	}
 
 	k := req.KNNTops
 	numCandidates := req.NumCandidates
@@ -4957,17 +4762,14 @@ func (s *ESVectorStore) knnBody(req knowledgerepo.VectorSearchReq) map[string]an
 
 // filters 所有「只做范围限定、不参与打分」的条件。
 //
-// account 必须在最前，且必须用 term：它是单索引下唯一的租户隔离手段（D2）。
+// tenant 必须在最前，且必须用 term：它是单索引下唯一的租户隔离手段（D2）。
 // 写成 match 会按分词匹配，A 租户能查到 B 租户的数据——那是越权，不是召回问题。
 func (s *ESVectorStore) filters(req knowledgerepo.VectorSearchReq) []any {
 	out := []any{
-		map[string]any{"term": map[string]any{FieldAccount: req.Account}},
+		map[string]any{"term": map[string]any{FieldTenant: req.Tenant}},
 	}
 	if len(req.KBIDs) > 0 {
 		out = append(out, map[string]any{"terms": map[string]any{FieldKbId: req.KBIDs}})
-	}
-	if len(req.BizTags) > 0 {
-		out = append(out, map[string]any{"terms": map[string]any{FieldBizTag: req.BizTags}})
 	}
 	return out
 }
@@ -4976,8 +4778,8 @@ func (s *ESVectorStore) filters(req knowledgerepo.VectorSearchReq) []any {
 func buildFilter(f knowledgerepo.VectorFilter) (map[string]any, bool) {
 	must := make([]any, 0, 3)
 
-	if f.Account != "" {
-		must = append(must, map[string]any{"term": map[string]any{FieldAccount: f.Account}})
+	if f.Tenant != "" {
+		must = append(must, map[string]any{"term": map[string]any{FieldTenant: f.Tenant}})
 	}
 	if f.KBID != 0 {
 		must = append(must, map[string]any{"term": map[string]any{FieldKbId: f.KBID}})
@@ -5001,12 +4803,11 @@ func sourceFields() []string {
 
 func vectorDocBody(d knowledgerepo.VectorDoc) map[string]any {
 	return map[string]any{
-		FieldAccount:     d.Account,
+		FieldTenant:     d.Tenant,
 		FieldKbId:        d.KBID,
 		FieldDocId:       d.DocID,
 		FieldChunkId:     d.ChunkID,
 		FieldOrder:       d.Order,
-		FieldBizTag:      d.BizTag,
 		FieldTitle:       d.Title,
 		FieldContent:     d.Content,
 		FieldHeadingPath: d.HeadingPath,
@@ -5045,34 +4846,12 @@ func readBody(r io.Reader) string {
 
 文件内容基本不变（A0.2 已说明它挪到 `persistence/knowledge`）。
 **本次没有 `ver` 字段，mapping 一个属性都不加**——一致性增强本期不做（§2 D4、§13 待定 9）。
-本段只做三处改动，都是注释与测试，**没有功能改动**：
+本段只做两处改动，都是注释，**没有功能改动**：
 
 **① 订正一处过期引用**：`DefaultIndexSpec` 的注释里写着「设计文档 §14 的待定项」，
 现在是 §13；`Shards=3` 那句里的「设计文档 §9.4」保持不动。
 
-**② 补测试**：`index_template_test.go` 的
-`TestBuildCreateIndexBody_AllDesignFieldsPresent` 字段清单漏了 `FieldBizTag`——
-字段漏建不会报错，只是查询时的 `terms(biz_tag)` 永远匹配不到，
-静默退化成「biz_tag 过滤形同虚设」。这正是那个测试存在的意义。
-（顺带把该测试顶部的注释 `// §4.3 定下的字段` 改成 `§4.2`——文档里从来没有 §4.3。）
-
-`TestMapping_IsolationFieldsAreKeyword` 不用动：它已经把 `FieldBizTag` 列在里面了，
-所以 biz_tag 的 keyword 类型是有保障的，**缺的只是"这个字段存不存在"**。
-
-```go
-	for _, f := range []string{
-		FieldAccount, FieldKbId, FieldDocId, FieldChunkId, FieldOrder,
-		FieldBizTag,
-		FieldTitle, FieldContent, FieldHeadingPath,
-		FieldTitleVec, FieldContentVec, FieldCreateTs,
-	} {
-```
-
-补完之后，磁盘上现有的 `TestBuildCreateIndexBody_Defaults` /
-`TestMapping_IsolationFieldsAreKeyword` 都不用动，它们已经覆盖了
-`biz_tag` 的 keyword 类型与两个向量字段的维度。
-
-**③ `DefaultIndexSpec` 的注释调整**：
+**② `DefaultIndexSpec` 的注释调整**：
 
 ```go
 // DefaultIndexSpec 返回本地开发/起步阶段的默认规格。
@@ -5435,7 +5214,7 @@ const maxBatchDocs = 100
 
 // Controller 文档导入 HTTP 控制器。
 //
-// 注意这里**没有任何鉴权中间件**：account 就是请求体里的普通字段（§6）。
+// 注意这里**没有任何鉴权中间件**：tenant 就是请求体里的普通字段（§6）。
 // 部署时 FastRAG 只能在可信内网暴露，调用方自己负责对最终用户鉴权。
 type Controller struct {
 	service *ingest.Service
@@ -5698,28 +5477,28 @@ func core(conf *config.Config) fx.Option {
 		domain.Register,
 		service.Register,
 
-		fx.Invoke(checkTrustRequestAccount),
+		fx.Invoke(checkTrustRequestTenant),
 		fx.Invoke(ensureIndexOnStart),
 	)
 }
 
-// checkTrustRequestAccount 是一道防误部署的闸门（§6.1）。
+// checkTrustRequestTenant 是一道防误部署的闸门（§6.1）。
 //
-// 本服务不做鉴权——account 就是请求体里的一个普通字符串参数。
+// 本服务不做鉴权——tenant 就是请求体里的一个普通字符串参数。
 // 能构造请求体的人就能读写任意租户的数据。这个设计只有在「服务只跑在可信内网、
 // 由调用方自己完成对最终用户的鉴权」这个前提下才成立。
 //
 // 问题在于，把服务直接摆到公网上是个太容易犯的错——改一行 nginx 配置就够了，
 // 而代码本身不会报任何错。所以这里把前提变成一个必须显式承认的开关：
-// 没配 trust_request_account = true 就拒绝启动。
+// 没配 trust_request_tenant = true 就拒绝启动。
 //
 // 用 fx.Invoke 而不是放在 main 里手写 if：这样 CLI 入口（InitCLI）也会过这道闸门，
 // 三个入口一个都漏不掉。
-func checkTrustRequestAccount(conf *config.Config) error {
-	if !conf.Security.TrustRequestAccount {
+func checkTrustRequestTenant(conf *config.Config) error {
+	if !conf.Security.TrustRequestTenant {
 		return apperrors.NewSysError(apperrors.CodeInternal,
-			"拒绝启动：security.trust_request_account 未置为 true。\n"+
-				"本服务不做鉴权，account 直接取自请求体，任何能构造请求的人都能读写任意租户。\n"+
+			"拒绝启动：security.trust_request_tenant 未置为 true。\n"+
+				"本服务不做鉴权，tenant 直接取自请求体，任何能构造请求的人都能读写任意租户。\n"+
 				"确认它只对内网可信调用方开放（且调用方已自行完成用户鉴权）后，"+
 				"在配置里显式写上 true。")
 	}
@@ -5921,7 +5700,7 @@ func (ctl *Controller) Index(c *gin.Context) {
 
 | 区块 | 做什么 |
 |---|---|
-| 连接参数 | `account` / `kb_no` 两个输入框，默认 `demo` / `demo-kb`，页面上明说「本服务不做鉴权」（§6.1） |
+| 连接参数 | `tenant` / `kb_no` 两个输入框，默认 `demo` / `demo-kb`，页面上明说「本服务不做鉴权」（§6.1） |
 | 导入文档 | 拖拽 / 选择 `.md`、或直接粘贴；`doc_name` 默认取文件名（同名 = 重导入）；`refresh` 勾选框直接对应 §4.2 那个字段 |
 | 检索 | `query` / `limit` / `dense_weight` 滑杆 / `rerank_switch`，对应 `dto.SearchDTO` |
 | 结果 | 每条显示 `title`、`heading_path`、`score`、`order`、`chunk_id` 前 12 位，正文里高亮命中的词；底下折叠着原始 JSON |
@@ -5959,7 +5738,7 @@ func (ctl *Controller) Index(c *gin.Context) {
 //
 // 用法:
 //
-//	go run ./cmd/reconcile -account acc_001 -kb KB20261008001
+//	go run ./cmd/reconcile -tenant acc_001 -kb KB20261008001
 package main
 
 import (
@@ -5975,11 +5754,11 @@ import (
 )
 
 func main() {
-	account := flag.String("account", "", "租户（必填）")
+	tenant := flag.String("tenant", "", "租户（必填）")
 	kbNo := flag.String("kb", "", "知识库编号（必填）")
 	flag.Parse()
 
-	if *account == "" || *kbNo == "" {
+	if *tenant == "" || *kbNo == "" {
 		flag.Usage()
 		return
 	}
@@ -5991,7 +5770,7 @@ func main() {
 		fx.Invoke(func(svc *ingest.Service) error {
 			ctx := context.Background()
 
-			res, err := svc.Reconcile(ctx, *kbNo, *account)
+			res, err := svc.Reconcile(ctx, *kbNo, *tenant)
 			if err != nil {
 				logsdk.Error(ctx, "对账失败", logsdk.Err(err))
 				return err
@@ -6050,7 +5829,7 @@ func main() {
    > 被 recover 掉之后协程直接退出，**之后永久失去重连监控**——那是个真 bug）。
    > 实测：22 秒窗口内 v1.0.4 打 0 次，v1.0.3 打 4 次。
 
-3. **`es` 相关字段名一律引用常量**（`FieldAccount` 等）。散着写字符串的话，
+3. **`es` 相关字段名一律引用常量**（`FieldTenant` 等）。散着写字符串的话，
    mapping 和查询体对不上不会报错，只会静默查不到——这是这个项目里
    最贵的一类 bug。
 
@@ -6067,7 +5846,6 @@ func main() {
    | `infrastructure/persistence/po/*.go`（`KnowledgeDoc`） | **不动**——不加 `Ver` 字段 | 无 |
    | `infrastructure/persistence/mapper/knowledge.go` | 删掉 `ToKnowledgeDoc` / `ToKnowledgeDocPO` 里的 `Ver` 映射 | 编译不过（实体已无 `Ver`） |
    | `infrastructure/persistence/knowledge/index_template.go` | 订正 §14→§13 过期注释 | 无功能影响，只是注释指向不存在的章节 |
-   | `infrastructure/persistence/knowledge/index_template_test.go` | `TestBuildCreateIndexBody_AllDesignFieldsPresent` 字段清单补 `FieldBizTag` | `biz_tag` 漏建不会有人发现，`terms(biz_tag)` 过滤静默失效 |
    | `deploy/README.md` | 「③ 按设计文档 §4.2 建一次索引」改成**冒烟测试** | 手册会教人抢在服务启动前手建索引，而索引现在由启动期负责（§9.4） |
    | `infrastructure/driver/mysql/*` | `NewProvider` 返回值改成 `*sqlsdk.TransProvider` | A4.16 的两个 `fx.Provide` 拿不到具体类型 |
    | `common/errors/*` | 删 `CodeKnowledgeBaseMismatch`、`ErrKBMismatch` | 未使用的错误码会过 lint，但 403 语义已经不用了 |
@@ -6079,8 +5857,8 @@ func main() {
 
 6. **ES 对未在 mapping 里声明的字段是照收不报错的**（dynamic mapping 会自己猜类型）。
    本期的字段集合与 mapping 一一对应，所以不受影响；但将来加字段时记住这一点：
-   漏建 mapping 不会报错，只会让查询悄悄匹配不到。A4.7 补 `FieldBizTag`
-   正是为了堵这个口子——它现在就在列表外。
+   漏建 mapping 不会报错，只会让查询悄悄匹配不到——所以 `scripts/create-es-index.sh`
+   里的字段清单必须与查询侧引用的常量保持同步。
 
 7. **落盘后第一件事是跑 §12.1 的冒烟回路，不是压测也不是评测集**。本期最需要真跑一次的、
    靠读代码确认不了的行为是**「重新导入同一文档后，旧切片确实消失了」**（§5.2 ② 的
@@ -6102,25 +5880,13 @@ func main() {
    > 事后看，这条预测准得有点刺眼：「写对了也可能没生效」「只能靠数一下切片数确认」
    > ——两条全中。**这正是它被排在压测和评测集前面的原因。**
 
-8. **`search_mode` 在多库混查时按库分组，不取并集**（A3.3 的 `groupBySearchMode`）。
-   一次请求里混着 `title` 和 `title_and_content` 两种库时，**分成两组各发一次 ES 请求**：
-   `title` 组只搜 `title` + `heading_path`（向量用 `title_vec`），
-   `title_and_content` 组才是三字段 + `content_vec`。
-
-   > 早先这里的写法是「只要有一个库开了正文检索就全局按正文检索」。那是错的——
-   > 它悄悄改写了那些建库时声明「只用标题」的库的语义，召回里会冒出标题对不上、
-   > 正文里却有这个词的切片。§7.2 与 A3.3 已按分组实现，本节之前和它们对不上。
-
-   代价是 N 种模式 = N 次 ES 请求（实际只有两种，可以并行发）。融合不受影响：
-   各路各自按名次进 RRF，分组顺序不产生偏置（A3.2 的 `Fuse`）。
-
-9. **`BatchIngest` 的批内同名预扫必须在起工作池之前同步跑完**（A3.1 的
+8. **`BatchIngest` 的批内同名预扫必须在起工作池之前同步跑完**（A3.1 的
    `duplicateDocNames`）。它看起来像是能塞进 goroutine 里的小事，但一旦挪进去就回到竞态了——
    而它要防的恰好是并发同名写（§5.5 的交集截断），挪进去等于没防。
    重复项走 `errors` 明细、不进工作池，整批仍返回 200（A4.13）。
    `docKey` 用 `kb_no` 而不是 `kb_id`：这一层还没查库，拿不到自增主键。
 
-10. **`_refresh` 是索引级的，不是文档级**（A4.6 的 `Refresh`）。单索引多租户（D2）下
-    它顺带刷到别的租户的段。所以它只出现在两条路径上——重导入（`existing != nil`，
-    必刷，§5.2 ②）和调用方显式传 `refresh: true`（§4.2）——常规写入**不要**加它，
-    否则等于把全租户的刷新周期改成「每次写」。
+9. **`_refresh` 是索引级的，不是文档级**（A4.6 的 `Refresh`）。单索引多租户（D2）下
+   它顺带刷到别的租户的段。所以它只出现在两条路径上——重导入（`existing != nil`，
+   必刷，§5.2 ②）和调用方显式传 `refresh: true`（§4.2）——常规写入**不要**加它，
+   否则等于把全租户的刷新周期改成「每次写」。

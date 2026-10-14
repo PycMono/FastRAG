@@ -7,12 +7,6 @@ const (
 	FormatChunks   = "chunks"   // 给已切好的切片，只做索引
 )
 
-// 知识库类型（knowledge_base.type）
-const (
-	KnowledgeTypeOrdinary = "ordinary"
-	KnowledgeTypeQA       = "qa"
-)
-
 // 切片默认参数
 const (
 	DefaultChunkSize  = 800
@@ -32,6 +26,3 @@ const (
 	MaxSearchLimit     = 100
 	MaxIngestChunks    = 5000 // 单文档切片数上限，超过基本可以断定是切错了
 )
-
-// 注：向量维度的上限常量（MaxVectorDim）随索引规格一起删掉了。
-// 维度现在是 scripts/create-es-index.sh 的 DIM 参数；越界由 ES 自己报错。

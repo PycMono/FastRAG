@@ -93,7 +93,7 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 	)
 
 	_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "demo-kb", URL: "https://example.com/a.docx",
+		Tenant: "demo", KBNo: "demo-kb", URL: "https://example.com/a.docx",
 	})
 	if err == nil {
 		t.Fatal("docx 不在 pdf-only 后端的 Formats() 里，必须报参数错误")
@@ -108,7 +108,7 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 // 扩展名推不出来的合法地址不能被格式闸门误杀（任务 10 真实打到：arXiv 的
 // `https://arxiv.org/pdf/1706.03762v7` 被回成「不支持该文件类型: 1706.03762v7」）。
 func TestParse_ExtensionlessID_PassesFormatGate(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{
 			name: "docling", formats: []string{"pdf"}, md: "# 标题\n正文正文正文",
@@ -119,7 +119,7 @@ func TestParse_ExtensionlessID_PassesFormatGate(t *testing.T) {
 	)
 
 	out, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "kb-1", URL: "https://arxiv.org/pdf/1706.03762v7",
+		Tenant: "demo", KBNo: "kb-1", URL: "https://arxiv.org/pdf/1706.03762v7",
 	})
 	if err != nil {
 		t.Fatalf("扩展名推不出来的地址应放行、交给后端判，得到 %v", err)
@@ -142,7 +142,7 @@ func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 
 	for _, bad := range []string{"ftp://example.com/a.pdf", "file:///etc/passwd"} {
 		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-			Account: "demo", KBNo: "demo-kb", URL: bad,
+			Tenant: "demo", KBNo: "demo-kb", URL: bad,
 		})
 		if err == nil {
 			t.Fatalf("%s 必须被拒", bad)
@@ -157,7 +157,7 @@ func TestParse_NonHTTPScheme_FailsEarly(t *testing.T) {
 
 // Review Focus 第 5 条：Formats() 为空表示「后端不声明、一律放行」。
 func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{}
 	store := &stubStore{}
 	svc := newParseService(
@@ -168,7 +168,7 @@ func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
 	)
 
 	out, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
+		Tenant: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
 	})
 	if err != nil {
 		t.Fatalf("Formats() 为空时应一律放行，得到 %v", err)
@@ -180,7 +180,7 @@ func TestParse_EmptyFormats_AllowsAny(t *testing.T) {
 
 // Review Focus 第 2 条：解析结果为空/全空白不能报成功。
 func TestParse_EmptyMarkdown_Fails(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	for _, md := range []string{"", "   \n\t  \n"} {
 		store := &stubStore{}
 		svc := newParseService(
@@ -191,7 +191,7 @@ func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 		)
 
 		_, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-			Account: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
+			Tenant: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
 		})
 		if err == nil {
 			t.Fatalf("markdown=%q 必须报错，不能当成功返回", md)
@@ -216,7 +216,7 @@ func TestParse_EmptyMarkdown_Fails(t *testing.T) {
 // Review Focus 第 1 条：经 /docs/parse 解析一份已存在的 doc_name 时，
 // 必须沿用库里那一行的 id（与 Ingest 的重导入同一条语义）。
 func TestParse_Reimport_KeepsDocID(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{existing: &entity.KnowledgeDoc{ID: 42, KBID: 7, Name: "a.pdf", ChunkCount: 1}}
 	store := &stubStore{}
 	svc := newParseService(
@@ -227,7 +227,7 @@ func TestParse_Reimport_KeepsDocID(t *testing.T) {
 	)
 
 	out, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
+		Tenant: "demo", KBNo: "kb-1", DocName: "a.pdf", URL: "https://example.com/a.pdf",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +242,7 @@ func TestParse_Reimport_KeepsDocID(t *testing.T) {
 
 // doc_name 缺省时由 URL 推出，且沿用既有的同名重导入语义（同一 URL 同名）。
 func TestParse_DerivesDocNameFromURL(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{}
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{name: "p", md: "# 标题\n正文正文正文"}},
@@ -252,7 +252,7 @@ func TestParse_DerivesDocNameFromURL(t *testing.T) {
 	)
 
 	out, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "kb-1", URL: "https://example.com/%E6%8A%A5%E5%91%8A.pdf?v=2",
+		Tenant: "demo", KBNo: "kb-1", URL: "https://example.com/%E6%8A%A5%E5%91%8A.pdf?v=2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestParse_DerivesDocNameFromURL(t *testing.T) {
 // 唯一一根线（它靠扩展名映射 FileType）。删掉 parse.go 里那行 Filename，别处测试仍全绿，
 // 但腾讯后端运行时每条请求都会报 ParamError；此用例专门守着这道缝。
 func TestParse_PassesURLBasenameAsFilename(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	var got interfaces.ParseReq
 	svc := newParseService(
 		stubParserRegistry{parser: stubParser{
@@ -279,7 +279,7 @@ func TestParse_PassesURLBasenameAsFilename(t *testing.T) {
 
 	url := "https://example.com/docs/report.pdf"
 	if _, err := svc.Parse(context.Background(), &dto.DocParseDTO{
-		Account: "demo", KBNo: "kb-1", URL: url,
+		Tenant: "demo", KBNo: "kb-1", URL: url,
 	}); err != nil {
 		t.Fatal(err)
 	}

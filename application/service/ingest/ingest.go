@@ -25,8 +25,8 @@ import (
 // 编排：定位 KB → 定切片参数 → 把「切」交给 ingestDoc（它取向量实现、落库）。
 // 三条路径（format=markdown/text/chunks）的差异只在切，落库完全同构。
 func (s *Service) Ingest(ctx context.Context, in *dto.DocIngestDTO) (*vo.DocIngestVO, error) {
-	// ① 定位 KB。kb_no 指向的库 account 不等于传入值，在这里就被挡掉
-	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
+	// ① 定位 KB。kb_no 指向的库 tenant 不等于传入值，在这里就被挡掉
+	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +125,15 @@ func (s *Service) ingestDoc(
 		docID = uint64(s.idGen.NextIntID()) // 首次导入：雪花预分配
 	}
 
-	vectors := factory.BuildVectorDocs(kb, docID, chunks, titleVecs, contentVecs, now)
+	vectors, err := factory.BuildVectorDocs(kb, docID, chunks, titleVecs, contentVecs, now)
+	if err != nil {
+		return nil, err
+	}
 
 	// ⑥ 【第一写】ES 写新切片。新内容先进去，旧切片原地不动。
 	if err := s.store.Save(ctx, vectors); err != nil {
 		logsdk.Error(ctx, "切片写入失败，文档内容未变",
-			logsdk.Any("account", kb.Account),
+			logsdk.Any("tenant", kb.Tenant),
 			logsdk.Any("kb_no", kb.No),
 			logsdk.Any("doc_id", docID),
 			logsdk.Err(err),
@@ -150,7 +153,7 @@ func (s *Service) ingestDoc(
 
 	// ⑧ 【第二写】ES 清掉这篇文档里 _id 不在新集合中的旧切片。只删差集。
 	if _, err := s.store.DeleteExcept(ctx, repository.VectorFilter{
-		Account: kb.Account, DocID: docID,
+		Tenant: kb.Tenant, DocID: docID,
 	}, factory.ChunkIDs(vectors)); err != nil {
 		logsdk.Warn(ctx, "清理旧切片失败，不影响检索正确性",
 			logsdk.Any("doc_id", docID), logsdk.Err(err))
@@ -175,7 +178,7 @@ func (s *Service) ingestDoc(
 		return nil
 	}); err != nil {
 		logsdk.Error(ctx, "写入文档行失败，该文档当前不可检索，需重新导入",
-			logsdk.Any("account", kb.Account),
+			logsdk.Any("tenant", kb.Tenant),
 			logsdk.Any("kb_no", kb.No),
 			logsdk.Any("doc_id", docID),
 			logsdk.Err(err),

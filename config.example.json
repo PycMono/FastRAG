@@ -106,6 +106,6 @@
     }
   },
   "security": {
-    "trust_request_account": true
+    "trust_request_tenant": true
   }
 }

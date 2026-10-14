@@ -86,12 +86,12 @@ make es-index              # 或 bash scripts/create-es-index.sh
 已存在时 ES 会回 `resource_already_exists_exception`，**不会覆盖**。
 
 > 单索引多租户（设计文档 D2）：索引名固定 `fastrag`，所有租户共用一个物理索引，
-> 隔离靠 `account` 字段——所以它必须是 `keyword`。本地要重来一遍时先删：
+> 隔离靠 `tenant` 字段——所以它必须是 `keyword`。本地要重来一遍时先删：
 > `curl -XDELETE localhost:9200/fastrag`（**删索引 = 丢全部切片**，脚本故意不代劳这件事）
 
 > ⚠️ **ES 默认 `action.auto_create_index=true`**：万一服务在索引建好之前先写入，
 > ES 会**自己**建一个动态 mapping 的 `fastrag`（无 IK、无 `dense_vector`、
-> `account` 是 text），写入还返回成功。脚本下次运行会因 mapping 不符而报错，
+> `tenant` 是 text），写入还返回成功。脚本下次运行会因 mapping 不符而报错，
 > 不会把它固化，但已经写进去的数据要重导。服务侧也会在第一次用到时直接报错。
 > 若要根治（本服务独占的集群才建议）：`curl -XPUT 'localhost:9200/_cluster/settings'
 > -H 'Content-Type: application/json'

@@ -15,7 +15,7 @@ func TestKNNClauses(t *testing.T) {
 	store := &ESVectorStore{index: "t"}
 
 	req := repository.VectorSearchReq{
-		Account:       "demo",
+		Tenant:        "demo",
 		KBIDs:         []uint64{1, 2},
 		QueryVec:      []float32{0.1, 0.2},
 		KNNTops:       50,
@@ -65,8 +65,8 @@ func TestKNNClauses(t *testing.T) {
 
 			first, _ := filters[0].(map[string]any)
 			term, _ := first["term"].(map[string]any)
-			if term[constants.FieldAccount] != "demo" {
-				t.Errorf("第 %d 条子句的 account 过滤 = %v，期望 term/demo",
+			if term[constants.FieldTenant] != "demo" {
+				t.Errorf("第 %d 条子句的 tenant 过滤 = %v，期望 term/demo",
 					i, filters[0])
 			}
 		}
@@ -174,15 +174,15 @@ func termFields(body map[string]any) map[string]any {
 // 枚举切片的查询体错起来是**静默**的：少一个 term 只是越权，排序写错只是
 // 页面上的顺序乱掉，两者都不报错。这里把它们钉住。
 func TestListBody(t *testing.T) {
-	t.Run("account 与 doc_id 两个 term 都在", func(t *testing.T) {
-		body, ok := listBody(repository.VectorFilter{Account: "demo", DocID: 42}, 0, 50)
+	t.Run("tenant 与 doc_id 两个 term 都在", func(t *testing.T) {
+		body, ok := listBody(repository.VectorFilter{Tenant: "demo", DocID: 42}, 0, 50)
 		if !ok {
 			t.Fatal("条件齐全却返回 false")
 		}
 
 		terms := termFields(body)
-		if _, has := terms[constants.FieldAccount]; !has {
-			t.Error("查询体里没有 account 的 term —— 单索引下这是唯一的租户隔离手段")
+		if _, has := terms[constants.FieldTenant]; !has {
+			t.Error("查询体里没有 tenant 的 term —— 单索引下这是唯一的租户隔离手段")
 		}
 		if _, has := terms[constants.FieldDocId]; !has {
 			t.Error("查询体里没有 doc_id 的 term")
@@ -213,9 +213,9 @@ func TestListBody(t *testing.T) {
 		}
 	})
 
-	t.Run("只给 account 一律拒绝", func(t *testing.T) {
-		if _, ok := listBody(repository.VectorFilter{Account: "demo"}, 0, 50); ok {
-			t.Error("只给 account 也放行了：那是在枚举整库")
+	t.Run("只给 tenant 一律拒绝", func(t *testing.T) {
+		if _, ok := listBody(repository.VectorFilter{Tenant: "demo"}, 0, 50); ok {
+			t.Error("只给 tenant 也放行了：那是在枚举整库")
 		}
 	})
 }

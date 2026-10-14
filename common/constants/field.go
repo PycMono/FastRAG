@@ -12,7 +12,7 @@
 package constants
 
 const (
-	FieldAccount     = "account"      // 租户，keyword —— 单索引下这是唯一的租户隔离手段
+	FieldTenant      = "tenant"       // 租户，keyword —— 单索引下这是唯一的租户隔离手段
 	FieldKbId        = "kb_id"        // 知识库 ID，long
 	FieldDocId       = "doc_id"       // 文档 ID（雪花），long
 	FieldChunkId     = "chunk_id"     // 切片 ID，keyword，也是 _id 的来源
@@ -27,7 +27,7 @@ const (
 
 // IndexName 索引命名。
 //
-// 单索引多租户（设计文档 D2）：所有租户共用一个物理索引，隔离靠 account 字段。
+// 单索引多租户（设计文档 D2）：所有租户共用一个物理索引，隔离靠 tenant 字段。
 // 不做「一租户一索引」（SaaS 租户数一多就炸），也不做分桶/独占（本期不需要）。
 //
 // 配置里 elasticsearch.index 留空时兜底用它。

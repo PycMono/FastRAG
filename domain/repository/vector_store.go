@@ -10,7 +10,7 @@ import "context"
 // VectorDoc 一份待写入的切片文档。
 type VectorDoc struct {
 	ChunkID     string
-	Account     string
+	Tenant      string
 	KBID        uint64
 	DocID       uint64
 	Order       int
@@ -24,17 +24,17 @@ type VectorDoc struct {
 
 // VectorFilter 删除条件。零值字段表示「不过滤」。
 //
-// 全是等值条件：account / kb_id / doc_id。三个都空是「删全库」，
+// 全是等值条件：tenant / kb_id / doc_id。三个都空是「删全库」，
 // 实现会拒绝——那几乎一定是调用方漏传了参数。
 type VectorFilter struct {
-	Account string
-	KBID    uint64
-	DocID   uint64
+	Tenant string
+	KBID   uint64
+	DocID  uint64
 }
 
 // VectorSearchReq 检索请求。
 type VectorSearchReq struct {
-	Account     string
+	Tenant      string
 	KBIDs       []uint64
 	Query       string
 	QueryVec    []float32
@@ -114,7 +114,7 @@ type IVectorStore interface {
 	// 所以复用 VectorHit 而不另立类型：字段就是 ES 里那几个，Score 恒为 0，
 	// **不要拿它做任何判断**（VO 里也不暴露它）。
 	//
-	// 调用方**必须**同时填 Account 与 DocID：buildFilter 只在三者**全空**时
+	// 调用方**必须**同时填 Tenant 与 DocID：buildFilter 只在三者**全空**时
 	// 拒绝，只给 DocID 它照样会放行——租户隔离靠调用约定，不靠它兜底。
 	ListByDoc(ctx context.Context, filter VectorFilter, offset, limit int) ([]VectorHit, int64, error)
 }

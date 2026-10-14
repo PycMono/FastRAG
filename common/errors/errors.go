@@ -196,7 +196,7 @@ var (
 	ErrRerankFailed      = NewSysError(CodeRerankFail, "rerank service failed")
 	ErrParseFailed       = NewSysError(CodeParseFail, "文档解析失败")
 
-	// ErrDocNotFound 详情 / 切片找不到文档时用它。**id 存在但 account 对不上
+	// ErrDocNotFound 详情 / 切片找不到文档时用它。**id 存在但 tenant 对不上
 	// 也返回它**——分开就是送出一个「这个 id 存在吗」的可枚举探测接口，
 	// 与 10101 折叠「库不存在 / 租户不符」是同一条原则。
 	ErrDocNotFound = NewBizError(CodeDocNotFound, "document not found")

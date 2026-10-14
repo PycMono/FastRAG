@@ -130,7 +130,7 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
     "bm25_top": 50, "knn_top": 50, "num_candidates": 200,
     "rank_constant": 60, "dense_weight": 0.5, "default_retrieve_count": 0
   },
-  "security": { "trust_request_account": true }
+  "security": { "trust_request_tenant": true }
 }
 ```
 
@@ -142,13 +142,13 @@ embedding 换家有两种翻车方式，一种会响，一种不会：
 # 导入：这篇文档的向量用 bge-m3 算
 curl -X POST http://localhost:8080/api/v1/docs \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text",
+  -d '{"tenant":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text",
        "model":"bge-m3","content":"……正文……"}'
 
 # 检索：查询向量用 bge-m3 算，精排用 qwen3-rerank
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
+  -d '{"tenant":"demo","kb_nos":["demo-kb"],"query":"如何配置",
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank","rerank_switch":true}'
 ```
 

@@ -58,5 +58,5 @@ type IKnowledgeDocRepo interface {
 	Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error)
 
 	// DeleteByKBID 硬删某 KB 下的所有文档，返回删除的行数。
-	DeleteByKBID(ctx context.Context, kbID uint64, account string) (int64, error)
+	DeleteByKBID(ctx context.Context, kbID uint64, tenant string) (int64, error)
 }

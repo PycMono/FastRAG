@@ -28,16 +28,15 @@ import (
 // 例外是模型名：向量的实现由 ingestDoc 内部按 model 取（它收名字、不收实现），
 // 所以拼错的模型名要等解析跑完才报——这是合并落库段换来的（用户 2026-10-12 裁定）。
 func (s *Service) Parse(ctx context.Context, in *dto.DocParseDTO) (*vo.DocIngestVO, error) {
-	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Account)
+	kb, err := s.kbRepo.FindByNo(ctx, in.KBNo, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
 
-	// URL 的 scheme 由我们判：gin 的 `url` tag 只要求「带 host 的绝对 URL」，
-	// `ftp://…` 也放行，而两个后端都只认 http(s)。放在解析之前——坏 scheme
-	// 不该白花一次解析的钱（§5、§9）。
-	if !isHTTPScheme(in.URL) {
-		return nil, apperrors.NewParamError("url 只支持 http/https: " + in.URL)
+	// 跨字段/跨约束的请求校验（scheme 等）收在 DTO 上，与 binding tag 同处可查。
+	// 放在解析之前——坏 scheme 不该白花一次解析的钱（§5、§9）。
+	if err := in.Validate(); err != nil {
+		return nil, err
 	}
 
 	// 用哪家解析后端完全由配置决定（config.parser.default）：请求不带这个参数，
@@ -122,15 +121,6 @@ func filenameOf(rawURL string) string {
 
 // maxDocNameLen doc_name 的字符上限，与 knowledge_doc.name VARCHAR(512) 对齐。
 const maxDocNameLen = 512
-
-// isHTTPScheme 只放行 http/https。Docling 的 kind:"http" 与腾讯都只认这两个。
-func isHTTPScheme(rawURL string) bool {
-	u, err := neturl.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return u.Scheme == "http" || u.Scheme == "https"
-}
 
 // deriveDocName doc_name 缺省值：优先用 URL 末段，推不出就退化成一个稳定的哈希名。
 //

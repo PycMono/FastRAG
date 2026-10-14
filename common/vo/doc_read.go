@@ -6,7 +6,7 @@ package vo
 // 背正文会让这个接口的响应体没有上界。正文归详情接口。
 // **也不返回 source_url**：它是库级的，同库每篇都一样，逐篇显示是抄 N 遍。
 type DocListItemVO struct {
-	DocID      uint64 `json:"doc_id"`
+	DocID      uint64 `json:"doc_id,string"` // 字符串，理由见 DocIngestVO
 	DocName    string `json:"doc_name"`
 	Title      string `json:"title"`
 	ChunkCount int    `json:"chunk_count"`
@@ -17,7 +17,7 @@ type DocListItemVO struct {
 
 // DocDetailVO 单篇详情。
 type DocDetailVO struct {
-	DocID       uint64 `json:"doc_id"`
+	DocID       uint64 `json:"doc_id,string"` // 字符串，理由见 DocIngestVO
 	DocName     string `json:"doc_name"`
 	Title       string `json:"title"`
 	Content     string `json:"content"` // 整篇原文；format=chunks 进来的是空串

@@ -17,9 +17,9 @@ type SplitOptionsDTO struct {
 
 // DocIngestDTO 文档导入请求
 //
-// Account 是普通参数（§6），不做鉴权解析。
+// Tenant 是普通参数（§6），不做鉴权解析。
 type DocIngestDTO struct {
-	Account      string           `json:"account" binding:"required,max=64"`
+	Tenant       string           `json:"tenant" binding:"required,max=64"`
 	KBNo         string           `json:"kb_no" binding:"required,max=64"`
 	DocName      string           `json:"doc_name" binding:"required,max=512"`
 	Format       string           `json:"format" binding:"required,oneof=markdown text chunks"`
@@ -56,13 +56,13 @@ func (in *DocIngestDTO) ChunkOptions() (domainservice.ChunkOptions, error) {
 
 // DocDeleteDTO 文档删除请求
 type DocDeleteDTO struct {
-	Account string `json:"account" binding:"required,max=64"`
+	Tenant  string `json:"tenant" binding:"required,max=64"`
 	KBNo    string `json:"kb_no" binding:"required,max=64"`
 	DocName string `json:"doc_name" binding:"required,max=512"`
 }
 
 // KBDeleteDTO 知识库删除请求：硬删该 KB 的全部文档并清理 ES（KB 行本身由外部维护）
 type KBDeleteDTO struct {
-	Account string `json:"account" binding:"required,max=64"`
-	KBNo    string `json:"kb_no" binding:"required,max=64"`
+	Tenant string `json:"tenant" binding:"required,max=64"`
+	KBNo   string `json:"kb_no" binding:"required,max=64"`
 }

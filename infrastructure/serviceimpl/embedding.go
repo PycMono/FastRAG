@@ -82,7 +82,7 @@ func (e *Embedding) Model() string { return e.model }
 // 检索结果全错但看起来一切正常。
 //
 // 空文本（含纯空白）**不发给上游**，返回值留 nil，但绝不改变返回的条数——
-// 下游 factory.BuildVectorDocs 会拿条数跟切片数对齐，少一条就 panic。
+// 下游 factory.BuildVectorDocs 会拿条数跟切片数对齐，少一条就报错。
 //
 // 为什么非要挑出来：DashScope 收到 texts 里任何一个空串，**整批**都会改用一个
 // 别的模型、返回 2560 维（实测 2026-10-09，只有 "" 触发，空白串不触发），然后

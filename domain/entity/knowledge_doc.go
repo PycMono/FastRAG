@@ -21,31 +21,17 @@ package entity
 // 没有 State 列：导入是同步的两写（ES → MySQL），没有「处理中/失败」的中间态。
 // 中途失败要么什么都没写（ES 层），要么产生孤儿切片（MySQL 层，由查询侧存活校验兜住）。
 type KnowledgeDoc struct {
-	ID      uint64 `gorm:"column:id;primaryKey"`                       // 雪花 ID，写入前预分配（无 autoIncrement）
-	KBID    uint64 `gorm:"column:kb_id;type:bigint unsigned;not null"` // 所属库，对应 knowledge.id
-	Account string `gorm:"column:account;type:varchar(64);not null"`   // 租户，检索时 term(account) 过滤用
-	Name    string `gorm:"column:name;type:varchar(512);not null"`     // 文档身份 = (KBID, Name)，同名重导入即更新
-
-	// Title 只是展示字段，**不参与任何判定**——一旦它参与身份，「改标题」就会
-	// 变成「新文档」，而「同名重导入 = 更新、doc_id 不变」正是这套写侧逻辑的支点。
-	Title string `gorm:"column:title;type:varchar(255);not null;default:''"`
-	// Content 整篇原文（markdown 或纯文本）。format=chunks 进来的存**空串**——
-	// 服务端手里从来没有过完整正文，把切片按 order 拼起来是伪造，不是原文。
-	Content string `gorm:"column:content;type:mediumtext;not null"`
-
-	// HasContent **不是表上的列**：只由 ListByKB 的 `CHAR_LENGTH(content) > 0`
-	// 表达式填充——列表不把正文拉回来，但页面要知道这篇有没有原文。
-	//
-	// `->` 是 GORM 的**只读**权限标记：它进不了 INSERT / UPDATE，所以 Save
-	// 不受影响（Create 的列清单里没有它）。**别去掉它**，去掉之后 Create
-	// 会往一条不存在的列上写，每次导入都失败。
-	HasContent bool `gorm:"column:has_content;->"`
-
-	ContentHash string `gorm:"column:content_hash;type:char(64);not null"`     // 内容指纹 SHA256，未变则跳过重灌
-	ChunkCount  int    `gorm:"column:chunk_count;type:int;not null;default:0"` // 切片数，本次灌进 ES 的切片条数
-
-	CreateTs int64 `gorm:"column:create_ts;type:bigint;not null"` // 首次导入时间
-	UpdateTs int64 `gorm:"column:update_ts;type:bigint;not null"` // 最近一次导入/更新时间
+	ID          uint64 `gorm:"column:id;primaryKey"`                               // 雪花 ID，写入前预分配（无 autoIncrement）
+	KBID        uint64 `gorm:"column:kb_id;type:bigint unsigned;not null"`         // 所属库，对应 knowledge.id
+	Tenant      string `gorm:"column:tenant;type:varchar(64);not null"`            // 租户，检索时 term(tenant) 过滤用
+	Name        string `gorm:"column:name;type:varchar(512);not null"`             // 文档身份 = (KBID, Name)，同名重导入即更新
+	Title       string `gorm:"column:title;type:varchar(255);not null;default:''"` // Title 只是展示字段，**不参与任何判定**——一旦它参与身份，「改标题」就会
+	Content     string `gorm:"column:content;type:mediumtext;not null"`            // Content 整篇原文（markdown 或纯文本）。format=chunks 进来的存**空串**——
+	HasContent  bool   `gorm:"column:has_content;->"`                              // HasContent **不是表上的列**：只由 ListByKB 的 `CHAR_LENGTH(content) > 0`
+	ContentHash string `gorm:"column:content_hash;type:char(64);not null"`         // 内容指纹 SHA256，未变则跳过重灌
+	ChunkCount  int    `gorm:"column:chunk_count;type:int;not null;default:0"`     // 切片数，本次灌进 ES 的切片条数
+	CreateTs    int64  `gorm:"column:create_ts;type:bigint;not null"`              // 首次导入时间
+	UpdateTs    int64  `gorm:"column:update_ts;type:bigint;not null"`              // 最近一次导入/更新时间
 }
 
 func (KnowledgeDoc) TableName() string { return "knowledge_doc" }

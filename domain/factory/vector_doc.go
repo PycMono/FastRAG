@@ -3,9 +3,11 @@ package factory
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"time"
 
+	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/repository"
 )
@@ -38,11 +40,14 @@ func BuildVectorDocs(
 	chunks entity.Chunks,
 	titleVecs, contentVecs [][]float32,
 	now time.Time,
-) []repository.VectorDoc {
+) ([]repository.VectorDoc, error) {
 	if len(titleVecs) != len(chunks) || len(contentVecs) != len(chunks) {
-		// 向量条数与切片数必须一一对应；对不上属于调用方 bug，
-		// 直接 panic 比写出一半脏数据好
-		panic("factory: 向量条数与切片数不一致")
+		// 向量条数与切片数必须一一对应；对不上属于调用方 bug。
+		// 这里返回错误而不是 panic：本函数在导入请求的路径上，
+		// panic 会连累整个进程，而错位的向量本可以让这次请求单独失败
+		return nil, apperrors.NewSysError(apperrors.CodeInternal, fmt.Sprintf(
+			"向量条数与切片数不一致：标题 %d / 正文 %d / 切片 %d",
+			len(titleVecs), len(contentVecs), len(chunks)))
 	}
 
 	ts := now.UnixMilli()
@@ -50,7 +55,7 @@ func BuildVectorDocs(
 	for i, c := range chunks {
 		docs[i] = repository.VectorDoc{
 			ChunkID:     ChunkID(docID, c.Order, c.Content),
-			Account:     kb.Account,
+			Tenant:      kb.Tenant,
 			KBID:        kb.ID,
 			DocID:       docID,
 			Order:       c.Order,
@@ -62,7 +67,7 @@ func BuildVectorDocs(
 			CreateTs:    ts,
 		}
 	}
-	return docs
+	return docs, nil
 }
 
 // ChunkIDs 取出切片 ID 列表，供 §5.2 第 ② 步的差集清理使用。

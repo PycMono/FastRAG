@@ -79,10 +79,21 @@ services:
     command: ["docling-serve", "run"]
     environment:
       - DOCLING_SERVE_ENABLE_UI=1          # 带 /ui，手工试转换时好用
+      # 同步接口在服务端等多久才放弃。默认只有 120s，且**超时只回 504**——
+      # 客户端那边 config.json 的 parser.timeout_ms 是 20 分钟，比它长也没用：
+      # 到点先挨刀的是这里。所以两边必须一起抬，且本值要 ≥ 客户端超时。
+      - DOCLING_SERVE_MAX_SYNC_WAIT=1260   # 秒，21 分钟
     ports:
       - "5001:5001"
     volumes:
       - doclingcache:/opt/app-root/src/.cache
+    # 16G 上限。不是"给它 16G 用"，是**给自己留个死法**：不加限时它处理扫描版
+    # PDF（OCR）实测能吃到 8G+ 还在涨，真冲爆就轮到整个 VM 的内核挑一个杀——
+    # 那时被挑中的很可能是 ES 或者 MySQL。加了限，死的是它自己，报 OOM。
+    #
+    # 这个数要**小于 Docker Desktop 的 VM 内存**才有意义。本机 VM 已从 12G 抬到
+    # 24G（宿主 32G），见 docs 里的环境说明；若哪天把 VM 改小，这里要同步改小。
+    mem_limit: 16g
     restart: unless-stopped
 
 volumes:

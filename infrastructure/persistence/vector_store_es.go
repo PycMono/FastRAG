@@ -555,12 +555,21 @@ func (s *ESVectorStore) runQuery(
 func (s *ESVectorStore) bm25Body(req repository.VectorSearchReq) map[string]any {
 	// boost 的取值：标题命中比正文命中强得多——一份文档里正文到处都是
 	// 常见词，标题才真正说明这篇在讲什么
-	fields := []string{constants.FieldTitle + "^3", constants.FieldHeadingPath + "^2", constants.FieldContent}
+	fields := []struct {
+		field string
+		boost float64
+	}{
+		{constants.FieldTitle, 3},
+		{constants.FieldHeadingPath, 2},
+		{constants.FieldContent, 1},
+	}
 
 	should := make([]any, 0, len(fields))
 	for _, f := range fields {
 		should = append(should, map[string]any{
-			"match": map[string]any{f: map[string]any{"query": req.Query}},
+			"match": map[string]any{
+				f.field: map[string]any{"query": req.Query, "boost": f.boost},
+			},
 		})
 	}
 
@@ -570,7 +579,7 @@ func (s *ESVectorStore) bm25Body(req repository.VectorSearchReq) map[string]any 
 			"bool": map[string]any{
 				// filter 里的条件不参与打分，只做范围限定。
 				// 租户隔离必须走这里——放进 must 的话，
-				// 一个 account 的匹配会把 BM25 分数整体抬高
+				// 一个 tenant 的匹配会把 BM25 分数整体抬高
 				"filter":               s.filters(req),
 				"should":               should,
 				"minimum_should_match": 1,
@@ -620,7 +629,7 @@ func (s *ESVectorStore) knnClauses(req repository.VectorSearchReq) []any {
 			"k":              k,
 			"num_candidates": numCandidates,
 			// filter 必须挂在**每条子句**上，不能只挂请求外层。
-			// 漏掉一条 = 那条子句跨租户召回，account 隔离就只剩一半（D2）
+			// 漏掉一条 = 那条子句跨租户召回，tenant 隔离就只剩一半（D2）
 			"filter": s.filters(req),
 		})
 	}
@@ -629,11 +638,11 @@ func (s *ESVectorStore) knnClauses(req repository.VectorSearchReq) []any {
 
 // filters 所有「只做范围限定、不参与打分」的条件。
 //
-// account 必须在最前，且必须用 term：它是单索引下唯一的租户隔离手段（D2）。
+// tenant 必须在最前，且必须用 term：它是单索引下唯一的租户隔离手段（D2）。
 // 写成 match 会按分词匹配，A 租户能查到 B 租户的数据——那是越权，不是召回问题。
 func (s *ESVectorStore) filters(req repository.VectorSearchReq) []any {
 	out := []any{
-		map[string]any{"term": map[string]any{constants.FieldAccount: req.Account}},
+		map[string]any{"term": map[string]any{constants.FieldTenant: req.Tenant}},
 	}
 	if len(req.KBIDs) > 0 {
 		out = append(out, map[string]any{"terms": map[string]any{constants.FieldKbId: req.KBIDs}})
@@ -645,8 +654,8 @@ func (s *ESVectorStore) filters(req repository.VectorSearchReq) []any {
 func buildFilter(f repository.VectorFilter) (map[string]any, bool) {
 	must := make([]any, 0, 3)
 
-	if f.Account != "" {
-		must = append(must, map[string]any{"term": map[string]any{constants.FieldAccount: f.Account}})
+	if f.Tenant != "" {
+		must = append(must, map[string]any{"term": map[string]any{constants.FieldTenant: f.Tenant}})
 	}
 	if f.KBID != 0 {
 		must = append(must, map[string]any{"term": map[string]any{constants.FieldKbId: f.KBID}})
@@ -665,9 +674,9 @@ func buildFilter(f repository.VectorFilter) (map[string]any, bool) {
 //
 // 与 buildFilter 的关系：过滤条件交给 buildFilter 生成，但**不靠它兜底**——
 // 它只在三个条件**全空**时拒绝，只给 DocID 它照样放行。枚举切片必须同时
-// 有 account 与 doc_id，所以这里显式要求两者在场，缺一个就返回 false。
+// 有 tenant 与 doc_id，所以这里显式要求两者在场，缺一个就返回 false。
 func listBody(f repository.VectorFilter, offset, limit int) (map[string]any, bool) {
-	if f.Account == "" || f.DocID == 0 {
+	if f.Tenant == "" || f.DocID == 0 {
 		return nil, false
 	}
 	cond, ok := buildFilter(f)
@@ -695,7 +704,7 @@ func (s *ESVectorStore) ListByDoc(
 ) ([]repository.VectorHit, int64, error) {
 	body, ok := listBody(f, offset, limit)
 	if !ok {
-		return nil, 0, apperrors.NewParamError("枚举切片必须同时指定 account 与 doc_id")
+		return nil, 0, apperrors.NewParamError("枚举切片必须同时指定 tenant 与 doc_id")
 	}
 	return s.runQuery(ctx, body)
 }
@@ -709,7 +718,7 @@ func sourceFields() []string {
 
 func vectorDocBody(d repository.VectorDoc) map[string]any {
 	return map[string]any{
-		constants.FieldAccount:     d.Account,
+		constants.FieldTenant:      d.Tenant,
 		constants.FieldKbId:        d.KBID,
 		constants.FieldDocId:       d.DocID,
 		constants.FieldChunkId:     d.ChunkID,

@@ -24,7 +24,7 @@ func NewDoc(
 	return &entity.KnowledgeDoc{
 		ID:          docID,
 		KBID:        kb.ID,
-		Account:     kb.Account,
+		Tenant:      kb.Tenant,
 		Name:        name,
 		Title:       title,
 		Content:     content,

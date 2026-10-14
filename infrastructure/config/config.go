@@ -33,7 +33,7 @@ type Config struct {
 // 默认零值 = false = 拒绝启动。这是刻意的：让「开箱即跑」这个动作
 // 在部署时（有人看日志）失败，而不是在生产时静默地不设防。
 type SecurityConfig struct {
-	TrustRequestAccount bool `json:"trust_request_account"`
+	TrustRequestTenant bool `json:"trust_request_tenant"`
 }
 
 // ESConfig Elasticsearch 配置（json key 就是 "es"，字段名跟着 key 走）。

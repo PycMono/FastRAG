@@ -16,17 +16,17 @@ import (
 // ─── mock 实现 ───────────────────────────────────────────────────────────────
 
 type mockKBRepo struct {
-	load func(ctx context.Context, nos []string, account string) (entity.Knowledges, error)
+	load func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error)
 }
 
-func (m *mockKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
+func (m *mockKBRepo) FindByNo(ctx context.Context, no, tenant string) (*entity.Knowledge, error) {
 	return nil, nil
 }
-func (m *mockKBRepo) FindByID(ctx context.Context, id uint64, account string) (*entity.Knowledge, error) {
+func (m *mockKBRepo) FindByID(ctx context.Context, id uint64, tenant string) (*entity.Knowledge, error) {
 	return nil, nil
 }
-func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
-	return m.load(ctx, nos, account)
+func (m *mockKBRepo) FindByNos(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
+	return m.load(ctx, nos, tenant)
 }
 func (m *mockKBRepo) ApplyChunkDelta(ctx context.Context, kbID uint64, delta int64) error { return nil }
 func (m *mockKBRepo) ApplyDocDelta(ctx context.Context, kbID uint64, delta int64) error   { return nil }
@@ -53,7 +53,7 @@ func (m *mockDocRepo) Save(ctx context.Context, doc *entity.KnowledgeDoc) (oldCh
 func (m *mockDocRepo) Delete(ctx context.Context, kbID uint64, name string) (*entity.KnowledgeDoc, error) {
 	return nil, nil
 }
-func (m *mockDocRepo) DeleteByKBID(ctx context.Context, kbID uint64, account string) (int64, error) {
+func (m *mockDocRepo) DeleteByKBID(ctx context.Context, kbID uint64, tenant string) (int64, error) {
 	return 0, nil
 }
 
@@ -152,19 +152,19 @@ func newSearchServiceForTest(
 
 func defaultKB() *entity.Knowledge {
 	return &entity.Knowledge{
-		ID:      1,
-		No:      "demo-kb",
-		Account: "demo",
-		Name:    "测试知识库",
+		ID:     1,
+		No:     "demo-kb",
+		Tenant: "demo",
+		Name:   "测试知识库",
 	}
 }
 
 func defaultDoc() *entity.KnowledgeDoc {
 	return &entity.KnowledgeDoc{
-		ID:      100,
-		KBID:    1,
-		Account: "demo",
-		Name:    "doc.md",
+		ID:     100,
+		KBID:   1,
+		Tenant: "demo",
+		Name:   "doc.md",
 	}
 }
 
@@ -172,7 +172,7 @@ func defaultDoc() *entity.KnowledgeDoc {
 
 func TestService_Search_NoRerank(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -200,7 +200,7 @@ func TestService_Search_NoRerank(t *testing.T) {
 
 	// rerank_switch=false 时不应调用 rerank
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:      "demo",
+		Tenant:       "demo",
 		KBNos:        []string{"demo-kb"},
 		Query:        "test",
 		Limit:        5,
@@ -220,7 +220,7 @@ func TestService_Search_NoRerank(t *testing.T) {
 
 func TestService_Search_RerankSuccess(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -250,7 +250,7 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:      "demo",
+		Tenant:       "demo",
 		KBNos:        []string{"demo-kb"},
 		Query:        "test",
 		Limit:        5,
@@ -288,7 +288,7 @@ func TestService_Search_RerankSuccess(t *testing.T) {
 func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
 	newSvc := func() (*Service, *mockRerank) {
 		kbRepo := &mockKBRepo{
-			load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+			load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 				return entity.Knowledges{defaultKB()}, nil
 			},
 		}
@@ -322,7 +322,7 @@ func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
 		t.Helper()
 		svc, _ := newSvc()
 		res, err := svc.Search(context.Background(), &dto.SearchDTO{
-			Account:      "demo",
+			Tenant:       "demo",
 			KBNos:        []string{"demo-kb"},
 			Query:        "test",
 			Limit:        5,
@@ -367,7 +367,7 @@ func TestService_Search_MinScore_FiltersByFinalScore(t *testing.T) {
 // 把"没上游分"和"上游给了 0 分"混为一谈。
 func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -394,7 +394,7 @@ func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:      "demo",
+		Tenant:       "demo",
 		KBNos:        []string{"demo-kb"},
 		Query:        "test",
 		Limit:        5,
@@ -413,7 +413,7 @@ func TestService_Search_RerankSentinelScore_KeepsFusedScore(t *testing.T) {
 
 func TestService_Search_RerankFailed_Fallback(t *testing.T) {
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -437,7 +437,7 @@ func TestService_Search_RerankFailed_Fallback(t *testing.T) {
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, reranker)
 
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:      "demo",
+		Tenant:       "demo",
 		KBNos:        []string{"demo-kb"},
 		Query:        "test",
 		Limit:        5,
@@ -462,7 +462,7 @@ func TestService_Search_RerankFailed_Fallback(t *testing.T) {
 func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 	var gotFetchSize int
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -493,7 +493,7 @@ func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 
 	retrieveCount := 30
 	res, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:       "demo",
+		Tenant:        "demo",
 		KBNos:         []string{"demo-kb"},
 		Query:         "test",
 		Limit:         10,
@@ -515,7 +515,7 @@ func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 func TestService_Search_RetrieveCount_Default(t *testing.T) {
 	var gotFetchSize int
 	kbRepo := &mockKBRepo{
-		load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+		load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 			return entity.Knowledges{defaultKB()}, nil
 		},
 	}
@@ -533,7 +533,7 @@ func TestService_Search_RetrieveCount_Default(t *testing.T) {
 	svc := newSearchServiceForTest(kbRepo, docRepo, store, &mockEmbedding{dim: 3}, &mockRerank{})
 
 	_, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:      "demo",
+		Tenant:       "demo",
 		KBNos:        []string{"demo-kb"},
 		Query:        "test",
 		Limit:        10,
@@ -577,14 +577,14 @@ func floatPtr(f float64) *float64 { return &f }
 // 注意即便 dense_weight=0（压根不走向量路）也要校验 embed_model——
 // 传了一个用不上的错名字同样应该被指出，而不是被静默忽略。
 func TestService_Search_UnknownModel_FailsBeforeES(t *testing.T) {
-	kbRepo := &mockKBRepo{load: func(ctx context.Context, nos []string, account string) (entity.Knowledges, error) {
+	kbRepo := &mockKBRepo{load: func(ctx context.Context, nos []string, tenant string) (entity.Knowledges, error) {
 		return entity.Knowledges{defaultKB()}, nil
 	}}
 	store := &mockVectorStore{}
 	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{}, Tuning{})
 
 	_, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:    "demo",
+		Tenant:     "demo",
 		KBNos:      []string{"kb1"},
 		Query:      "问题",
 		EmbedModel: "nope",

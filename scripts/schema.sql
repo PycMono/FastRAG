@@ -13,7 +13,7 @@
 --
 -- 刻意**没有**的东西 —— 这几条是防退化闸门，改动前先想清楚（对应设计文档 §4.1）：
 --   · 切片表 —— 切片下沉 ES 是核心决策 D3；
---   · 租户路由表 —— 索引策略是单索引 + term(account)（D2）；
+--   · 租户路由表 —— 索引策略是单索引 + term(tenant)（D2）；
 --   · 对象存储 —— 原文直接进 knowledge_doc.content（2026-10-12），
 --     不引入对象存储、也不做「原文件」的权威副本；因此没有路径列。
 --     （库级来源 URL 是 knowledge.source_url，归建库方维护，不是文档的路径列。）
@@ -28,7 +28,7 @@ USE `fastrag`;
 CREATE TABLE IF NOT EXISTS `knowledge_doc` (
   `id`              BIGINT UNSIGNED NOT NULL COMMENT '雪花 ID，写入前预分配',
   `kb_id`           BIGINT UNSIGNED NOT NULL,
-  `account`         VARCHAR(64)  NOT NULL,
+  `tenant`         VARCHAR(64)  NOT NULL,
   `name`            VARCHAR(512) NOT NULL COMMENT '文档名。同名重导入 = 更新，doc_id 不变',
   `title`           VARCHAR(255) NOT NULL DEFAULT '' COMMENT '展示用标题，与 name（文档身份）分开',
   `content`         MEDIUMTEXT   NOT NULL COMMENT '整篇原文：markdown 或纯文本；format=chunks 时为空串',

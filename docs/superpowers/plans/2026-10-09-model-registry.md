@@ -724,7 +724,7 @@ Expected: 全部 PASS。
     "default_retrieve_count": 0
   },
   "security": {
-    "trust_request_account": true
+    "trust_request_tenant": true
   }
 }
 ```
@@ -1959,7 +1959,7 @@ type stubKBRepo struct {
 	kb *entity.KnowledgeBase
 }
 
-func (s stubKBRepo) LoadByNo(ctx context.Context, no, account string) (*entity.KnowledgeBase, error) {
+func (s stubKBRepo) LoadByNo(ctx context.Context, no, tenant string) (*entity.KnowledgeBase, error) {
 	return s.kb, nil
 }
 
@@ -1983,7 +1983,7 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 	)
 
 	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo",
+		Tenant: "demo",
 		KBNo:    "demo-kb",
 		DocName: "a.md",
 		Format:  "text",
@@ -2198,7 +2198,7 @@ func TestService_Search_UnknownModel_FailsBeforeES(t *testing.T) {
 	svc := NewService(kbRepo, &mockDocRepo{}, store, errEmbeddingRegistry{}, mockRerankRegistry{})
 
 	_, err := svc.Search(context.Background(), &dto.SearchDTO{
-		Account:    "demo",
+		Tenant:    "demo",
 		KBNos:      []string{"kb1"},
 		Query:      "问题",
 		EmbedModel: "nope",
@@ -2401,7 +2401,7 @@ EOF
 # model 指定这篇的向量用哪家算（config.embedding.models 的 key），省略则用 default
 curl -X POST http://localhost:8080/api/v1/docs \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md","format":"text",
+  -d '{"tenant":"demo","kb_no":"demo-kb","doc_name":"产品手册.md","format":"text",
        "model":"bge-m3","content":"……正文……","refresh":true}'
 ```
 
@@ -2415,7 +2415,7 @@ curl -X POST http://localhost:8080/api/v1/docs \
 # 名字不存在返回 code=10001 并列出可用的名字，不会悄悄回落到默认那家
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
+  -d '{"tenant":"demo","kb_nos":["demo-kb"],"query":"如何配置",
        "limit":5,"dense_weight":0.5,"rerank_switch":false,
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
 ```

@@ -5,10 +5,10 @@ package dto
 // 只接受 limit，不接受 offset——RRF 融合在应用层，ES 的 from/size
 // 作用不到融合后的排名（§7.4）。
 type SearchDTO struct {
-	Account string   `json:"account" binding:"required,max=64"`
-	KBNos   []string `json:"kb_nos" binding:"required,min=1,max=10,dive,max=64"`
-	Query   string   `json:"query" binding:"required,max=1000"`
-	Limit   int      `json:"limit" binding:"omitempty,gte=1,lte=100"`
+	Tenant string   `json:"tenant" binding:"required,max=64"`
+	KBNos  []string `json:"kb_nos" binding:"required,min=1,max=10,dive,max=64"`
+	Query  string   `json:"query" binding:"required,max=1000"`
+	Limit  int      `json:"limit" binding:"omitempty,gte=1,lte=100"`
 
 	// RetrieveCount rerank 开启时，ES 召回多少条交给 rerank 精排。
 	// nil 表示用 search.default_retrieve_count，再缺省则 limit*2。

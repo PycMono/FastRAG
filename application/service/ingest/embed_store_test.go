@@ -152,7 +152,7 @@ func (s *stubIDService) NextIntID() int64 { s.next += 100; return s.next }
 
 // 首次导入：库里没有这一行 → 分配新 id、写 ES、清差集、新建文档行并 +1 doc_count。
 func TestEmbedAndStore_FirstImport(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{existing: nil}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
@@ -164,7 +164,7 @@ func TestEmbedAndStore_FirstImport(t *testing.T) {
 		service.NewSplitter(), &stubIDService{}, tm)
 
 	out, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo", KBNo: "kb-1", DocName: "a.md",
+		Tenant: "demo", KBNo: "kb-1", DocName: "a.md",
 		Format: "text", Content: "第一段正文。\n\n第二段正文。",
 	})
 	if err != nil {
@@ -200,7 +200,7 @@ func TestEmbedAndStore_FirstImport(t *testing.T) {
 // Review Focus 第 1 条：同名重导入必须**沿用库里那一行的 id**。
 // id 一换就双向静默失效——新切片成孤儿、DeleteExcept 删不到旧切片。
 func TestEmbedAndStore_Reimport_KeepsDocID(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{existing: &entity.KnowledgeDoc{ID: 42, KBID: 7, Name: "a.md", ChunkCount: 2}}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
@@ -211,7 +211,7 @@ func TestEmbedAndStore_Reimport_KeepsDocID(t *testing.T) {
 		service.NewSplitter(), &stubIDService{}, &stubTm{})
 
 	out, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo", KBNo: "kb-1", DocName: "a.md",
+		Tenant: "demo", KBNo: "kb-1", DocName: "a.md",
 		Format: "text", Content: "改过的正文",
 	})
 	if err != nil {
@@ -251,7 +251,7 @@ func (r *countingEmbeddingRegistry) Get(name string) (interfaces.IEmbedding, err
 // 向量实现是逐请求取的：两次导入各取一次，且用的是请求给的名字。
 // 存回 Service 的字段上就是单例数据竞争（见 ingestDoc 的注释）。
 func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	reg := &countingEmbeddingRegistry{e: stubEmbedding{dim: 4}}
 	svc := NewService(
 		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
@@ -263,7 +263,7 @@ func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
 
 	for _, model := range []string{"m1", "m2"} {
 		if _, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-			Account: "demo", KBNo: "kb-1", DocName: "a.md",
+			Tenant: "demo", KBNo: "kb-1", DocName: "a.md",
 			Format: "text", Content: "正文。", Model: model,
 		}); err != nil {
 			t.Fatal(err)
@@ -279,7 +279,7 @@ func TestIngest_ResolvesEmbedderPerRequest(t *testing.T) {
 
 // 原文进台账：content 存的就是请求里的正文本身，title 用 doc_name。
 func TestIngest_DocContentIsLedgered(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	kb := &entity.Knowledge{ID: 7, Tenant: "demo", No: "demo-kb"}
 	docRepo := &stubDocRepo{existing: nil}
 	svc := NewService(
 		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
@@ -289,7 +289,7 @@ func TestIngest_DocContentIsLedgered(t *testing.T) {
 		service.NewSplitter(), &stubIDService{}, &stubTm{})
 
 	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo", KBNo: "demo-kb", DocName: "手册.md",
+		Tenant: "demo", KBNo: "demo-kb", DocName: "手册.md",
 		Format: constants.FormatMarkdown, Content: "# 手册\n\n正文正文正文",
 	})
 	if err != nil {
@@ -309,7 +309,7 @@ func TestIngest_DocContentIsLedgered(t *testing.T) {
 // 上限守卫：超限**拒收**，且必须早于切片与任何一次 ES 写。
 // 用 src 闭包里 t.Fatal 钉住顺序——守卫若挪到 src 之后，这条用例会直接失败。
 func TestIngestDoc_RejectsOversizedContent(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	kb := &entity.Knowledge{ID: 7, Tenant: "demo", No: "demo-kb"}
 	docRepo := &stubDocRepo{}
 	store := &stubStore{}
 	svc := NewService(
@@ -346,7 +346,7 @@ func TestIngestDoc_RejectsOversizedContent(t *testing.T) {
 // 把切片按 order 拼起来是伪造、不是原文（设计文档 §2.3）。这条钉住两件事：
 // 落库 content == ""，且**没有**把任何一条切片的内容拼进去。
 func TestIngest_ChunksFormatStoresEmptyContent(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, Account: "demo", No: "demo-kb"}
+	kb := &entity.Knowledge{ID: 7, Tenant: "demo", No: "demo-kb"}
 	docRepo := &stubDocRepo{existing: nil}
 	svc := NewService(
 		&stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}},
@@ -362,7 +362,7 @@ func TestIngest_ChunksFormatStoresEmptyContent(t *testing.T) {
 	}
 
 	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo", KBNo: "demo-kb", DocName: "已切好的.md",
+		Tenant: "demo", KBNo: "demo-kb", DocName: "已切好的.md",
 		Format: constants.FormatChunks, Chunks: chunks,
 	})
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	ginsdk "github.com/PycMono/go-gin-sdk"
+	logsdk "github.com/PycMono/go-logger-sdk"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,5 +29,8 @@ func (ctl *Controller) Search(c *gin.Context) {
 	}
 
 	result, err := ctl.service.Search(c.Request.Context(), &param)
+	if err != nil {
+		logsdk.Error(c, "知识库检索报错", logsdk.Err(err))
+	}
 	ginsdk.Send(c, result, err)
 }

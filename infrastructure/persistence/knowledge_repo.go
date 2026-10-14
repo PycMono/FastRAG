@@ -14,7 +14,7 @@ import (
 
 // KnowledgeRepo 知识库仓储（只读）。
 //
-// 这一层是租户隔离的最后一道闸：所有语句都带 account = ?，
+// 这一层是租户隔离的最后一道闸：所有语句都带 tenant = ?，
 // 漏写在 code review 里能看出来，靠每个用例自己记得加则看不出来。
 type KnowledgeRepo struct {
 	provider sqlsdk.Provider
@@ -29,11 +29,11 @@ func (r *KnowledgeRepo) db(ctx context.Context) *gorm.DB {
 }
 
 func (r *KnowledgeRepo) FindByNo(
-	ctx context.Context, no, account string,
+	ctx context.Context, no, tenant string,
 ) (*entity.Knowledge, error) {
 	var kb entity.Knowledge
 	err := r.db(ctx).
-		Where("no = ? AND account = ?", no, account).
+		Where("no = ? AND tenant = ?", no, tenant).
 		First(&kb).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -49,15 +49,15 @@ func (r *KnowledgeRepo) FindByNo(
 }
 
 func (r *KnowledgeRepo) FindByID(
-	ctx context.Context, id uint64, account string,
+	ctx context.Context, id uint64, tenant string,
 ) (*entity.Knowledge, error) {
 	var kb entity.Knowledge
 	err := r.db(ctx).
-		Where("id = ? AND account = ?", id, account).
+		Where("id = ? AND tenant = ?", id, tenant).
 		First(&kb).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// 与 FindByNo 同一口径：不存在与 account 不符折叠成一个错。
+		// 与 FindByNo 同一口径：不存在与 tenant 不符折叠成一个错。
 		// 分开的话，拿别人的 doc_id 反复试就能问出「这个库存不存在」
 		return nil, apperrors.ErrKnowledgeBaseNotFound
 	}
@@ -68,7 +68,7 @@ func (r *KnowledgeRepo) FindByID(
 }
 
 func (r *KnowledgeRepo) FindByNos(
-	ctx context.Context, nos []string, account string,
+	ctx context.Context, nos []string, tenant string,
 ) (entity.Knowledges, error) {
 	if len(nos) == 0 {
 		return nil, nil
@@ -78,7 +78,7 @@ func (r *KnowledgeRepo) FindByNos(
 	// 省掉「先扫进 []struct 再转一遍指针」的循环
 	var kbs entity.Knowledges
 	if err := r.db(ctx).
-		Where("no IN ? AND account = ?", nos, account).
+		Where("no IN ? AND tenant = ?", nos, tenant).
 		Find(&kbs).Error; err != nil {
 		return nil, apperrors.ErrInternal.Wrap(err)
 	}

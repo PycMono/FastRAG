@@ -157,9 +157,9 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
 | `embedding` / `rerank` | 模型服务商注册表 | 结构见下一节「模型配置」 |
 | `search` | 混合检索的默认参数 | `dense_weight` / `rank_constant` 等，可被单次请求覆盖 |
 | `parser` | 文档解析后端注册表 | `POST /api/v1/docs/parse` 用；结构与 `embedding` 同类，见下 |
-| `security` | `trust_request_account` 启动闸门 | 见「租户与鉴权」 |
+| `security` | `trust_request_tenant` 启动闸门 | 见「租户与鉴权」 |
 
-`security` 不置 `trust_request_account=true`，服务**拒绝启动**（§6.1）；
+`security` 不置 `trust_request_tenant=true`，服务**拒绝启动**（§6.1）；
 `search` 各键与 `dense_weight` 的取值语义见「API 示例」里的检索说明。
 
 ## 模型配置
@@ -284,11 +284,11 @@ Docling 能等，腾讯要卡小）：
 | `10201`–`10206` | 文档：切片为空 / 切片过长 / 导入失败 / 删除失败 / embedding 异常 / 向量库异常 |
 | `10301`–`10302` | 检索失败 / rerank 服务失败 |
 | `10401` | 解析失败：解析上游超时 / 返回非 200 / 返回体不可解析 |
-| `10501` | 文档不存在：`doc_id` 查无此行，**或**该行不属于这个 `account`（两者同一个码） |
+| `10501` | 文档不存在：`doc_id` 查无此行，**或**该行不属于这个 `tenant`（两者同一个码） |
 
 `10101`–`10106` 里，知识库的 CRUD 错误码已基本无主：CRUD 全在外部系统里（§1.2），
 本服务不提供对应接口。**唯一还在用的是 `10101`（库不存在）**——`FindByNo` 找不到库、
-或 account 不匹配时都会返回它（`knowledge_repo.go`）。其余 `10102`–`10106` 只剩兼容
+或 tenant 不匹配时都会返回它（`knowledge_repo.go`）。其余 `10102`–`10106` 只剩兼容
 意义，其中 `10106`（检索未实现）尤其名不副实——检索早已落地并改用 `10301`，别再用；
 `10102`–`10106` 现在只被 `common/errors/errors_test.go` 引用。
 `10501` 沿用同一条原则：详情 / 切片接口拿到的 `doc_id` 不属于该租户时，返回的与「不存在」
@@ -304,18 +304,18 @@ Docling 能等，腾讯要卡小）：
 
 ## 租户与鉴权
 
-**本服务不做鉴权**：租户 `account` 就是请求体里的一个普通字符串参数，不做任何校验。
+**本服务不做鉴权**：租户 `tenant` 就是请求体里的一个普通字符串参数，不做任何校验。
 
 它同时是单索引多租户的隔离键（设计文档 D2、§9）：ES 里同一份索引装着所有租户的切片，
-靠 `account` 这个 `keyword` 字段做 term 过滤（**不能是 text**——用分词匹配的话
+靠 `tenant` 这个 `keyword` 字段做 term 过滤（**不能是 text**——用分词匹配的话
 `demo` 会命中 `demo-other` 的文档，那是越权而不是召回变小），MySQL 侧每个查询也都带
-`account` 条件。
+`tenant` 条件。
 
-这等于把「调用方必须自己保证 `account` 是真的」当前提：网关、内部服务间调用都行，
-但一旦把 `account` 直接暴露给终端用户，改一个字段就能读到别人的库。
+这等于把「调用方必须自己保证 `tenant` 是真的」当前提：网关、内部服务间调用都行，
+但一旦把 `tenant` 直接暴露给终端用户，改一个字段就能读到别人的库。
 
-`security.trust_request_account` 就是把这条前提变成一次显式承认——不置为 `true`
-服务直接拒绝启动（`infrastructure/init.go` 的 `checkTrustRequestAccount`，§6.1）。
+`security.trust_request_tenant` 就是把这条前提变成一次显式承认——不置为 `true`
+服务直接拒绝启动（`infrastructure/init.go` 的 `checkTrustRequestTenant`，§6.1）。
 这道闸门防的是「把服务顺手摆到公网上」这种改动，代码本身不会因此报任何错。
 
 ## 演示页
@@ -333,7 +333,7 @@ Docling 能等，腾讯要卡小）：
 ![演示页](docs/demo.png)
 
 两点别误会：分页只翻**本次返回**的前 `limit`（≤100）条，服务端不做深翻页（§13 明确不做）；
-页面默认的 `account` / `kb` 是写死的演示值，它不读 URL、也不该读——演示态不该背隐藏配置。
+页面默认的 `tenant` / `kb` 是写死的演示值，它不读 URL、也不该读——演示态不该背隐藏配置。
 
 第三点：页面右侧多了一张「按文档浏览」的卡——先列该库下的文档，点开看整篇原文与切片。
 它走的是上面那三条只读 GET；检索命中卡片上也挂了「看整篇」，直接跳到同一篇的详情。
@@ -351,28 +351,28 @@ Docling 能等，腾讯要卡小）：
 # model 指定这篇的向量用哪家算（config.embedding.models 的 key），省略则用 default
 curl -X POST http://localhost:8080/api/v1/docs \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md","format":"text",
+  -d '{"tenant":"demo","kb_no":"demo-kb","doc_name":"产品手册.md","format":"text",
        "model":"bge-m3","content":"……正文……","refresh":true}'
 
 # 批量导入：请求体是数组，最多 100 篇。恒返回 200 + 逐条明细，
 # 单条失败不改状态码——否则调用方分不清「全挂」和「挂 3 条」，只能整批重试
 curl -X POST http://localhost:8080/api/v1/docs/batch \
   -H 'Content-Type: application/json' \
-  -d '[{"account":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text","content":"…"},
-       {"account":"demo","kb_no":"demo-kb","doc_name":"b.md","format":"text","content":"…"}]'
+  -d '[{"tenant":"demo","kb_no":"demo-kb","doc_name":"a.md","format":"text","content":"…"},
+       {"tenant":"demo","kb_no":"demo-kb","doc_name":"b.md","format":"text","content":"…"}]'
 
 # 解析导入：给一个可公网下载的 URL，服务端解析成 markdown 后入库
 # 用哪家后端由 config.parser.default 决定（改配置重启即换）；
 # doc_name 省略时取 URL 末段（去查询串、百分号解码）
 curl -sS -X POST http://127.0.0.1:8080/api/v1/docs/parse -H 'Content-Type: application/json' -d '{
-  "account": "demo", "kb_no": "demo-kb",
+  "tenant": "demo", "kb_no": "demo-kb",
   "url": "https://example.com/xxx.pdf", "refresh": true
 }'
 
 # 删除文档（POST 而非 DELETE：DELETE 带 body 合法，但网关和客户端库常把它丢掉）
 curl -X POST http://localhost:8080/api/v1/docs/delete \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_no":"demo-kb","doc_name":"产品手册.md"}'
+  -d '{"tenant":"demo","kb_no":"demo-kb","doc_name":"产品手册.md"}'
 
 # 检索。dense_weight 省略则用配置默认值；<0.01 只走 BM25，>0.99 只走 kNN
 # rerank_switch=true 且 config.rerank.enabled=true 时会调用精排；
@@ -385,10 +385,10 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
 # 所以关掉精排还填 0.9 会把结果全筛光
 #
 # 早先的 `biz_tags` 请求参数已移除：带上它不会再报错，而是被**静默忽略**——
-# 别以为它还在筛库，请求会照常按 account 检索全部 kb_nos
+# 别以为它还在筛库，请求会照常按 tenant 检索全部 kb_nos
 curl -X POST http://localhost:8080/api/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"account":"demo","kb_nos":["demo-kb"],"query":"如何配置",
+  -d '{"tenant":"demo","kb_nos":["demo-kb"],"query":"如何配置",
        "limit":5,"dense_weight":0.5,"min_score":0,"rerank_switch":false,
        "embed_model":"bge-m3","rerank_model":"qwen3-rerank"}'
 
@@ -398,16 +398,16 @@ curl -X POST http://localhost:8080/api/v1/search \
 
 # 列某库下的文档（分页）。**刻意不返回正文**——列表是导航用的，
 # 一页几十篇背正文会让响应体没有上界；也不返回 source_url（库级的，每篇都一样）
-curl 'http://localhost:8080/api/v1/docs?account=demo&kb_no=demo-kb&page=1&page_size=10'
+curl 'http://localhost:8080/api/v1/docs?tenant=demo&kb_no=demo-kb&page=1&page_size=10'
 
 # 单篇详情：整篇原文 + 库级来源 URL。
-# doc_id 查无此行、或不属于该 account，都返回 10501
-curl 'http://localhost:8080/api/v1/docs/detail?account=demo&doc_id=12'
+# doc_id 查无此行、或不属于该 tenant，都返回 10501
+curl 'http://localhost:8080/api/v1/docs/detail?tenant=demo&doc_id=12'
 
 # 枚举某篇的切片。limit 默认 200、封顶 500（超了**钳到** 500，不像 page_size 那样报错）
 # total=0 是**合法状态**：ES 可见性有两档延迟，刚导入的文档原文立刻能看、
 # 切片要等下一轮刷新（最长约 30s）
-curl 'http://localhost:8080/api/v1/docs/chunks?account=demo&doc_id=12&limit=200&offset=0'
+curl 'http://localhost:8080/api/v1/docs/chunks?tenant=demo&doc_id=12&limit=200&offset=0'
 
 # 探针
 curl http://localhost:8080/health

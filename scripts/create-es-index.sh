@@ -15,8 +15,8 @@
 #
 # ─── 字段为什么这么定（改之前先读） ────────────────────────────────────────────
 #
-# · account / chunk_id 必须是 keyword，不能是 text。
-#   account 是**单索引多租户下唯一的隔离手段**（D2），隔离靠 term 查询打在它身上。
+# · tenant / chunk_id 必须是 keyword，不能是 text。
+#   tenant 是**单索引多租户下唯一的隔离手段**（D2），隔离靠 term 查询打在它身上。
 #   一旦它变成 text，term 会按分词匹配，「demo」就能命中「demo-other」的文档 ——
 #   那是跨租户越权，不是召回变小；chunk_id（主键语义，也是 _id 的来源）同理。
 #
@@ -66,7 +66,7 @@ curl -sS --fail-with-body -XPUT 'http://127.0.0.1:9200/fastrag' \
   },
   "mappings": {
     "properties": {
-      "account":      { "type": "keyword" },
+      "tenant":      { "type": "keyword" },
       "kb_id":        { "type": "long" },
       "doc_id":       { "type": "long" },
       "chunk_id":     { "type": "keyword" },

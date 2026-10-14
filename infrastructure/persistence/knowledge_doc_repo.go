@@ -35,11 +35,32 @@ func (r *KnowledgeDocRepo) db(ctx context.Context) *gorm.DB {
 	return r.provider.UseDB(ctx).Model(&entity.KnowledgeDoc{})
 }
 
+// docMetaSelect 文档的**元数据**列，刻意不含 content。
+//
+// ⚠️ 本文件里每一次读都必须显式 Select，**不能裸 First/Find**。
+// KnowledgeDoc.HasContent 带 `->` 只读 tag，GORM 会把它塞进那条**默认**的
+// SELECT 列清单里；而 has_content 根本不是表上的列——它只由 listByKBSelect
+// 的表达式临时造出来。于是裸 First 拼出的 SQL 带着 has_content，MySQL 直接
+// 1054 Unknown column，整条链路报 ErrInternal(10007)。
+//
+// 这个坑只在连真库跑起来时才暴露（本仓的测试全是桩，不碰 MySQL），
+// 所以规矩写在这里：**加新的读取方法时，记得 Select。**
+const docMetaSelect = "id, kb_id, tenant, name, title, content_hash, " +
+	"chunk_count, create_ts, update_ts"
+
+// docFullSelect 整行，含 content。只有详情要正文时才用它。
+//
+// 之所以单独列一份而不是处处读整行：正文上限 8 MiB（constants.MaxContentBytes），
+// 而 FindByName 只取 id、Save 的锁行只取 chunk_count 之类的读取，
+// 读回一堆正文只为拿一个整数没有道理。
+const docFullSelect = docMetaSelect + ", content"
+
 func (r *KnowledgeDocRepo) FindByName(
 	ctx context.Context, kbID uint64, name string,
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
 	err := r.db(ctx).
+		Select(docMetaSelect).
 		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&doc).Error
 
@@ -58,7 +79,11 @@ func (r *KnowledgeDocRepo) FindByID(
 	ctx context.Context, id uint64,
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
-	err := r.db(ctx).Where("id = ?", id).First(&doc).Error
+	// 详情要正文，所以这一处读整行
+	err := r.db(ctx).
+		Select(docFullSelect).
+		Where("id = ?", id).
+		First(&doc).Error
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// 与 FindByName 同口径：是不是「不存在」由调用方判，这里不是错误
@@ -70,17 +95,10 @@ func (r *KnowledgeDocRepo) FindByID(
 	return &doc, nil
 }
 
-// findByIDsSelect FindByIDs 的 SELECT 子句。
+// FindByIDs 批量加载，供检索时的存活校验使用。
 //
-// 与 listByKBSelect 同一个理由：**不带 content**。这次不是响应体大小的问题，
-// 是内存——一次检索要捞几十篇文档，而单篇正文上限 8 MiB
-// （constants.MaxContentBytes），带上它就是把几十 MB 读进内存，
-// 只为回答「这行还在不在」。正文归 FindByID（详情接口）。
-//
-// 同样抽成常量以便钉住：本仓没有真库测试设施，多读一列既不报错也不变慢到能察觉。
-const findByIDsSelect = "id, kb_id, account, name, title, content_hash, " +
-	"chunk_count, create_ts, update_ts"
-
+// 走 docMetaSelect（不带 content）：一次检索要捞几十篇文档，带上正文就是
+// 把几十 MB 读进内存，只为回答「这行还在不在」。正文归 FindByID。
 func (r *KnowledgeDocRepo) FindByIDs(
 	ctx context.Context, ids []uint64,
 ) (entity.KnowledgeDocs, error) {
@@ -91,7 +109,7 @@ func (r *KnowledgeDocRepo) FindByIDs(
 	var docs entity.KnowledgeDocs
 	// 不加任何过滤：查不到的行就是不在了（硬删），由调用方丢弃其切片
 	err := r.db(ctx).
-		Select(findByIDsSelect).
+		Select(docMetaSelect).
 		Where("id IN ?", ids).
 		Find(&docs).Error
 	if err != nil {
@@ -105,7 +123,7 @@ func (r *KnowledgeDocRepo) FindByIDs(
 // 抽成常量不是为了复用，是为了可测：「列表不背正文」这条决定只有在这里
 // 看得见，而本仓没有真库测试设施（真库测试要 config.json + 一个跑着的 MySQL）。
 // 改它之前先想清楚——把 content 加回来会让列表接口的响应体没有上界。
-const listByKBSelect = "id, kb_id, account, name, title, content_hash, " +
+const listByKBSelect = "id, kb_id, tenant, name, title, content_hash, " +
 	"chunk_count, create_ts, update_ts, CHAR_LENGTH(content) > 0 AS has_content"
 
 func (r *KnowledgeDocRepo) ListByKB(
@@ -153,6 +171,7 @@ func (r *KnowledgeDocRepo) Save(
 		//    算差值，读到一半被并发写改了，差值就是错的
 		var cur entity.KnowledgeDoc
 		e := r.db(txCtx).
+			Select(docMetaSelect).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("kb_id = ? AND name = ?", doc.KBID, doc.Name).
 			First(&cur).Error
@@ -213,6 +232,7 @@ func (r *KnowledgeDocRepo) Delete(
 ) (*entity.KnowledgeDoc, error) {
 	var doc entity.KnowledgeDoc
 	err := r.db(ctx).
+		Select(docMetaSelect).
 		Where("kb_id = ? AND name = ?", kbID, name).
 		First(&doc).Error
 
@@ -232,10 +252,10 @@ func (r *KnowledgeDocRepo) Delete(
 }
 
 func (r *KnowledgeDocRepo) DeleteByKBID(
-	ctx context.Context, kbID uint64, account string,
+	ctx context.Context, kbID uint64, tenant string,
 ) (int64, error) {
 	tx := r.db(ctx).
-		Where("kb_id = ? AND account = ?", kbID, account).
+		Where("kb_id = ? AND tenant = ?", kbID, tenant).
 		Delete(&entity.KnowledgeDoc{})
 	if tx.Error != nil {
 		return 0, apperrors.ErrInternal.Wrap(tx.Error)

@@ -25,14 +25,14 @@ type stubKBRepo struct {
 	byIDErr error
 }
 
-func (s *stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
+func (s *stubKBRepo) FindByNo(ctx context.Context, no, tenant string) (*entity.Knowledge, error) {
 	if s.byNoErr != nil {
 		return nil, s.byNoErr
 	}
 	return s.byNo, nil
 }
 
-func (s *stubKBRepo) FindByID(ctx context.Context, id uint64, account string) (*entity.Knowledge, error) {
+func (s *stubKBRepo) FindByID(ctx context.Context, id uint64, tenant string) (*entity.Knowledge, error) {
 	if s.byIDErr != nil {
 		return nil, s.byIDErr
 	}
@@ -91,11 +91,11 @@ func codeOf(t *testing.T, err error) int {
 
 func TestList_EmptyKBReturnsEmptyListNotNil(t *testing.T) {
 	svc := NewService(
-		&stubKBRepo{byNo: &entity.Knowledge{ID: 7, Account: "demo"}},
+		&stubKBRepo{byNo: &entity.Knowledge{ID: 7, Tenant: "demo"}},
 		&stubDocRepo{kbDocs: nil, total: 0},
 		&stubStore{})
 
-	res, err := svc.List(context.Background(), &dto.DocListQuery{Account: "demo", KBNo: "demo-kb"})
+	res, err := svc.List(context.Background(), &dto.DocListQuery{Tenant: "demo", KBNo: "demo-kb"})
 	if err != nil {
 		t.Fatalf("List 报错：%v", err)
 	}
@@ -110,13 +110,13 @@ func TestList_EmptyKBReturnsEmptyListNotNil(t *testing.T) {
 	}
 }
 
-func TestList_KBOfAnotherAccountPropagates10101(t *testing.T) {
-	// 仓储层把「库不存在」与「account 对不上」折叠成同一个错，服务层原样透传
+func TestList_KBOfAnotherTenantPropagates10101(t *testing.T) {
+	// 仓储层把「库不存在」与「tenant 对不上」折叠成同一个错，服务层原样透传
 	svc := NewService(
 		&stubKBRepo{byNoErr: apperrors.ErrKnowledgeBaseNotFound},
 		&stubDocRepo{}, &stubStore{})
 
-	_, err := svc.List(context.Background(), &dto.DocListQuery{Account: "other", KBNo: "demo-kb"})
+	_, err := svc.List(context.Background(), &dto.DocListQuery{Tenant: "other", KBNo: "demo-kb"})
 	if got := codeOf(t, err); got != apperrors.CodeKnowledgeBaseNotFound {
 		t.Errorf("错误码 = %d，期望 %d", got, apperrors.CodeKnowledgeBaseNotFound)
 	}
@@ -127,20 +127,20 @@ func TestList_KBOfAnotherAccountPropagates10101(t *testing.T) {
 func TestDetail_UnknownDocReturns10501(t *testing.T) {
 	svc := NewService(&stubKBRepo{}, &stubDocRepo{byID: nil}, &stubStore{})
 
-	_, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Account: "demo", DocID: 42})
+	_, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Tenant: "demo", DocID: 42})
 	if got := codeOf(t, err); got != apperrors.CodeDocNotFound {
 		t.Errorf("错误码 = %d，期望 %d", got, apperrors.CodeDocNotFound)
 	}
 }
 
-func TestDetail_DocOfAnotherAccountReturnsTheSame10501(t *testing.T) {
-	// 行存在但 account 对不上，必须与「不存在」**同一个码**：
+func TestDetail_DocOfAnotherTenantReturnsTheSame10501(t *testing.T) {
+	// 行存在但 tenant 对不上，必须与「不存在」**同一个码**：
 	// 分开就送出一个可枚举的越权探测接口
 	svc := NewService(&stubKBRepo{},
-		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Account: "someone-else"}},
+		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Tenant: "someone-else"}},
 		&stubStore{})
 
-	_, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Account: "demo", DocID: 42})
+	_, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Tenant: "demo", DocID: 42})
 	if got := codeOf(t, err); got != apperrors.CodeDocNotFound {
 		t.Errorf("错误码 = %d，期望 %d（与「不存在」同一个码）", got, apperrors.CodeDocNotFound)
 	}
@@ -148,13 +148,13 @@ func TestDetail_DocOfAnotherAccountReturnsTheSame10501(t *testing.T) {
 
 func TestDetail_ChunksFormatDocHasNoContent(t *testing.T) {
 	svc := NewService(
-		&stubKBRepo{byID: &entity.Knowledge{ID: 7, Account: "demo", SourceURL: "https://example.com/a.pdf"}},
+		&stubKBRepo{byID: &entity.Knowledge{ID: 7, Tenant: "demo", SourceURL: "https://example.com/a.pdf"}},
 		&stubDocRepo{byID: &entity.KnowledgeDoc{
-			ID: 42, KBID: 7, Account: "demo", Name: "a.md", Title: "a", Content: "", ChunkCount: 3,
+			ID: 42, KBID: 7, Tenant: "demo", Name: "a.md", Title: "a", Content: "", ChunkCount: 3,
 		}},
 		&stubStore{})
 
-	res, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Account: "demo", DocID: 42})
+	res, err := svc.Detail(context.Background(), &dto.DocDetailQuery{Tenant: "demo", DocID: 42})
 	if err != nil {
 		t.Fatalf("Detail 报错：%v", err)
 	}
@@ -179,9 +179,9 @@ func TestChunks_ZeroTotalIsNotAnError(t *testing.T) {
 	// 刚导入的文档：原文能看、切片还没进可检索视图（两档延迟）。total=0 合法
 	st := &stubStore{hits: nil, total: 0}
 	svc := NewService(&stubKBRepo{},
-		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Account: "demo"}}, st)
+		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Tenant: "demo"}}, st)
 
-	res, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Account: "demo", DocID: 42})
+	res, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Tenant: "demo", DocID: 42})
 	if err != nil {
 		t.Fatalf("total=0 被当成错误了：%v", err)
 	}
@@ -191,19 +191,19 @@ func TestChunks_ZeroTotalIsNotAnError(t *testing.T) {
 	if res.Items == nil {
 		t.Error("items 是 nil —— 会被序列化成 JSON null")
 	}
-	// 枚举条件必须同时带 account 与 doc_id
-	if st.gotFilter.Account != "demo" || st.gotFilter.DocID != 42 {
-		t.Errorf("枚举条件 = %+v，期望 account=demo doc_id=42", st.gotFilter)
+	// 枚举条件必须同时带 tenant 与 doc_id
+	if st.gotFilter.Tenant != "demo" || st.gotFilter.DocID != 42 {
+		t.Errorf("枚举条件 = %+v，期望 tenant=demo doc_id=42", st.gotFilter)
 	}
 }
 
 func TestChunks_LimitIsClampedNotRejected(t *testing.T) {
 	st := &stubStore{}
 	svc := NewService(&stubKBRepo{},
-		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Account: "demo"}}, st)
+		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Tenant: "demo"}}, st)
 
 	_, err := svc.Chunks(context.Background(),
-		&dto.ChunkListQuery{Account: "demo", DocID: 42, Limit: 9999})
+		&dto.ChunkListQuery{Tenant: "demo", DocID: 42, Limit: 9999})
 	if err != nil {
 		t.Fatalf("超限的 limit 被报成错误了：%v", err)
 	}
@@ -215,10 +215,10 @@ func TestChunks_LimitIsClampedNotRejected(t *testing.T) {
 func TestChunks_NegativeOffsetBecomesZero(t *testing.T) {
 	st := &stubStore{}
 	svc := NewService(&stubKBRepo{},
-		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Account: "demo"}}, st)
+		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Tenant: "demo"}}, st)
 
 	_, err := svc.Chunks(context.Background(),
-		&dto.ChunkListQuery{Account: "demo", DocID: 42, Offset: -5})
+		&dto.ChunkListQuery{Tenant: "demo", DocID: 42, Offset: -5})
 	if err != nil {
 		t.Fatalf("报错了：%v", err)
 	}
@@ -230,9 +230,9 @@ func TestChunks_NegativeOffsetBecomesZero(t *testing.T) {
 func TestChunks_TenantCheckedBeforeEnumerating(t *testing.T) {
 	st := &stubStore{}
 	svc := NewService(&stubKBRepo{},
-		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Account: "someone-else"}}, st)
+		&stubDocRepo{byID: &entity.KnowledgeDoc{ID: 42, Tenant: "someone-else"}}, st)
 
-	_, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Account: "demo", DocID: 42})
+	_, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Tenant: "demo", DocID: 42})
 	if got := codeOf(t, err); got != apperrors.CodeDocNotFound {
 		t.Errorf("错误码 = %d，期望 %d", got, apperrors.CodeDocNotFound)
 	}
@@ -244,7 +244,7 @@ func TestChunks_TenantCheckedBeforeEnumerating(t *testing.T) {
 func TestChunks_EmptyDocIDListIsNotFound(t *testing.T) {
 	// FindByID 返回 nil（硬删之后的幽灵文档）→ 与「不存在」同一个码
 	svc := NewService(&stubKBRepo{}, &stubDocRepo{byID: nil}, &stubStore{})
-	_, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Account: "demo", DocID: 42})
+	_, err := svc.Chunks(context.Background(), &dto.ChunkListQuery{Tenant: "demo", DocID: 42})
 	if got := codeOf(t, err); got != apperrors.CodeDocNotFound {
 		t.Errorf("错误码 = %d，期望 %d", got, apperrors.CodeDocNotFound)
 	}

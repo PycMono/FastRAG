@@ -18,16 +18,16 @@ import (
 func (s *Service) Chunks(
 	ctx context.Context, q *dto.ChunkListQuery,
 ) (*vo.ChunkListVO, error) {
-	// 顺序不能反：先从文档行确认这篇在不在这个 account 下，再拿 account+doc_id
+	// 顺序不能反：先从文档行确认这篇在不在这个 tenant 下，再拿 tenant+doc_id
 	// 去枚举。ES 侧的 buildFilter 只在三个条件**全空**时拒绝，不替我们保证
-	// account 在场——租户隔离靠这里的调用约定
-	if _, err := s.liveDoc(ctx, q.DocID, q.Account); err != nil {
+	// tenant 在场——租户隔离靠这里的调用约定
+	if _, err := s.liveDoc(ctx, q.DocID, q.Tenant); err != nil {
 		return nil, err
 	}
 
 	q.Normalize()
 	hits, total, err := s.store.ListByDoc(ctx, repository.VectorFilter{
-		Account: q.Account, DocID: q.DocID,
+		Tenant: q.Tenant, DocID: q.DocID,
 	}, q.Offset, q.Limit)
 	if err != nil {
 		return nil, err

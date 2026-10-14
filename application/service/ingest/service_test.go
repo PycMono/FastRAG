@@ -20,7 +20,7 @@ type stubKBRepo struct {
 	kb *entity.Knowledge
 }
 
-func (s stubKBRepo) FindByNo(ctx context.Context, no, account string) (*entity.Knowledge, error) {
+func (s stubKBRepo) FindByNo(ctx context.Context, no, tenant string) (*entity.Knowledge, error) {
 	return s.kb, nil
 }
 
@@ -45,7 +45,7 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 	)
 
 	_, err := svc.Ingest(context.Background(), &dto.DocIngestDTO{
-		Account: "demo",
+		Tenant:  "demo",
 		KBNo:    "demo-kb",
 		DocName: "a.md",
 		Format:  "text",
@@ -67,7 +67,7 @@ func TestIngest_UnknownModel_FailsBeforeAnyWrite(t *testing.T) {
 // 反过来（吞掉错误继续往下走）会让 KB 的 doc_count / chunk_count 永久偏小，
 // 而调用方拿到的还是「删除成功」，账再也对不上。
 func TestDeleteDoc_DeleteFails_NoDeltaNoESCleanup(t *testing.T) {
-	kb := &entity.Knowledge{ID: 7, No: "kb-1", Account: "demo"}
+	kb := &entity.Knowledge{ID: 7, No: "kb-1", Tenant: "demo"}
 	docRepo := &stubDocRepo{delErr: errors.New("文档不存在: gone.md")}
 	store := &stubStore{}
 	kbRepo := &stubKBRepoDelta{stubKBRepo: stubKBRepo{kb: kb}}
@@ -79,7 +79,7 @@ func TestDeleteDoc_DeleteFails_NoDeltaNoESCleanup(t *testing.T) {
 	)
 
 	_, err := svc.DeleteDoc(context.Background(), &dto.DocDeleteDTO{
-		Account: "demo", KBNo: "kb-1", DocName: "gone.md",
+		Tenant: "demo", KBNo: "kb-1", DocName: "gone.md",
 	})
 	if err == nil {
 		t.Errorf("删除失败必须报错，不能当成功返回")

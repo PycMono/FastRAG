@@ -64,8 +64,8 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		return nil, err
 	}
 
-	// ① 加载 KB。不属于该 account 的库在仓储层就被丢掉了
-	kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Account)
+	// ① 加载 KB。不属于该 tenant 的库在仓储层就被丢掉了
+	kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +78,7 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	if opts.useKNN() {
 		queryVec, err = embedder.EmbedQuery(ctx, opts.Query)
 		if err != nil {
+			logsdk.Error(ctx, "知识库检索报错", logsdk.Err(err))
 			return nil, apperrors.ErrEmbeddingFailed.Wrap(err)
 		}
 	}
@@ -187,8 +188,8 @@ func (s *Service) buildReq(
 	}
 
 	return repository.VectorSearchReq{
-		// 所有库同 account：FindByNos 加载时已按 account 过滤过
-		Account:       kbs[0].Account,
+		// 所有库同 tenant：FindByNos 加载时已按 tenant 过滤过
+		Tenant:        kbs[0].Tenant,
 		KBIDs:         ids,
 		Query:         opts.Query,
 		QueryVec:      queryVec,

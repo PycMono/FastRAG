@@ -15,7 +15,7 @@ const maxBatchDocs = 100
 
 // Controller 文档导入 HTTP 控制器。
 //
-// 注意这里**没有任何鉴权中间件**：account 就是请求体里的普通字段（§6）。
+// 注意这里**没有任何鉴权中间件**：tenant 就是请求体里的普通字段（§6）。
 // 部署时 FastRAG 只能在可信内网暴露，调用方自己负责对最终用户鉴权。
 type Controller struct {
 	service *ingest.Service
