@@ -504,8 +504,8 @@ func TestService_Search_RetrieveCount_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search 不应失败: %v", err)
 	}
-	if gotFetchSize != 30 {
-		t.Errorf("期望 ES 召回 30 条，实际 %d", gotFetchSize)
+	if gotFetchSize != 10 {
+		t.Errorf("ES 应使用配置召回 10 条，与精排预算独立，实际 %d", gotFetchSize)
 	}
 	if len(res.Items) != 1 { // rerank mock 只返回 1 条
 		t.Errorf("期望返回 1 条，得到 %d 条", len(res.Items))
@@ -543,8 +543,8 @@ func TestService_Search_RetrieveCount_Default(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search 不应失败: %v", err)
 	}
-	if gotFetchSize != 20 {
-		t.Errorf("未指定 retrieve_count 时默认 limit*2，期望 20，实际 %d", gotFetchSize)
+	if gotFetchSize != 10 {
+		t.Errorf("未指定精排预算时 ES 仍使用配置召回 10 条，实际 %d", gotFetchSize)
 	}
 }
 

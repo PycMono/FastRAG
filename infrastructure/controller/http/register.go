@@ -1,6 +1,7 @@
 package http
 
 import (
+	"github.com/PycMono/FastRAG/infrastructure/admin"
 	docctl "github.com/PycMono/FastRAG/infrastructure/controller/http/doc"
 	"github.com/PycMono/FastRAG/infrastructure/controller/http/health"
 	searchctl "github.com/PycMono/FastRAG/infrastructure/controller/http/search"
@@ -14,6 +15,7 @@ const v1Prefix = "/api/v1"
 // Register 注册所有 HTTP 控制器到 FX 容器
 var Register = fx.Options(
 	fx.Provide(health.NewController),
+	fx.Provide(admin.NewController),
 	fx.Provide(docctl.NewController),
 	fx.Provide(docctl.NewReadController),
 	fx.Provide(searchctl.NewController),
@@ -24,6 +26,7 @@ var Register = fx.Options(
 // RouteDeps 路由注册所需依赖（FX 自动按类型注入）
 type RouteDeps struct {
 	fx.In
+	AdminCtl   *admin.Controller
 	Router     *gin.Engine
 	HealthCtl  *health.Controller
 	DocCtl     *docctl.Controller
@@ -45,7 +48,13 @@ type RouteDeps struct {
 func RegisterRoutes(d RouteDeps) {
 	registerHealthRoutes(d.Router, d.HealthCtl)
 	d.Router.GET("/", d.WebCtl.Index)
+	d.Router.GET("/assets/*filepath", d.WebCtl.Asset)
 
+	management := d.Router.Group("/api/admin", d.AdminCtl.Auth)
+	management.GET("/status", d.AdminCtl.Status)
+	management.GET("/config", d.AdminCtl.ReadConfig)
+	management.PUT("/config", d.AdminCtl.SaveConfig)
+	management.GET("/logs", d.AdminCtl.Logs)
 	api := d.Router.Group(v1Prefix)
 	{
 		docs := api.Group("/docs")

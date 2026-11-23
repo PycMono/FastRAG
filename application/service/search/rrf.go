@@ -6,12 +6,6 @@ import (
 	"github.com/PycMono/FastRAG/domain/repository"
 )
 
-// fusionOversample 融合前先把候选放大若干倍。
-//
-// 两路各取 topN，融合后靠前的位置可能凑不满 N 条；后面还有存活校验
-// 会再砍一刀。放大一点，保证最终还能凑够 limit。
-const fusionOversample = 4
-
 // Route 一路检索结果 + 它在融合里的权重。
 //
 // 「一路」= 一次检索里的一条路径（BM25 或 kNN）。

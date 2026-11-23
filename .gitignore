@@ -66,3 +66,15 @@ profile.cov
 
 # 文档与设计稿（本地工作稿，不入库）
 /docs/
+
+# Vue production assets are embedded into the Go binary and versioned.
+!infrastructure/controller/http/web/static/
+!infrastructure/controller/http/web/static/**
+
+# Browser test artifacts
+/frontend/test-results/
+/frontend/playwright-report/
+
+# Rotating application logs
+/logs/
+.fastrag-config-*

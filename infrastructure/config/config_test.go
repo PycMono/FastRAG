@@ -344,3 +344,20 @@ func TestParserConfig_Params(t *testing.T) {
 		t.Errorf("报错消息里应列出可用名字，得到 %v", err)
 	}
 }
+
+func TestSearchConfigLimits(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []SearchConfig{{BM25Top: 1001}, {KNNTops: 1001}, {NumCandidates: 10001}, {DefaultRetrieveCount: 201}, {DenseWeight: 1.1}, {BM25Top: -1}} {
+		var c Config
+		if err := json.Unmarshal(data, &c); err != nil {
+			t.Fatal(err)
+		}
+		c.Search = tc
+		if err := c.validate(); err == nil {
+			t.Fatalf("unsafe search config accepted: %#v", tc)
+		}
+	}
+}

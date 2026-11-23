@@ -512,3 +512,11 @@ func TestRerank_DashScope_TopNEqualsBatchSize(t *testing.T) {
 		}
 	}
 }
+
+func TestRerankMissingScoresAreNotReportedAsModelScores(t *testing.T) {
+	r := &Rerank{protocol: config.ProtocolOpenAI}
+	scores := r.parseScores(&rerankResponse{Results: []rerankResult{{Index: 0, RelevanceScore: 0.8}}}, 2)
+	if scores[1] != interfaces.NoRerankScore {
+		t.Fatalf("missing model score was fabricated: %v", scores)
+	}
+}

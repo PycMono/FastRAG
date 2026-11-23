@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PycMono/FastRAG/common/constants"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -321,7 +322,7 @@ func (s *ESVectorStore) DeleteExcept(
 func (s *ESVectorStore) Search(
 	ctx context.Context, req repository.VectorSearchReq,
 ) (repository.SearchResult, error) {
-	var out repository.SearchResult
+	out := repository.SearchResult{TimingsMS: map[string]float64{}}
 
 	type route struct {
 		name string
@@ -351,13 +352,16 @@ func (s *ESVectorStore) Search(
 
 			s.logSearch(ctx, rt.name, rt.body)
 
+			started := time.Now()
 			hits, _, err := s.runQuery(ctx, rt.body)
+			elapsed := float64(time.Since(started).Microseconds()) / 1000
 
 			// 在加锁前记，别让日志把两路的并发串起来
 			s.logSearchResult(ctx, rt.name, hits, err)
 
 			mu.Lock()
 			defer mu.Unlock()
+			out.TimingsMS[rt.name] = elapsed
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", rt.name, err))
 				return

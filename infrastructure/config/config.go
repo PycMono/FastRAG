@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -443,6 +444,9 @@ func validateEndpoint(kind, name, protocol, url string) error {
 
 // validate 启动期校验（设计文档 §7）。任一条件不满足就返回错误，服务起不来。
 func (c *Config) validate() error {
+	if c.Search.BM25Top < 0 || c.Search.BM25Top > 1000 || c.Search.KNNTops < 0 || c.Search.KNNTops > 1000 || c.Search.NumCandidates < 0 || c.Search.NumCandidates > 10000 || c.Search.DefaultRetrieveCount < 0 || c.Search.DefaultRetrieveCount > 200 || c.Search.RankConstant < 0 || c.Search.DenseWeight < 0 || c.Search.DenseWeight > 1 {
+		return fmt.Errorf("search 配置超出范围：召回上限 0–1000，候选池 0–10000，精排预算 0–200，权重 0–1，排名常数非负（0 使用默认值）")
+	}
 	if err := c.Embedding.validate(); err != nil {
 		return err
 	}
@@ -527,4 +531,36 @@ func Load() (*Config, error) {
 // Get 获取全局配置
 func Get() *Config {
 	return conf
+}
+
+// ValidateJSON validates a proposed on-disk configuration without changing the
+// live config or constructing clients. Saving requires a subsequent restart.
+func ValidateJSON(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var c Config
+	if err := decoder.Decode(&c); err != nil {
+		return fmt.Errorf("JSON 字段或类型不正确")
+	}
+	if !c.Security.TrustRequestTenant {
+		return fmt.Errorf("security.trust_request_tenant 必须为 true")
+	}
+	if c.HTTP.Port == "" || c.MySQL.Host == "" || c.MySQL.Database == "" {
+		return fmt.Errorf("HTTP 端口、数据库地址和数据库名不能为空")
+	}
+	port, err := strconv.Atoi(c.HTTP.Port)
+	if err != nil || port < 1 || port > 65535 || c.MySQL.Port < 1 || c.MySQL.Port > 65535 {
+		return fmt.Errorf("HTTP 和 MySQL 端口必须在 1–65535 之间")
+	}
+	if c.HTTP.ReadTimeout < 0 || c.HTTP.WriteTimeout < 0 || c.MySQL.ConnTimeout < 0 || c.MySQL.MaxIdle < 0 || c.MySQL.MaxOpen < 0 {
+		return fmt.Errorf("连接数和服务超时不能为负数")
+	}
+	if c.SnowflakeNodeID < 0 || c.SnowflakeNodeID > 1023 {
+		return fmt.Errorf("snowflake_node_id 必须在 0–1023 之间")
+	}
+	// Validation errors may contain endpoint URLs; never return credentials in them.
+	if err := c.validate(); err != nil {
+		return fmt.Errorf("模型或解析配置不合法，请检查默认模型、URL、协议和超时设置")
+	}
+	return nil
 }

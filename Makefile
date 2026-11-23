@@ -1,8 +1,19 @@
-.PHONY: build run debug test test-pkg test-single es-index init-db clean tidy
+.PHONY: build backend-build frontend-build frontend-dev run debug test test-pkg test-single es-index init-db clean tidy
 
-# 构建项目
-build:
+# 完整构建：Vue 静态资源内嵌到 Go，生产环境不需要 Node.js
+build: frontend-build
 	go build -o bin/server ./cmd/server
+
+# 仅构建 Go，使用仓库中已有的前端产物
+backend-build:
+	go build -o bin/server ./cmd/server
+
+frontend-build:
+	npm --prefix frontend ci --no-audit --no-fund
+	npm --prefix frontend run build
+
+frontend-dev:
+	npm --prefix frontend run dev
 
 # 运行服务
 run:

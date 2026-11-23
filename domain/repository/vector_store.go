@@ -63,8 +63,9 @@ type VectorHit struct {
 // 这样换引擎时权重策略不受影响。
 // DenseWeight 让它只发一路时，另一路为 nil。
 type SearchResult struct {
-	BM25 []VectorHit
-	KNN  []VectorHit
+	BM25      []VectorHit
+	KNN       []VectorHit
+	TimingsMS map[string]float64
 }
 
 // ─── 端口 ─────────────────────────────────────────────────────────────────────

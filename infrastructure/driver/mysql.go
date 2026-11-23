@@ -1,6 +1,9 @@
 package driver
 
 import (
+	"fmt"
+
+	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 	sqlsdk "github.com/PycMono/go-mysql-sdk"
 )
@@ -24,6 +27,13 @@ func NewProvider(conf *config.Config) (*sqlsdk.TransProvider, error) {
 		Timeout:       conf.MySQL.ConnTimeout,
 		LogLevel:      conf.MySQL.LogLevel,
 		SlowThreshold: conf.MySQL.SlowThreshold,
+	}
+
+	fmt.Printf("[mysql] host=%s port=%d db=%s user=%s pwLen=%d\n", opts.Host, opts.Port, opts.Database, opts.User, len(opts.Password))
+	// 诊断：把与 SDK 相同的 DSN 先解析一遍，出错直接打印原因（问题解决后可删）
+	if _, perr := gomysql.ParseDSN(fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=PRC",
+		opts.User, opts.Password, opts.Host, opts.Port, opts.Database)); perr != nil {
+		fmt.Printf("[mysql] DSN 解析失败: %v\n", perr)
 	}
 
 	provider := sqlsdk.NewTransProvider(opts)

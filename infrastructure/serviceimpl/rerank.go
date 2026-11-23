@@ -288,7 +288,7 @@ func (r *Rerank) buildBody(query string, docs []string) any {
 	}
 }
 
-// parseScores 按协议取分数并按 index 回填，缺的留 0。
+// parseScores 按协议取分数并按 index 回填，缺失分使用哨兵，不能伪造模型分。
 func (r *Rerank) parseScores(parsed *rerankResponse, n int) []float64 {
 	results := parsed.Results
 	if r.protocol == config.ProtocolDashScope && parsed.Output != nil {
@@ -296,6 +296,9 @@ func (r *Rerank) parseScores(parsed *rerankResponse, n int) []float64 {
 	}
 
 	scores := make([]float64, n)
+	for i := range scores {
+		scores[i] = interfaces.NoRerankScore
+	}
 	seen := make(map[int]struct{}, len(results))
 	for _, res := range results {
 		if res.Index < 0 || res.Index >= n {

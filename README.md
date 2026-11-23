@@ -2,8 +2,8 @@
 
 知识库检索服务 — Go 洋葱架构后端骨架。
 
-参考 `micro-framework` 模板构建。后端服务 + 一个零依赖的演示页
-（`index.html` 直接 `go:embed` 进二进制，挂在根路径，没有前端构建步骤）。
+参考 `micro-framework` 模板构建。Go 后端与 Vue 3 + TypeScript 知识库工作台位于同一仓库。
+前端构建产物通过 `go:embed` 内嵌到二进制，挂在根路径；生产环境只部署一个 Go 服务，无需 Node.js 或 CDN。
 
 ## 架构介绍
 
@@ -12,6 +12,7 @@
 分层结构（外层依赖内层，内层不感知外层）：
 
 ```
+frontend/               // Vue 3 工作台源码与前端构建配置
 cmd/server              // 服务启动入口
 application/service     // 应用服务层：编排领域服务，处理用例，DTO→Entity→VO 转换
 ├── ingest              // 文档导入 / 删除
@@ -29,9 +30,9 @@ infrastructure
 │   ├── doc             // 导入 / 删除
 │   ├── search          // 检索
 │   ├── health          // /health、/ready 探针
-│   └── web             // 根路径的演示页
+│   └── web             // Vue 工作台入口与内嵌静态资源
 ├── driver              // 第三方 SDK 适配（es / gingext / mysql / redis）
-├── middleware          // 访问日志（限流本期不做）
+├── middleware          // 访问日志
 ├── persistence         // 仓储实现、数据持久化（南向网关）
 └── serviceimpl         // 基础设施服务实现（embedding / rerank / 雪花 ID）
 common
@@ -115,7 +116,9 @@ make run
 ## 常用命令
 
 ```bash
-make build        # 构建二进制到 bin/server
+make build        # 构建 Vue + Go 到 bin/server（构建机需要 Node.js）
+make backend-build # 仅构建 Go，使用仓库中已有的前端产物
+make frontend-dev # 启动 Vue 开发服务（首次先 npm --prefix frontend ci）
 make run          # 直接运行服务
 make debug        # dlv headless 调试，监听 :2345（等 Delve 接入）
 make test         # 运行所有测试（含 race 检测和覆盖率）
@@ -318,25 +321,34 @@ Docling 能等，腾讯要卡小）：
 服务直接拒绝启动（`infrastructure/init.go` 的 `checkTrustRequestTenant`，§6.1）。
 这道闸门防的是「把服务顺手摆到公网上」这种改动，代码本身不会因此报任何错。
 
-## 演示页
+## 知识库工作台
 
-服务根路径挂着一个人肉验证用的单页（`infrastructure/controller/http/web/index.html`，
-`go:embed` 进二进制，不依赖前端构建）：
+生产页面仍在服务根路径：<http://localhost:8080/>。Vue 源码位于 `frontend/`，构建资源位于
+`infrastructure/controller/http/web/static/`，随 Go 程序发布。页面不依赖在线字体或 CDN。
 
-> <http://localhost:8080/>
+- **文档管理**：服务端分页，查看原文、检索切片，确认删除。
+- **导入文档**：Markdown/TXT 文件上传、粘贴正文、URL 解析导入，高级参数默认折叠。
+- **检索测试**：混合检索、模型精排、模型与权重设置、结果分页、原文溯源。
+- **统一工作区**：设置租户与已有知识库编号，保存在当前浏览器，切换后清空旧结果。
+- **产品首页**：大标题与功能展示，顶部导航直达各项工具，支持移动端。
+- **配置管理**：分组或完整 JSON 编辑、模型新增/删除、凭据脱敏、版本冲突检测；保存后人工重启生效。
+- **运行日志**：应用日志按级别、关键词和时间查询，展示错误详情，支持自动刷新。
 
-覆盖主链路：上传 markdown → 切片入 ES → 混合检索（BM25 + kNN，权重可调）→ rerank 精排，
-结果区带纯前端分页。也支持带 query 的直达链接，比如：
+配置和日志管理默认关闭；启动前设置至少 24 字符的 `FASTRAG_ADMIN_TOKEN`，在页面输入同一令牌后访问。
+令牌仅保存于页面内存。日志按北京时间自然月保存在 `logs/service-YYYY-MM.jsonl`，仅保留当月并在跨月后自动清理，页面查询最近 2000 条结构化应用日志，不包含 Docker、数据库或任意控制台输出。
+配置保存及管理接口的完整说明见 [管理功能说明](frontend/README.md#首页配置与运行日志)。
 
-> <http://localhost:8080/?q=呼吸衰竭的病因和临床表现>
+检索支持 query 直达链接，例如 <http://localhost:8080/?q=呼吸衰竭的病因和临床表现>。
+检索分页只浏览本次返回的前 `limit`（≤100）条，文档列表分页则由服务端提供。
+工作区初始值为 `demo` / `demo-kb`；填写编号不会创建知识库，也不代表身份授权。
 
-![演示页](docs/demo.png)
+```sh
+make build         # 完整构建前端与 Go；构建机需要 Node.js 20.19+ 或 22.12+
+make frontend-dev  # 开发页面 http://127.0.0.1:5173，API 默认代理到 :8080
+make backend-build # 仅构建 Go，使用仓库中已有的前端产物
+```
 
-两点别误会：分页只翻**本次返回**的前 `limit`（≤100）条，服务端不做深翻页（§13 明确不做）；
-页面默认的 `tenant` / `kb` 是写死的演示值，它不读 URL、也不该读——演示态不该背隐藏配置。
-
-第三点：页面右侧多了一张「按文档浏览」的卡——先列该库下的文档，点开看整篇原文与切片。
-它走的是上面那三条只读 GET；检索命中卡片上也挂了「看整篇」，直接跳到同一篇的详情。
+前端修改后需重新构建并重启 Go 服务。开发、部署和测试说明见 [frontend/README.md](frontend/README.md)。
 
 ## API 示例
 
@@ -376,13 +388,15 @@ curl -X POST http://localhost:8080/api/v1/docs/delete \
 
 # 检索。dense_weight 省略则用配置默认值；<0.01 只走 BM25，>0.99 只走 kNN
 # rerank_switch=true 且 config.rerank.enabled=true 时会调用精排；
-# retrieve_count 控制精排前召回多少候选（默认 limit*2，上限 200）
+# retrieve_count 限制融合后送入精排的候选数量（默认使用配置或 limit*2，上限 200，至少 limit）
+# 两路召回量独立读取 search.bm25_top / knn_top，近似搜索候选池读取 num_candidates
 # embed_model / rerank_model 分别选两路用哪家，省略则各用各的 default；
 # 名字不存在返回 code=10001 并列出可用的名字，不会悄悄回落到默认那家
 #
 # min_score 是**最终分**的阈值，>0 才启用，筛完可能不足 limit 条；
 # 注意量纲随 rerank_switch 变：开精排时是模型分（0~1），关时是 RRF 融合分（0.01 量级），
-# 所以关掉精排还填 0.9 会把结果全筛光
+# 精排失败或未产生模型分时保留融合排序，跳过精排阈值，并返回 meta.warnings
+# fusion_min_score 独立过滤精排前的融合分；diagnostics=true 返回诊断信息
 #
 # 早先的 `biz_tags` 请求参数已移除：带上它不会再报错，而是被**静默忽略**——
 # 别以为它还在筛库，请求会照常按 tenant 检索全部 kb_nos
@@ -413,7 +427,7 @@ curl 'http://localhost:8080/api/v1/docs/chunks?tenant=demo&doc_id=12&limit=200&o
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 
-# 演示页（挂在根路径，不在 /api 下：它是给人看的 HTML，不是接口）
+# 知识库工作台（挂在根路径，不在 /api 下）
 open http://localhost:8080/
 ```
 
@@ -437,19 +451,3 @@ open http://localhost:8080/
 本仓那几个「看着像模块、其实是层」的目录（`entity/`、`repository/`、`persistence/`、
 `driver/`）都是这么收拢来的——它们下面不再按业务分子目录，只有业务真的需要
 独立的一层时（比如 `application/service/` 下的 `ingest`、`search`）才分。
-
-## 后续规划
-
-清单在设计文档 §13「待定」里，这里只点出两条 demo 阶段**明确不做**的：
-
-- **写侧一致性（代次切换）** —— 重导入或并发写同一文档时，同一篇文档的新旧切片
-  可能同时在 ES 里，检索会重复召回同一段内容的两个版本。窗口已经从「一个刷新周期」
-  压到「一次请求内的几十毫秒」（`DeleteExcept` 的 `WithRefresh(true)`），但没有消除。
-  方案与代价见 §13 待定 9，要等核心功能做完再上
-- **写侧限流** —— 见 §10.3
-
-> **embedding 的瞬时抖动已兜住**：`EmbedDocs` / `EmbedQuery` 各带 1 次重试
-> （固定 100ms 退避，与 rerank 一致）。持续不可用仍会失败，那属于调用方该重试的范畴。
-
-其余待定项（检索深翻页、`rank_constant` 调参、gRPC 接入、`_routing`、租户与切片规模）
-逐条列在 §13 的表里。

@@ -7,6 +7,7 @@ import (
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
 	ginsdk "github.com/PycMono/go-gin-sdk"
+	logsdk "github.com/PycMono/go-logger-sdk"
 	"github.com/gin-gonic/gin"
 )
 
@@ -34,6 +35,9 @@ func (ctl *Controller) Ingest(c *gin.Context) {
 	}
 
 	result, err := ctl.service.Ingest(c.Request.Context(), &param)
+	if err != nil {
+		logsdk.Error(c.Request.Context(), "文档操作失败", logsdk.Err(err))
+	}
 	ginsdk.Send(c, result, err)
 }
 
@@ -73,6 +77,9 @@ func (ctl *Controller) Delete(c *gin.Context) {
 	}
 
 	result, err := ctl.service.DeleteDoc(c.Request.Context(), &param)
+	if err != nil {
+		logsdk.Error(c.Request.Context(), "文档操作失败", logsdk.Err(err))
+	}
 	ginsdk.Send(c, result, err)
 }
 
@@ -88,5 +95,8 @@ func (ctl *Controller) Parse(c *gin.Context) {
 	}
 
 	result, err := ctl.service.Parse(c.Request.Context(), &param)
+	if err != nil {
+		logsdk.Error(c.Request.Context(), "文档操作失败", logsdk.Err(err))
+	}
 	ginsdk.Send(c, result, err)
 }

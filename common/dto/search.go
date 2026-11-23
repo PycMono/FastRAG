@@ -10,7 +10,7 @@ type SearchDTO struct {
 	Query  string   `json:"query" binding:"required,max=1000"`
 	Limit  int      `json:"limit" binding:"omitempty,gte=1,lte=100"`
 
-	// RetrieveCount rerank 开启时，ES 召回多少条交给 rerank 精排。
+	// RetrieveCount 融合与存活校验后，最多交给精排模型的候选数量。
 	// nil 表示用 search.default_retrieve_count，再缺省则 limit*2。
 	// 取值范围 [1, 200]；返回给用户的结果仍由 Limit 截断。
 	RetrieveCount *int `json:"retrieve_count" binding:"omitempty,gte=1,lte=200"`
@@ -25,10 +25,15 @@ type SearchDTO struct {
 	//   精排开启 → 精排模型给的相关性分，大致 0~1；
 	//   精排关闭 → 应用层 RRF 融合分 Σ w/(rank_constant+rank)，恒在 0.01~0.02
 	//              这个量级（见 rrf.go），给个 0.9 会把结果全筛光。
-	// 所以这个参数是**给精排那一路用的**，别在 rerank_switch=false 时指望它。
+	// 精排请求降级或候选没有模型分时跳过此阈值；显式关闭精排时保留 RRF 阈值的兼容语义。
+	// 新调用方建议使用独立的 FusionMinScore 过滤融合分。
 	MinScore float64 `json:"min_score" binding:"omitempty,gte=0"`
 
 	RerankSwitch bool `json:"rerank_switch"`
+	// Diagnostics includes per-route ranks, scores, counts and stage durations.
+	Diagnostics bool `json:"diagnostics"`
+	// FusionMinScore filters RRF scores before reranking, independently of MinScore.
+	FusionMinScore float64 `json:"fusion_min_score" binding:"omitempty,gte=0"`
 
 	// EmbedModel 查询向量用哪家算，取 config.embedding.models 里的 key。
 	// 留空用配置的 default。必须与库里那批数据的生成方一致，否则检索会退化成

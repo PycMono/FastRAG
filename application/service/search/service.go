@@ -2,6 +2,9 @@ package search
 
 import (
 	"context"
+	"math"
+	"sort"
+	"time"
 
 	"github.com/PycMono/FastRAG/common/dto"
 	apperrors "github.com/PycMono/FastRAG/common/errors"
@@ -46,7 +49,22 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	if err != nil {
 		return nil, err
 	}
-	empty := &vo.SearchResultVO{Items: []*vo.SearchItemVO{}}
+	started := time.Now()
+	meta := &vo.SearchMeta{ScoreType: "rrf", RerankRequested: opts.Rerank, Warnings: []string{}}
+	diagnostic := &vo.SearchDiagnostics{BM25Top: s.tuning.BM25Top, KNNTop: s.tuning.KNNTops, NumCandidates: max(s.tuning.NumCandidates, s.tuning.KNNTops), RerankBudget: opts.effectiveRetrieveCount(), DenseWeight: opts.DenseWeight, RankConstant: s.tuning.RankConstant, Counts: map[string]int{}, TimingsMS: map[string]float64{}}
+	finish := func(items []*vo.SearchItemVO) *vo.SearchResultVO {
+		diagnostic.Counts["returned"] = len(items)
+		diagnostic.TimingsMS["total"] = durationMS(started)
+		result := &vo.SearchResultVO{Items: items, Meta: meta}
+		if in.Diagnostics {
+			result.Diagnostics = diagnostic
+		} else {
+			for _, it := range items {
+				it.Diagnostics = nil
+			}
+		}
+		return result
+	}
 
 	// ⓪ 先把两个名字解出来。
 	//
@@ -65,15 +83,18 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	}
 
 	// ① 加载 KB。不属于该 tenant 的库在仓储层就被丢掉了
+	stage := time.Now()
 	kbs, err := s.kbRepo.FindByNos(ctx, in.KBNos, in.Tenant)
 	if err != nil {
 		return nil, err
 	}
+	diagnostic.TimingsMS["knowledge_lookup"] = durationMS(stage)
 	if len(kbs) == 0 {
-		return empty, nil
+		return finish([]*vo.SearchItemVO{}), nil
 	}
 
 	// ② 查询向量。dense_weight 为 0 时不发这一路，也就不必花这次调用
+	stage = time.Now()
 	var queryVec []float32
 	if opts.useKNN() {
 		queryVec, err = embedder.EmbedQuery(ctx, opts.Query)
@@ -83,19 +104,24 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		}
 	}
 
-	// ③ 检索：一次请求，ES 内部出两路（BM25 + kNN）。
+	diagnostic.TimingsMS["embedding"] = durationMS(stage)
+	// ③ 检索：仓储内并行执行 BM25 与 kNN 两个请求。
 	//
-	//    曾经按各 KB 的检索模式分组、每组发一次请求——那是为了不让
-	//    「标题-only」的库被按正文检索（静默改写语义）。检索模式下线之后
-	//    只剩一种，分组也随之消失，这里就是一次请求。
-	//
-	//    fetchSize 在 rerank 开启时大于 limit，让 ES 多召回一些候选交给 rerank 精排。
+	// 两路召回量读取服务配置；精排预算独立控制模型输入数量。
 	fetchSize := opts.effectiveRetrieveCount()
-	r, err := s.store.Search(ctx, s.buildReq(kbs, opts, queryVec, fetchSize))
+	stage = time.Now()
+	r, err := s.store.Search(ctx, s.buildReq(kbs, opts, queryVec))
 	if err != nil {
 		return nil, err
 	}
 
+	diagnostic.TimingsMS["retrieval"] = durationMS(stage)
+	for key, value := range r.TimingsMS {
+		diagnostic.TimingsMS[key] = value
+	}
+	diagnostic.Counts["bm25"] = len(r.BM25)
+	diagnostic.Counts["knn"] = len(r.KNN)
+	stage = time.Now()
 	// ④ 应用层加权 RRF 融合
 	//
 	//    两路各自从 rank=1 起算、按权重加权（见 Fuse 的注释）——不把其中一路
@@ -108,7 +134,10 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 	if len(r.KNN) > 0 {
 		routes = append(routes, Route{Hits: r.KNN, Weight: opts.DenseWeight})
 	}
-	merged := Fuse(routes, s.tuning.RankConstant, fetchSize*fusionOversample)
+	merged := Fuse(routes, s.tuning.RankConstant, 0)
+	diagnostic.Counts["fused"] = len(merged)
+	diagnostic.TimingsMS["fusion"] = durationMS(stage)
+	stage = time.Now()
 
 	// ⑤ 存活校验 + 补展示字段（1 次批量 SQL，不取内容）
 	items, err := s.filterAlive(ctx, merged, kbs)
@@ -116,41 +145,91 @@ func (s *Service) Search(ctx context.Context, in *dto.SearchDTO) (*vo.SearchResu
 		return nil, err
 	}
 
-	// ⑥ 可选重排。失败时退回融合原序，不阻断检索。
-	//
-	//    判据里不再有 s.rerank != nil：注册表永远返回一个非 nil 的实现，
-	//    enabled=false 时给的是空实现（原序返回），行为与以前一致。
-	if opts.Rerank && len(items) > 1 {
-		reranked, err := s.rerankItems(ctx, reranker, opts.Query, items)
-		if err != nil {
-			logsdk.Warn(ctx, "重排失败，退回融合原序", logsdk.Err(err))
-		} else {
-			items = reranked
-		}
-	}
-
-	if len(items) > opts.Limit {
-		items = items[:opts.Limit]
-	}
-
-	// ⑦ 分数阈值过滤。MinScore<=0 表示不启用。
-	//
-	//    为什么排在截断之后：Limit 是"最多要几条"、MinScore 是"太差的不要"，
-	//    先截断再筛，返回的条数可能不足 Limit——这是有意的，跟
-	//    go-ai-knowledge 的行为一致（那边也是重排完再 filter）。
-	//
-	//    ⚠️ 比的是最终 Score，量纲随 rerank_switch 变（精排分 0~1 / RRF 分 0.01~0.02），
-	//    详见 dto.SearchDTO.MinScore 的注释。
-	if opts.MinScore > 0 {
-		kept := make([]*vo.SearchItemVO, 0, len(items))
+	diagnostic.TimingsMS["alive_filter"] = durationMS(stage)
+	diagnostic.Counts["alive"] = len(items)
+	explainHits(items, r)
+	if in.FusionMinScore > 0 {
+		kept := items[:0]
 		for _, it := range items {
-			if it.Score >= opts.MinScore {
+			if it.Score >= in.FusionMinScore {
 				kept = append(kept, it)
 			}
 		}
 		items = kept
 	}
-	return &vo.SearchResultVO{Items: items}, nil
+	diagnostic.Counts["after_fusion_threshold"] = len(items)
+	// ⑥ 精排预算在融合、存活校验和融合分过滤之后应用。
+	if opts.Rerank && len(items) > fetchSize {
+		items = items[:fetchSize]
+	}
+	diagnostic.Counts["rerank_candidates"] = 0
+	stage = time.Now()
+	// 精排失败时保留融合原序，并明确标记评分与阈值语义。
+	//
+	//    判据里不再有 s.rerank != nil：注册表永远返回一个非 nil 的实现，
+	//    enabled=false 时给的是空实现（原序返回），行为与以前一致。
+	if opts.Rerank && len(items) > 0 {
+		diagnostic.Counts["rerank_candidates"] = len(items)
+		reranked, err := s.rerankItems(ctx, reranker, opts.Query, items)
+		if err != nil {
+			logsdk.Warn(ctx, "重排失败，退回融合原序", logsdk.Err(err))
+			meta.Degraded = true
+			meta.Warnings = append(meta.Warnings, "精排失败，已使用融合排序。")
+		} else {
+			items = reranked
+			for _, it := range items {
+				if it.Diagnostics.RerankScore != nil {
+					meta.RerankApplied = true
+				}
+			}
+			if meta.RerankApplied {
+				meta.ScoreType = "rerank"
+				for _, it := range items {
+					if it.Diagnostics.RerankScore == nil {
+						meta.ScoreType = "mixed"
+						meta.Degraded = true
+						meta.Warnings = append(meta.Warnings, "部分候选未取得精排分数，保留其融合分。")
+						break
+					}
+				}
+			} else {
+				meta.Degraded = true
+				meta.Warnings = append(meta.Warnings, "精排未实际产生模型分数，已使用融合排序。")
+			}
+		}
+	}
+	diagnostic.TimingsMS["rerank"] = durationMS(stage)
+	// Individual unscored candidates keep their RRF score and bypass a rerank threshold.
+	if opts.Rerank && opts.MinScore > 0 {
+		for _, it := range items {
+			if it.Diagnostics.RerankScore == nil {
+				meta.ThresholdSkipped = true
+				break
+			}
+		}
+		if meta.ThresholdSkipped {
+			meta.Warnings = append(meta.Warnings, "未取得精排分数的结果跳过精排阈值；可单独设置融合分阈值。")
+		}
+	}
+	stage = time.Now()
+
+	// ⑦ 分数阈值过滤。MinScore<=0 表示不启用。
+	//
+	// 精排阈值仅用于已取得精排分的候选；显式关闭精排时保留旧的 RRF 阈值语义。
+	if opts.MinScore > 0 {
+		kept := make([]*vo.SearchItemVO, 0, len(items))
+		for _, it := range items {
+			if it.Score >= opts.MinScore || (opts.Rerank && it.Diagnostics.RerankScore == nil) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+	if len(items) > opts.Limit {
+		items = items[:opts.Limit]
+	}
+	diagnostic.TimingsMS["final_filter"] = durationMS(stage)
+	return finish(items), nil
 }
 
 func (s *Service) resolveOptions(in *dto.SearchDTO) (searchOptions, error) {
@@ -180,7 +259,6 @@ func (s *Service) buildReq(
 	kbs entity.Knowledges,
 	opts searchOptions,
 	queryVec []float32,
-	fetchSize int,
 ) repository.VectorSearchReq {
 	ids := make([]uint64, 0, len(kbs))
 	for _, kb := range kbs {
@@ -194,9 +272,9 @@ func (s *Service) buildReq(
 		Query:         opts.Query,
 		QueryVec:      queryVec,
 		DenseWeight:   opts.DenseWeight,
-		BM25Top:       fetchSize,
-		KNNTops:       fetchSize,
-		NumCandidates: fetchSize * 5,
+		BM25Top:       s.tuning.BM25Top,
+		KNNTops:       s.tuning.KNNTops,
+		NumCandidates: max(s.tuning.NumCandidates, s.tuning.KNNTops),
 	}
 }
 
@@ -294,15 +372,65 @@ func (s *Service) rerankItems(
 		if s.Index < 0 || s.Index >= len(items) {
 			continue
 		}
-		it := items[s.Index]
+		if math.IsNaN(s.Score) || math.IsInf(s.Score, 0) {
+			return nil, apperrors.ErrRerankFailed
+		}
+		// Work on copies so a malformed response cannot partially mutate the fallback.
+		copyItem := *items[s.Index]
+		it := &copyItem
+		if it.Diagnostics != nil {
+			detail := *it.Diagnostics
+			it.Diagnostics = &detail
+		}
 		// 精排分替换融合分。不换的话页面就会出现"0.0150 排在 0.0156 前面"——
 		// 顺序是精排给的，分数还是旧的 RRF 分，两列自相矛盾，也看不出精排生效没有。
 		//
 		// 负分是哨兵（空内容 / 未启用精排），保留原融合分不动。
 		if s.Score >= 0 {
+			if it.Diagnostics == nil {
+				it.Diagnostics = &vo.HitDiagnostics{FusionScore: it.Score}
+			}
+			score := s.Score
+			it.Diagnostics.RerankScore = &score
 			it.Score = s.Score
 		}
 		out = append(out, it)
 	}
+	if len(out) == 0 && len(items) > 0 {
+		return nil, apperrors.ErrRerankFailed
+	}
+	scored := false
+	for _, it := range out {
+		if it.Diagnostics != nil && it.Diagnostics.RerankScore != nil {
+			scored = true
+		}
+	}
+	if !scored {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	}
 	return out, nil
+}
+
+func durationMS(start time.Time) float64 { return float64(time.Since(start).Microseconds()) / 1000 }
+
+func explainHits(items []*vo.SearchItemVO, routes repository.SearchResult) {
+	byID := map[string]*vo.HitDiagnostics{}
+	for _, it := range items {
+		it.Diagnostics = &vo.HitDiagnostics{FusionScore: it.Score}
+		byID[it.ChunkID] = it.Diagnostics
+	}
+	for i, h := range routes.BM25 {
+		if d := byID[h.ChunkID]; d != nil {
+			score := h.Score
+			d.BM25Rank = i + 1
+			d.BM25Score = &score
+		}
+	}
+	for i, h := range routes.KNN {
+		if d := byID[h.ChunkID]; d != nil {
+			score := h.Score
+			d.KNNRank = i + 1
+			d.KNNScore = &score
+		}
+	}
 }
