@@ -27,7 +27,7 @@ func main() {
 			store.SetSecrets(observability.SecretsFrom(cfg))
 		}
 	}
-	store.AddSecrets([]string{os.Getenv("FASTRAG_ADMIN_TOKEN")})
+	store.AddSecrets([]string{os.Getenv("FASTRAG_ADMIN_TOKEN"), os.Getenv("FASTRAG_EVAL_TOKEN")})
 	logsdk.SetLogger(observability.Logger{Logger: logsdk.NewLogrus(logsdk.Options{Module: "fastrag"}), Store: store})
 
 	app := fx.New(infrastructure.Init(config.MustLoad()), fx.Supply(store), fx.Invoke(func(lifecycle fx.Lifecycle) {

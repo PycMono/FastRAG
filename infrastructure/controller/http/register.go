@@ -3,6 +3,7 @@ package http
 import (
 	"github.com/PycMono/FastRAG/infrastructure/admin"
 	docctl "github.com/PycMono/FastRAG/infrastructure/controller/http/doc"
+	evalctl "github.com/PycMono/FastRAG/infrastructure/controller/http/evaluation"
 	"github.com/PycMono/FastRAG/infrastructure/controller/http/health"
 	searchctl "github.com/PycMono/FastRAG/infrastructure/controller/http/search"
 	webctl "github.com/PycMono/FastRAG/infrastructure/controller/http/web"
@@ -16,6 +17,7 @@ const v1Prefix = "/api/v1"
 var Register = fx.Options(
 	fx.Provide(health.NewController),
 	fx.Provide(admin.NewController),
+	fx.Provide(evalctl.NewController),
 	fx.Provide(docctl.NewController),
 	fx.Provide(docctl.NewReadController),
 	fx.Provide(searchctl.NewController),
@@ -27,6 +29,7 @@ var Register = fx.Options(
 type RouteDeps struct {
 	fx.In
 	AdminCtl   *admin.Controller
+	EvalCtl    *evalctl.Controller
 	Router     *gin.Engine
 	HealthCtl  *health.Controller
 	DocCtl     *docctl.Controller
@@ -55,6 +58,25 @@ func RegisterRoutes(d RouteDeps) {
 	management.GET("/config", d.AdminCtl.ReadConfig)
 	management.PUT("/config", d.AdminCtl.SaveConfig)
 	management.GET("/logs", d.AdminCtl.Logs)
+	management.GET("/eval/datasets", d.EvalCtl.Datasets)
+	management.POST("/eval/diagnose", d.EvalCtl.Diagnose)
+	management.GET("/eval/drafts", d.EvalCtl.Drafts)
+	management.POST("/eval/drafts", d.EvalCtl.Prepare)
+	management.POST("/eval/drafts/:id/generate", d.EvalCtl.Generate)
+	management.POST("/eval/drafts/:id/generate-all", d.EvalCtl.StartGeneration)
+	management.POST("/eval/drafts/:id/generate-stop", d.EvalCtl.StopGeneration)
+	management.PUT("/eval/drafts/:id", d.EvalCtl.Review)
+	management.DELETE("/eval/drafts/:id", d.EvalCtl.DeleteDraft)
+	management.POST("/eval/drafts/:id/publish", d.EvalCtl.Publish)
+	management.POST("/eval/runs/:id/baseline", d.EvalCtl.Baseline)
+	management.POST("/eval/runs/:id/compare", d.EvalCtl.Compare)
+	management.GET("/eval/runs", d.EvalCtl.List)
+	management.POST("/eval/runs", d.EvalCtl.Create)
+	management.GET("/eval/runs/:id", d.EvalCtl.Detail)
+	management.GET("/eval/runs/:id/items", d.EvalCtl.Items)
+	management.POST("/eval/runs/:id/cancel", d.EvalCtl.Cancel)
+	management.DELETE("/eval/runs/:id", d.EvalCtl.Delete)
+	management.POST("/eval/runs/:id/retry", d.EvalCtl.Retry)
 	api := d.Router.Group(v1Prefix)
 	{
 		docs := api.Group("/docs")

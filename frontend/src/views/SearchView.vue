@@ -10,7 +10,7 @@ import CopyButton from '../components/CopyButton.vue'
 const props = defineProps<{ workspace: Workspace; initialQuery: string }>()
 const emit = defineEmits<{ open: [id: string] }>()
 const query = ref(props.initialQuery),
-  limit = ref(30),
+  limit = ref(10),
   dense = ref(0.5),
   minScore = ref(0),
   rerank = ref(true),

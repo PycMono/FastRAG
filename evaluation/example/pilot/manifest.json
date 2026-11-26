@@ -1,0 +1,12 @@
+{
+  "dataset_version": "example-v1",
+  "annotation_version": "a1",
+  "corpus_snapshot": "replace-with-isolated-corpus-version",
+  "corpus_hash": "replace-with-verified-corpus-hash",
+  "retrieval_settings": {
+    "bm25_top": 50,
+    "knn_top": 50,
+    "num_candidates": 200,
+    "rank_constant": 60
+  }
+}

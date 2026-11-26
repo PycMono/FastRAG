@@ -75,7 +75,7 @@
     "num_candidates": 200,
     "rank_constant": 60,
     "dense_weight": 0.5,
-    "default_retrieve_count": 0
+    "default_retrieve_count": 20
   },
   "parser": {
     "default": "docling",
@@ -104,6 +104,24 @@
         "formats": ["pdf","docx","doc","pptx","xlsx","md","txt","png","jpg","jpeg"]
       }
     }
+  },
+  "evaluation": {
+    "auto_generate": false,
+    "auto_sample_count": 50,
+    "judge": {
+      "base_url": "https://api.minimax.io/v1",
+      "model": "",
+      "api_key": ""
+    },
+    "enabled": false,
+    "data_dir": "evaluation/datasets",
+    "run_dir": "evaluation/runs",
+    "search_base_url": "http://127.0.0.1:8080",
+    "scorer_base_url": "http://127.0.0.1:18080",
+    "request_timeout_seconds": 240,
+    "run_timeout_seconds": 3600,
+    "environment": "isolated-eval",
+    "git_commit": "unknown"
   },
   "security": {
     "trust_request_tenant": true

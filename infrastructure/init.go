@@ -28,6 +28,9 @@ func Init(conf *config.Config) fx.Option {
 		core(conf),
 
 		fx.Provide(driver.NewEngine),
+		fx.Provide(newEvaluation),
+		fx.Provide(newEvaluationReview),
+		fx.Invoke(connectEvaluationLifecycle),
 		fx.Provide(driver.NewHTTPServer),
 		controller.Register,
 

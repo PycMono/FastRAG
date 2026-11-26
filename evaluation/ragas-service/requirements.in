@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+ragas==0.4.4
+openai

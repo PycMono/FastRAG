@@ -48,6 +48,18 @@ const labels: Record<string, string> = {
   max_idle: '空闲连接数',
   debug: '调试模式',
   app: '应用名称',
+  judge: '评估模型（MiniMax / OpenAI 兼容）',
+  auto_generate: '导入后自动生成待审核测试题（消耗模型额度）',
+  auto_sample_count: '每篇文档自动取样数量（短文可能不足）',
+  base_url: 'API Base URL（需与 API Key 所属平台一致）',
+  data_dir: '评测数据集目录',
+  run_dir: '评测结果目录',
+  search_base_url: 'FastRAG 检索服务地址',
+  scorer_base_url: '内部 Ragas 评分服务地址',
+  request_timeout_seconds: '评分请求超时（秒）',
+  run_timeout_seconds: '整个评测超时（秒）',
+  environment: '评测环境标识',
+  git_commit: '被测代码版本',
 }
 function isSecret(key: string) {
   return /password|secret|token|api_key/i.test(key)

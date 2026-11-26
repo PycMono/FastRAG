@@ -1,0 +1,13 @@
+[
+  {
+    "name": "hybrid",
+    "limit": 10,
+    "retrieve_count": 20,
+    "dense_weight": 0.5,
+    "rerank_switch": false,
+    "embed_model": "",
+    "rerank_model": "",
+    "min_score": 0,
+    "fusion_min_score": 0
+  }
+]

@@ -16,6 +16,7 @@ import {
 import HomeView from './views/HomeView.vue'
 import ConfigView from './views/ConfigView.vue'
 import LogsView from './views/LogsView.vue'
+import EvalView from './views/EvalView.vue'
 import DocumentsView from './views/DocumentsView.vue'
 import ImportView from './views/ImportView.vue'
 import SearchView from './views/SearchView.vue'
@@ -30,6 +31,7 @@ const nav = [
   { id: 'search', label: '检索测试', icon: Search },
   { id: 'config', label: '配置管理', icon: Settings2 },
   { id: 'logs', label: '运行日志', icon: Activity },
+  { id: 'evaluation', label: '检索评测', icon: Activity },
 ]
 const page = ref('home')
 function syncPage() {
@@ -275,6 +277,11 @@ onUnmounted(() => {
       </div>
       <ConfigView v-if="page === 'config'" @dirty="configDirty = $event" />
       <LogsView v-if="page === 'logs'" :active="page === 'logs'" />
+      <EvalView
+        v-if="page === 'evaluation'"
+        :active="page === 'evaluation'"
+        :workspace="workspace"
+      />
     </main>
     <footer class="site-footer">
       <span>FastRAG</span>

@@ -5,6 +5,7 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/PycMono/FastRAG/common/dto"
 	"github.com/PycMono/FastRAG/common/vo"
@@ -26,6 +27,12 @@ type Service struct {
 	splitter   *domainservice.Splitter
 	idGen      repository.IIDService
 	tm         transaction.Manager
+	evaluation interfaces.IEvalDocumentLifecycle
+}
+
+// SetEvaluationLifecycle 由装配层启用，不增加核心导入的强制依赖。
+func (s *Service) SetEvaluationLifecycle(observer interfaces.IEvalDocumentLifecycle) {
+	s.evaluation = observer
 }
 
 func NewService(
@@ -73,6 +80,11 @@ func (s *Service) DeleteDoc(ctx context.Context, in *dto.DocDeleteDTO) (*vo.DocD
 	}
 
 	// ES 清理放到事务之后：MySQL 是权威且即时的，ES 可以迟、可以重试。
+	if s.evaluation != nil {
+		if err := s.evaluation.Removed(ctx, kb.Tenant, kb.No, fmt.Sprint(doc.ID)); err != nil {
+			logsdk.Error(ctx, "清理文档评测数据失败", logsdk.Err(err))
+		}
+	}
 	// 这一步失败只会留下幽灵切片——文档行已经硬删，存活校验查不到它，切片自然被丢弃
 	deleted, err := s.store.DeleteByQuery(ctx, repository.VectorFilter{
 		Tenant: kb.Tenant, DocID: doc.ID,
@@ -101,6 +113,12 @@ func (s *Service) DeleteKB(ctx context.Context, in *dto.KBDeleteDTO) error {
 		return err
 	}); err != nil {
 		return err
+	}
+
+	if s.evaluation != nil {
+		if err := s.evaluation.Removed(ctx, kb.Tenant, kb.No, ""); err != nil {
+			logsdk.Error(ctx, "清理知识库评测数据失败", logsdk.Err(err))
+		}
 	}
 
 	if _, err := s.store.DeleteByQuery(ctx, repository.VectorFilter{

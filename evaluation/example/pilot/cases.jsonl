@@ -1,0 +1,1 @@
+{"id":"q001","question":"API Key 泄漏后如何处理？","tenant":"eval-a","kb_nos":["security"],"category":"multi_evidence","split":"dev","answerable":true,"critical":true,"reference":"立即吊销旧 Key，创建新 Key 并更新使用方，同时检查调用记录。","reference_sources":[{"doc_id":"replace-with-real-document-id","heading_path":"安全管理/泄漏处置"}],"reference_context_ids":null}

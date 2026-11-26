@@ -54,6 +54,7 @@ const titles: Record<string, string> = {
   redis: 'Redis',
   search: '检索策略',
   security: '安全配置',
+  evaluation: '检索评测 / MiniMax',
   general: '基础设置',
 }
 const groups = computed(() => [
@@ -74,6 +75,26 @@ async function load() {
   try {
     snapshot.value = await adminRequest<Snapshot>('config')
     draft.value = JSON.parse(JSON.stringify(snapshot.value.config))
+    if (!draft.value.evaluation)
+      draft.value.evaluation = {
+        enabled: false,
+        data_dir: 'evaluation/datasets',
+        run_dir: 'evaluation/runs',
+        search_base_url: 'http://127.0.0.1:8080',
+        scorer_base_url: 'http://127.0.0.1:18080',
+        request_timeout_seconds: 240,
+        run_timeout_seconds: 3600,
+      }
+    if (!draft.value.evaluation.judge)
+      draft.value.evaluation.judge = {
+        base_url: 'https://api.minimax.io/v1',
+        model: '',
+        api_key: '',
+      }
+    if (draft.value.evaluation.auto_generate === undefined)
+      draft.value.evaluation.auto_generate = false
+    if (draft.value.evaluation.auto_sample_count === undefined)
+      draft.value.evaluation.auto_sample_count = 50
     original.value = JSON.stringify(draft.value)
     rawJSON.value = JSON.stringify(draft.value, null, 2)
     if (!groups.value.includes(section.value)) section.value = 'general'
@@ -106,7 +127,8 @@ async function save() {
     draft.value = JSON.parse(JSON.stringify(result.config))
     original.value = JSON.stringify(draft.value)
     rawJSON.value = JSON.stringify(draft.value, null, 2)
-    message.value = '配置已保存到 config.json。当前服务仍使用启动时的配置，请手动重启服务后生效。'
+    message.value =
+      '配置已保存。评测模型的地址、名称和 API Key 下次评分时生效；其他配置当前服务仍使用启动时的配置，请手动重启后生效。'
   } catch (e) {
     error.value = (e as Error).message
   } finally {

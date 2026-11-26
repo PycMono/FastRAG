@@ -21,12 +21,13 @@ type Config struct {
 	Redis           RedisConfig `json:"redis"`             // Redis 配置
 	SnowflakeNodeID int         `json:"snowflake_node_id"` // 雪花 ID 节点号 [0, 1023]
 
-	ES        ESConfig        `json:"es"` // Elasticsearch
-	Embedding EmbeddingConfig `json:"embedding"`
-	Rerank    RerankConfig    `json:"rerank"`
-	Parser    ParserConfig    `json:"parser"`
-	Search    SearchConfig    `json:"search"`
-	Security  SecurityConfig  `json:"security"`
+	ES         ESConfig         `json:"es"` // Elasticsearch
+	Embedding  EmbeddingConfig  `json:"embedding"`
+	Rerank     RerankConfig     `json:"rerank"`
+	Parser     ParserConfig     `json:"parser"`
+	Search     SearchConfig     `json:"search"`
+	Security   SecurityConfig   `json:"security"`
+	Evaluation EvaluationConfig `json:"evaluation"`
 }
 
 // SecurityConfig 部署前提的显式确认（§6.1）。
@@ -453,7 +454,10 @@ func (c *Config) validate() error {
 	if err := c.Rerank.validate(); err != nil {
 		return err
 	}
-	return c.Parser.validate(c.HTTP.WriteTimeout * 1000)
+	if err := c.Parser.validate(c.HTTP.WriteTimeout * 1000); err != nil {
+		return err
+	}
+	return c.Evaluation.validate()
 }
 
 // SearchConfig 检索调参

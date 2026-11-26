@@ -186,6 +186,12 @@ func (s *Service) ingestDoc(
 		return nil, err
 	}
 
+	if s.evaluation != nil {
+		if err := s.evaluation.Imported(ctx, kb.Tenant, kb.No, fmt.Sprint(docID), docName, content); err != nil {
+			logsdk.Error(ctx, "文档已导入，但自动准备评测失败", logsdk.Err(err))
+		}
+	}
+
 	return &vo.DocIngestVO{
 		DocID:      docID,
 		DocName:    docName,

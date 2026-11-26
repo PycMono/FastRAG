@@ -94,7 +94,7 @@ make run
 
 检索设置默认开启「记录本次检索诊断」，检索后展开「检索诊断」可查看实际生效的配置、各阶段候选数量、阶段耗时，以及当前片段的关键词/向量排名与原始分、RRF 融合分和精排分。切换选中片段时同步更新来源信息。关闭诊断后仍返回降级及评分类型元数据。
 
-关键词召回上限由 `search.bm25_top` 控制，向量召回上限由 `search.knn_top` 控制；`search.num_candidates` 作用于每个向量子句、每个分片的近似搜索候选池，实际值至少为向量召回上限。前两项 0 默认 100，候选池 0 默认向量召回上限 ×5。召回上限最大 1000，候选池最大 10000。`retrieve_count` 仅限制融合去重、存活校验和融合分过滤后送入精排的候选数，不再改写两路 ES 召回上限。默认精排预算读取 `search.default_retrieve_count`，0 使用 `limit ×2`，有效预算至少为 `limit`、最多 200。未开启精排时不使用该预算截断融合结果。
+关键词召回上限由 `search.bm25_top` 控制，向量召回上限由 `search.knn_top` 控制；`search.num_candidates` 作用于每个向量子句、每个分片的近似搜索候选池，实际值至少为向量召回上限。前两项 0 默认 100，候选池 0 默认向量召回上限 ×5。召回上限最大 1000，候选池最大 10000。`retrieve_count` 仅限制融合去重、存活校验和融合分过滤后送入精排的候选数，不再改写两路 ES 召回上限。新版页面默认返回 10 条，示例配置的精排预算为 20 条。默认精排预算读取 `search.default_retrieve_count`，0 使用 `limit ×2`，有效预算至少为 `limit`、最多 200。未开启精排时不使用该预算截断融合结果。
 
 API 请求增加 `diagnostics`（默认 false）和 `fusion_min_score`（默认 0）。响应增加 `meta`，包含 `score_type`（rrf/rerank/mixed）、`rerank_requested`、`rerank_applied`、`degraded`、`threshold_skipped` 和不含上游原始错误的 `warnings`。开启诊断时增加顶层 `diagnostics` 和每条结果的 `diagnostics`，旧的 `items` 与 `score` 字段保留。
 

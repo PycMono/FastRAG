@@ -78,3 +78,12 @@ profile.cov
 # Rotating application logs
 /logs/
 .fastrag-config-*
+
+# 私有评测数据、结果与 Python 本地环境
+/evaluation/datasets/
+/evaluation/runs/
+**/.venv/
+**/.venv312/
+**/__pycache__/
+**/.pytest_cache/
+/deploy/ragas/.env

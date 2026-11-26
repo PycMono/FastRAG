@@ -4,6 +4,7 @@ import { LockKeyhole, ArrowRight } from '@lucide/vue'
 import { adminRequest, setAdminToken, hasAdminToken } from '../admin'
 import Notice from './Notice.vue'
 const emit = defineEmits<{ unlock: []; lock: [] }>()
+defineProps<{ quiet?: boolean }>()
 const unlocked = ref(hasAdminToken()),
   token = ref(''),
   busy = ref(false),
@@ -56,7 +57,7 @@ function lock() {
     >
   </div>
   <template v-else
-    ><div class="admin-session">
+    ><div v-if="!quiet" class="admin-session">
       <span><LockKeyhole :size="13" />管理会话已解锁</span
       ><button class="text-button" @click="lock">锁定管理页面</button>
     </div>

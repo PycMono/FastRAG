@@ -624,6 +624,8 @@ test('retrieval weight slider, numeric input and presets stay in sync with the A
   await page.getByRole('button', { name: '开始检索' }).click()
   await expect.poll(() => requests.filter((r) => r.path.endsWith('/search')).length).toBe(1)
   expect(requests.find((r) => r.path.endsWith('/search'))?.body.dense_weight).toBe(0.7)
+  expect(requests.find((r) => r.path.endsWith('/search'))?.body.limit).toBe(10)
+  expect(requests.find((r) => r.path.endsWith('/search'))?.body.retrieve_count).toBeUndefined()
   await page.getByRole('button', { name: '关键词优先', exact: true }).click()
   await expect(slider).toHaveValue('0')
   await page.getByRole('button', { name: '语义优先', exact: true }).click()
