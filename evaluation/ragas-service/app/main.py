@@ -7,6 +7,7 @@ import math
 import os
 import secrets
 import time
+import warnings
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -17,15 +18,21 @@ os.environ["RAGAS_DO_NOT_TRACK"] = "true"
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from openai import AsyncOpenAI
+from langchain_openai import ChatOpenAI
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from ragas import EvaluationDataset
 from ragas.dataset_schema import SingleTurnSample
-from ragas.llms import llm_factory
+from ragas.evaluation import aevaluate
+from ragas.llms import LangchainLLMWrapper, llm_factory
+from ragas.run_config import RunConfig
 from ragas.metrics.collections import ContextPrecision, ContextRecall, ContextRelevance
 
-try:
-    import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import ragas.metrics as legacy_metrics
 
+try:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         from ragas.metrics import IDBasedContextPrecision, IDBasedContextRecall
@@ -59,6 +66,12 @@ class EvaluationInput(BaseModel):
     retrieved_context_ids: list[str] = Field(max_length=100)
     reference_context_ids: list[str] | None = None
     metrics: list[str] = Field(min_length=1, max_length=3)
+    judge: JudgeConfig | None = None
+
+
+class EvaluationBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    samples: list[EvaluationInput] = Field(min_length=1, max_length=50)
     judge: JudgeConfig | None = None
 
 
@@ -405,6 +418,181 @@ async def metric_result(llm, name: str, data: EvaluationInput, timeout: float):
     return result
 
 
+def validate_judge(judge: JudgeConfig | None) -> None:
+    if judge is None:
+        return
+    endpoint = urlparse(judge.base_url)
+    # 管理员输入也不能把持有 key 的请求发往内网或任意重定向目标。
+    if (
+        endpoint.scheme != "https"
+        or endpoint.hostname
+        not in {"api.minimax.io", "api.minimaxi.com", "api.minimax.chat"}
+        or endpoint.username
+        or endpoint.password
+        or endpoint.query
+        or endpoint.fragment
+        or endpoint.port not in {None, 443}
+    ):
+        raise HTTPException(422, "unsupported MiniMax endpoint")
+
+
+def validate_sample(data: EvaluationInput) -> None:
+    if set(data.metrics) - NAMES or len(set(data.metrics)) != len(data.metrics):
+        raise HTTPException(422, "unknown or duplicate metrics")
+    if len(data.retrieved_contexts) != len(data.retrieved_context_ids):
+        raise HTTPException(422, "context ID mapping mismatch")
+    if any(not value for value in data.retrieved_context_ids) or len(
+        set(data.retrieved_context_ids)
+    ) != len(data.retrieved_context_ids):
+        raise HTTPException(422, "empty or duplicate context IDs")
+    if any(not value for value in (data.reference_context_ids or [])):
+        raise HTTPException(422, "blank reference context ID")
+    if any(not value.strip() for value in data.retrieved_contexts):
+        raise HTTPException(422, "blank context")
+    if sum(map(len, data.retrieved_contexts)) > 100000:
+        raise HTTPException(413, "context budget exceeded")
+
+
+def batch_metric(name: str, has_reference_ids: bool, llm):
+    # ragas.evaluate 只接受 legacy Metric 实例；collections 指标在单题接口里使用。
+    if name == "ContextRelevance":
+        return legacy_metrics.ContextRelevance()
+    if name == "ContextPrecision":
+        if has_reference_ids and IDBasedContextPrecision is not None:
+            return legacy_metrics.IDBasedContextPrecision()
+        return legacy_metrics.ContextPrecision()
+    if name == "ContextRecall":
+        if has_reference_ids and IDBasedContextRecall is not None:
+            return legacy_metrics.IDBasedContextRecall()
+        return legacy_metrics.ContextRecall()
+    raise ValueError("unknown metric")
+
+
+def evaluation_metadata(judge_model: str | None) -> dict:
+    version = importlib.metadata.version("ragas")
+    metadata = {
+        "judge_model": judge_model,
+        "judge_model_version": os.environ.get("JUDGE_MODEL_VERSION", "unknown"),
+        "ragas_version": version,
+        "prompt_version": "ragas-builtin-" + version,
+        "temperature": "0",
+        "judge_max_tokens": JUDGE_MAX_TOKENS,
+        "seed": "42",
+        "execution": "ragas.evaluate",
+        "total_tokens": None,
+        "usage_status": "unknown",
+    }
+    metadata["evaluation_config_hash"] = hashlib.sha256(
+        repr(sorted(metadata.items())).encode()
+    ).hexdigest()
+    return metadata
+
+
+def batch_metric_result(name: str, metric, scores: dict) -> dict:
+    value = scores.get(metric.name)
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return {
+            "name": name,
+            "status": "error",
+            "value": None,
+            "computed_by": "ragas",
+            "error": "批量评分失败",
+            "error_details": {
+                "stage": "ragas_evaluate",
+                "category": "metric_error",
+                "exception_type": "NaN",
+            },
+        }
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if not math.isfinite(value) or not 0 <= value <= 1:
+        return {
+            "name": name,
+            "status": "error",
+            "value": None,
+            "computed_by": "ragas",
+            "error": "批量评分返回无效值",
+            "error_details": {
+                "stage": "ragas_evaluate",
+                "category": "invalid_value",
+                "exception_type": "float",
+            },
+        }
+    return {
+        "name": name,
+        "status": "ok",
+        "value": value,
+        "computed_by": "id_based" if metric.name.startswith("id_based") else "ragas",
+    }
+
+
+async def run_batch(llm, samples: list[EvaluationInput], timeout: float) -> list[dict]:
+    outputs: list[dict | None] = [None] * len(samples)
+    groups: dict[tuple, list[tuple[int, EvaluationInput]]] = {}
+    for index, sample in enumerate(samples):
+        has_ids = bool(sample.reference_context_ids and sample.retrieved_context_ids)
+        key = (tuple(sample.metrics), has_ids)
+        groups.setdefault(key, []).append((index, sample))
+
+    for (names, has_ids), entries in groups.items():
+        dataset = EvaluationDataset(
+            samples=[
+                SingleTurnSample(
+                    user_input=sample.user_input,
+                    retrieved_contexts=sample.retrieved_contexts,
+                    retrieved_context_ids=sample.retrieved_context_ids,
+                    reference_context_ids=sample.reference_context_ids or [],
+                    reference=sample.reference,
+                )
+                for _, sample in entries
+            ]
+        )
+        metrics = []
+        metric_by_name = {}
+        for name in names:
+            metric = batch_metric(name, has_ids, llm)
+            metrics.append(metric)
+            metric_by_name[name] = metric
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = await aevaluate(
+                dataset,
+                metrics=metrics,
+                llm=llm,
+                raise_exceptions=False,
+                show_progress=False,
+                run_config=RunConfig(
+                    timeout=int(timeout),
+                    max_retries=1,
+                    max_wait=5,
+                    max_workers=2,
+                    seed=42,
+                ),
+            )
+        if len(result.scores) != len(entries):
+            raise RuntimeError("批量评分结果数量不符")
+
+        for position, (index, sample) in enumerate(entries):
+            scores = result.scores[position]
+            metrics_out = [
+                batch_metric_result(name, metric_by_name[name], scores)
+                for name in names
+            ]
+            outputs[index] = {
+                "request_id": sample.request_id,
+                "overall_status": "succeeded"
+                if all(item["status"] in {"ok", "not_applicable"} for item in metrics_out)
+                else "partial",
+                "metrics": metrics_out,
+                "metadata": evaluation_metadata(None),
+            }
+
+    return [value for value in outputs if value is not None]
+
+
 @app.post("/evaluate", dependencies=[Depends(auth)])
 async def evaluate(data: EvaluationInput, request: Request):
     if data.judge:
@@ -509,3 +697,65 @@ async def evaluate(data: EvaluationInput, request: Request):
         "metrics": values,
         "metadata": metadata,
     }
+
+
+@app.post("/evaluate-batch", dependencies=[Depends(auth)])
+async def evaluate_batch(data: EvaluationBatch, request: Request):
+    judge = data.judge or next((item.judge for item in data.samples if item.judge), None)
+    validate_judge(judge)
+    if judge is None:
+        raise HTTPException(503, "configure judge in FastRAG settings")
+    for sample in data.samples:
+        validate_sample(sample)
+
+    if request.app.state.semaphore.locked():
+        raise HTTPException(429, "evaluation busy")
+    await request.app.state.semaphore.acquire()
+
+    async def work():
+        # 不跟随上游重定向；judge.base_url 已在 validate_judge 里限定为 MiniMax 域名。
+        http_client = httpx.Client(
+            follow_redirects=False, timeout=request.app.state.timeout
+        )
+        http_async_client = httpx.AsyncClient(
+            follow_redirects=False, timeout=request.app.state.timeout
+        )
+        try:
+            # legacy 指标需要 LangChain LLM 的 agenerate_text；InstructorLLM 只适用于 collections 指标。
+            llm = LangchainLLMWrapper(
+                ChatOpenAI(
+                    model=judge.model,
+                    base_url=judge.base_url,
+                    api_key=judge.api_key,
+                    temperature=0,
+                    max_tokens=JUDGE_MAX_TOKENS,
+                    timeout=request.app.state.timeout,
+                    max_retries=0,
+                    http_client=http_client,
+                    http_async_client=http_async_client,
+                )
+            )
+            return await run_batch(llm, data.samples, request.app.state.timeout)
+        finally:
+            http_client.close()
+            await http_async_client.aclose()
+            request.app.state.semaphore.release()
+
+    task = asyncio.create_task(work())
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                raise HTTPException(499, "request cancelled")
+            await asyncio.wait({task}, timeout=0.2)
+        results = await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    metadata = evaluation_metadata(
+        judge.model if judge else request.app.state.model
+    )
+    for result in results:
+        result["metadata"] = metadata
+    return {"results": results, "metadata": metadata}

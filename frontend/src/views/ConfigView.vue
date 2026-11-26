@@ -78,9 +78,7 @@ async function load() {
     if (!draft.value.evaluation)
       draft.value.evaluation = {
         enabled: false,
-        data_dir: 'evaluation/datasets',
-        run_dir: 'evaluation/runs',
-        search_base_url: 'http://127.0.0.1:8080',
+        retention_days: 30,
         scorer_base_url: 'http://127.0.0.1:18080',
         request_timeout_seconds: 240,
         run_timeout_seconds: 3600,

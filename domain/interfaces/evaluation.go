@@ -10,9 +10,9 @@ import (
 var ErrEvalServiceBusy = errors.New("评分服务忙，请稍后重试")
 
 type IEvalSearcher interface {
-	Search(context.Context, entity.EvalCase, entity.EvalProfile) (*entity.EvalRetrieval, error)
+	SearchForEvaluation(context.Context, entity.EvalCase, entity.EvalProfile) (*entity.EvalRetrieval, error)
 }
 
 type IEvalScorer interface {
-	Score(context.Context, entity.EvalScoreInput) (*entity.EvalScoreOutput, error)
+	ScoreBatch(context.Context, []entity.EvalScoreInput) ([]entity.EvalScoreOutput, error)
 }

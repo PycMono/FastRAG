@@ -1,0 +1,21 @@
+name: fastrag-evaluation
+services:
+  evaluator:
+    build: .
+    image: fastrag/ragas-evaluator:20261125
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "127.0.0.1:18080:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

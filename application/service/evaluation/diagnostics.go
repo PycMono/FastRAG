@@ -1,3 +1,6 @@
+// 本文件把保存的逐题结果投影成检索工程指标，不调用模型，也不重新检索。
+// 评分与任务执行见 task.go。
+
 package evaluation
 
 import (
@@ -10,6 +13,9 @@ import (
 	"github.com/PycMono/FastRAG/domain/entity"
 )
 
+// ── 内部实现 ──
+
+// percentile 计算给定分位的值。
 func percentile(values []float64, quantile float64) *float64 {
 	if len(values) == 0 {
 		return nil

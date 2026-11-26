@@ -4,7 +4,7 @@ import { adminRequest } from '../admin'
 import AdminGate from '../components/AdminGate.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import Pagination from '../components/Pagination.vue'
-import { BookOpen, ChevronRight, Play, RefreshCw, Trash2, X } from '@lucide/vue'
+import { BookOpen, ChevronRight, RefreshCw, Trash2, X } from '@lucide/vue'
 import type { Workspace } from '../types'
 import EvaluationReview from '../components/EvaluationReview.vue'
 import { evaluationConclusion } from '../evaluationResult'
@@ -92,6 +92,15 @@ type Row = {
   }
 }
 
+type Metric = {
+  name: string
+  status: string
+  value: number | null
+  error?: string
+  error_details?: Record<string, string | number>
+  computed_by?: string
+}
+
 const props = defineProps<{ active: boolean; workspace: Workspace }>()
 const mode = ref<'home' | 'diagnostic' | 'review' | 'history' | 'result'>('home')
 const report = ref<{
@@ -147,9 +156,6 @@ function datasetTitle(dataset: Dataset) {
 function datasetLabel(dataset: Dataset) {
   return `${datasetTitle(dataset)} · ${dataset.cases} 题`
 }
-const currentDatasetTitle = computed(() =>
-  chosen.value ? datasetTitle(chosen.value) : '尚未选择题库',
-)
 function formatRunName(name?: string) {
   const value = name || '评估'
   if (value.startsWith('失败项重评')) return value
@@ -235,18 +241,152 @@ const conclusion = computed(() =>
     report: report.value,
   }),
 )
-const failureOnly = ref(false)
+const createOpen = ref(false)
+const rowFilter = ref<'all' | 'failed' | 'low' | 'empty' | 'boundary'>('all')
+const detailRow = ref<Row>()
 const displayedRows = computed(() =>
-  rows.value.filter(
-    (row) =>
-      !failureOnly.value ||
-      row.retrieval_status === 'error' ||
-      row.retrieval_status === 'timeout' ||
-      row.score?.metrics.some((metric) =>
-        ['error', 'timeout', 'cancelled'].includes(metric.status),
-      ),
-  ),
+  rows.value.filter((row) => {
+    switch (rowFilter.value) {
+      case 'failed':
+        return (
+          row.retrieval_status === 'error' ||
+          row.retrieval_status === 'timeout' ||
+          row.score?.metrics.some((metric) =>
+            ['error', 'timeout', 'cancelled'].includes(metric.status),
+          )
+        )
+      case 'low':
+        return row.score?.metrics.some(
+          (metric) => metric.status === 'ok' && metric.value !== null && metric.value < 0.6,
+        )
+      case 'empty':
+        return row.retrieval_status === 'empty'
+      case 'boundary':
+        return row.boundary_violation
+      default:
+        return true
+    }
+  }),
 )
+
+function openCreate() {
+  if (!datasets.value.length) {
+    setMode('review')
+    return
+  }
+  createOpen.value = true
+  error.value = ''
+}
+
+function closeCreate() {
+  createOpen.value = false
+}
+
+function submitCreate() {
+  void create(false)
+}
+
+function metricValue(row: Row, name: string) {
+  const metric = row.score?.metrics.find((entry) => entry.name === name)
+  if (!metric) return '—'
+  if (metric.status === 'ok' && metric.value !== null) return (metric.value * 100).toFixed(0)
+  return statusNames[metric.status] || metric.status
+}
+
+function metricTone(row: Row, name: string) {
+  const metric = row.score?.metrics.find((entry) => entry.name === name)
+  if (!metric) return 'muted'
+  if (metric.status !== 'ok') return 'bad'
+  if (metric.value === null) return 'muted'
+  if (metric.value < 0.6) return 'warn'
+  return 'good'
+}
+
+function runMetric(run: Run, name: string) {
+  const entry = Object.entries(run.summary || {}).find(([key]) => key.endsWith('/' + name))
+  const mean = entry?.[1]?.mean
+  return mean === null || mean === undefined ? '—' : (mean * 100).toFixed(0)
+}
+
+function runErrors(run: Run | undefined, name: string) {
+  if (!run) return 0
+  const entry = Object.entries(run.summary || {}).find(([key]) => key.endsWith('/' + name))
+  return entry?.[1]?.errors || 0
+}
+
+const overviewMetrics = computed(() => [
+  {
+    name: 'ContextRelevance',
+    title: '上下文相关性',
+    value: latestRun.value ? runMetric(latestRun.value, 'ContextRelevance') : '—',
+    errors: runErrors(latestRun.value, 'ContextRelevance'),
+  },
+  {
+    name: 'ContextPrecision',
+    title: '证据排序质量',
+    value: latestRun.value ? runMetric(latestRun.value, 'ContextPrecision') : '—',
+    errors: runErrors(latestRun.value, 'ContextPrecision'),
+  },
+  {
+    name: 'ContextRecall',
+    title: '必要信息覆盖',
+    value: latestRun.value ? runMetric(latestRun.value, 'ContextRecall') : '—',
+    errors: runErrors(latestRun.value, 'ContextRecall'),
+  },
+])
+
+const runSearch = ref('')
+const compareSelection = ref<string[]>([])
+const compareOpen = ref(false)
+const compareRuns = computed(() =>
+  compareSelection.value
+    .map((id) => runs.value.find((run) => run.id === id))
+    .filter((run): run is Run => !!run),
+)
+
+function toggleCompare(id: string) {
+  const index = compareSelection.value.indexOf(id)
+  if (index >= 0) {
+    compareSelection.value.splice(index, 1)
+    return
+  }
+  if (compareSelection.value.length >= 2) {
+    compareSelection.value.shift()
+  }
+  compareSelection.value.push(id)
+}
+
+function openCompare() {
+  if (compareSelection.value.length === 2) compareOpen.value = true
+}
+
+function closeCompare() {
+  compareOpen.value = false
+}
+
+function compareValue(run: Run | undefined, name: string) {
+  if (!run) return '—'
+  return runMetric(run, name)
+}
+
+function compareDelta(left: Run | undefined, right: Run | undefined, name: string) {
+  if (!left || !right) return '—'
+  const find = (run: Run) =>
+    Object.entries(run.summary || {}).find(([key]) => key.endsWith('/' + name))?.[1]?.mean
+  const a = find(left)
+  const b = find(right)
+  if (a === null || a === undefined || b === null || b === undefined) return '—'
+  const delta = b - a
+  return `${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(0)}`
+}
+
+function openRow(row: Row) {
+  detailRow.value = row
+}
+
+function closeRow() {
+  detailRow.value = undefined
+}
 
 const failedMetricsOnPage = computed(() =>
   rows.value.flatMap((row) =>
@@ -257,7 +397,6 @@ const failedMetricsOnPage = computed(() =>
 )
 
 const latestRun = computed(() => runs.value.find((run) => run.dataset === selected.value))
-const recentRuns = computed(() => runs.value.slice(0, 3))
 const cancelled = computed(() => current.value?.status === 'cancelled')
 const canSetBaseline = computed(
   () =>
@@ -349,21 +488,16 @@ function friendlyError(message?: string) {
   if (text.includes('context canceled')) return '任务已取消。'
   return text
 }
-const pageTitle = computed(() => {
-  if (mode.value === 'review') return '题库'
-  if (mode.value === 'history') return '评估记录'
-  if (mode.value === 'diagnostic') return '单题诊断'
-  return '检索效果评估'
-})
-const pageSubtitle = computed(() => {
-  if (mode.value === 'review') return '出题一次，之后重复评估。核对至少 3 道即可发布。'
-  if (mode.value === 'history') return '查看每次运行的结果和失败原因。'
-  if (mode.value === 'diagnostic') return '直接查一个问题，只评估相关性。'
-  return '用固定题目检查：资料找全了吗？有用的内容排前面了吗？'
-})
 const historyFilter = ref<'all' | 'active' | 'failed' | 'succeeded' | 'library'>('all')
 const filteredRuns = computed(() =>
   runs.value.filter((run) => {
+    const term = runSearch.value.trim().toLowerCase()
+    if (
+      term &&
+      !`${run.experiment_name} ${run.dataset || ''}`.toLowerCase().includes(term)
+    ) {
+      return false
+    }
     if (historyFilter.value === 'active')
       return !['succeeded', 'partial', 'failed', 'cancelled', 'timed_out', 'interrupted'].includes(
         run.status,
@@ -377,7 +511,7 @@ const filteredRuns = computed(() =>
 )
 
 function revealFailure(caseID: string) {
-  failureOnly.value = true
+  rowFilter.value = 'failed'
   requestAnimationFrame(() => {
     const element = document.getElementById('eval-case-' + caseID) as HTMLDetailsElement | null
     if (element) {
@@ -400,7 +534,7 @@ async function retryFailed() {
   busy.value = true
   try {
     const result = await adminRequest<{ run_id: string }>(
-      `eval/runs/${current.value.id}/retry`,
+      `eval/runs/${current.value.id}/rescore`,
       {},
       'POST',
     )
@@ -410,6 +544,50 @@ async function retryFailed() {
   } finally {
     busy.value = false
   }
+}
+
+function failureCategory(metric: Metric) {
+  return String(metric.error_details?.category || (metric.computed_by === 'transport' ? 'transport' : 'unknown'))
+}
+
+function failureAdvice(metric: Metric) {
+  const category = failureCategory(metric)
+  if (category === 'incomplete_output') {
+    return '裁判模型输出被截断。不是检索 0 分；可重评该项。持续出现时降低单次上下文数量，或换更稳定的裁判模型。'
+  }
+  if (category === 'timeout') {
+    return '裁判模型超时。检查模型服务、网络和额度后重评；不是检索失败。'
+  }
+  if (category === 'rate_limit') {
+    return '裁判模型限流或额度不足。等待后重评；不是检索失败。'
+  }
+  if (category === 'provider_http') {
+    return '裁判模型返回上游 HTTP 错误。检查模型地址、密钥和额度；不是检索失败。'
+  }
+  if (category === 'invalid_output' || category === 'invalid_value') {
+    return '模型返回结构或数值不符合要求。先重评；持续失败时检查模型兼容性和提示词。'
+  }
+  if (category === 'metric_error') {
+    return '批量评分没有返回有效值。可能是个别样本失败；重评失败项，仍失败时改小批量或检查模型服务。'
+  }
+  if (category === 'transport') {
+    return '评分服务不可达或请求失败。检查评分服务、token 和网络；不是检索失败。'
+  }
+  return '该项未得到有效评分。先重评；不要把它当成检索 0 分。'
+}
+
+function failureSummary() {
+  const entries = failedMetricsOnPage.value
+  if (!entries.length) return ''
+  const retrieval = entries.filter((entry) => entry.metric.computed_by === 'transport')
+  const scoring = entries.filter((entry) => entry.metric.computed_by !== 'transport')
+  if (scoring.length && !retrieval.length) {
+    return '检索本身没有失败；失败的是评分模型。以下项没有计入均值，也不代表检索 0 分。'
+  }
+  if (retrieval.length && !scoring.length) {
+    return '评分服务调用失败，先检查评分服务是否在线、token 是否正确。'
+  }
+  return '同时存在评分失败和评分服务调用失败，先处理服务不可达，再重评失败项。'
 }
 
 function metricName(key: string | number) {
@@ -504,6 +682,8 @@ async function show(id: string, target = 1, open = true) {
   if (current.value?.id !== id) {
     report.value = undefined
     baselineMessage.value = ''
+    rowFilter.value = 'all'
+    detailRow.value = undefined
   }
   const version = ++sequence
 
@@ -527,12 +707,13 @@ async function show(id: string, target = 1, open = true) {
   }
 }
 
-async function create() {
+async function create(confirm = true) {
   if (!chosen.value) {
     setMode('review')
     return
   }
   if (
+    confirm &&
     !(await askConfirm({
       title: '运行评估',
       message: `将执行 ${chosen.value.search_requests} 次检索，并调用评估模型评分。费用另计。`,
@@ -552,6 +733,7 @@ async function create() {
       { dataset: selected.value, experiment_name: experimentName, hypothesis: hypothesis.value },
       'POST',
     )
+    createOpen.value = false
     await load()
     await show(data.run_id)
   } catch (e) {
@@ -696,16 +878,17 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="eval-page">
-    <header v-if="mode !== 'result'" class="eval-hero">
-      <div>
+    <header v-if="mode !== 'result'" class="eval-toolbar">
+      <div class="eval-title">
         <span class="eval-eyebrow">EVALUATION</span>
-        <h1>{{ pageTitle }}</h1>
-        <p>{{ pageSubtitle }}</p>
+        <h1>检索评测</h1>
+        <p>{{ workspace.tenant }} / {{ workspace.kb_no }}</p>
       </div>
-      <div class="eval-workspace">
-        <span>当前工作区</span>
-        <strong>{{ workspace.tenant }} / {{ workspace.kb_no }}</strong>
-        <small>如需切换，使用右上角「切换工作区」</small>
+      <div class="eval-toolbar-actions">
+        <select v-if="datasets.length" v-model="selected" aria-label="选择题库">
+          <option v-for="d in datasets" :key="d.name" :value="d.name">{{ datasetLabel(d) }}</option>
+        </select>
+        <button class="eval-primary" @click="openCreate">新建评估</button>
       </div>
     </header>
 
@@ -715,14 +898,20 @@ onBeforeUnmount(() => {
         <button aria-label="关闭" @click="dismissError"><X :size="15" /></button>
       </div>
 
-      <nav class="eval-segments" aria-label="评估视图">
-        <button :class="{ active: mode === 'home' }" @click="setMode('home')">评估</button>
+      <nav class="eval-tabs" aria-label="评估视图">
+        <button
+          :class="{ active: mode === 'home' || mode === 'history' }"
+          @click="setMode('home')"
+        >
+          实验
+        </button>
         <button :class="{ active: mode === 'review' }" @click="setMode('review')">题库</button>
-        <button :class="{ active: mode === 'history' }" @click="setMode('history')">记录</button>
-        <button class="eval-link" @click="setMode('diagnostic')">单题诊断</button>
+        <button :class="{ active: mode === 'diagnostic' }" @click="setMode('diagnostic')">
+          单题诊断
+        </button>
       </nav>
 
-      <template v-if="mode === 'home'">
+      <template v-if="mode === 'home' || mode === 'history'">
         <section v-if="!datasets.length" class="eval-card eval-empty">
           <span class="eval-empty-icon"><BookOpen :size="26" /></span>
           <h2>先准备一组题</h2>
@@ -730,71 +919,109 @@ onBeforeUnmount(() => {
           <button class="eval-primary" @click="setMode('review')">创建题库</button>
         </section>
         <template v-else>
-          <section class="eval-card eval-launch">
-            <div class="eval-launch-head">
-              <div>
-                <span class="eval-muted">当前题库</span>
-                <h2>{{ currentDatasetTitle }}</h2>
-                <p>{{ chosen?.cases }} 道题 · {{ chosen?.profile_summary || '1 组配置' }}</p>
-              </div>
-              <select v-if="datasets.length > 1" v-model="selected" aria-label="选择题库">
-                <option v-for="d in datasets" :key="d.name" :value="d.name">{{ datasetLabel(d) }}</option>
-              </select>
-            </div>
-            <div v-if="latestRun" class="eval-last">
-              <span :class="['eval-dot', latestRun.status]"></span>
-              <div>
-                <strong>{{ statusNames[latestRun.status] || latestRun.status }}</strong>
-                <p>
-                  {{ latestRun.done }}/{{ latestRun.expected }} 题 ·
-                  {{ relativeTime(latestRun.created_at) }}
-                  <template
-                    v-if="latestRun.scoring_failures && latestRun.status !== 'cancelled'"
-                  >
-                    · {{ latestRun.scoring_failures }} 项评分失败</template
-                  >
-                </p>
-              </div>
-              <button class="eval-secondary" @click="show(latestRun.id)">查看结果</button>
-            </div>
-            <div class="eval-launch-actions">
-              <button class="eval-primary" :disabled="busy" @click="create">
-                <Play :size="16" /> {{ busy ? '提交中…' : '运行评估' }}
-              </button>
-              <button class="eval-secondary" @click="setMode('review')">管理题库</button>
-            </div>
-            <p class="eval-muted">
-              会执行 {{ chosen?.search_requests }} 次检索，并按 3 项指标调用模型。费用另计。
-            </p>
+          <section class="eval-summary">
+            <article v-for="metric in overviewMetrics" :key="metric.name" class="eval-summary-card">
+              <span>{{ metric.title }}</span>
+              <strong>{{ metric.value }}</strong>
+              <small>{{ metric.errors }} 项失败 · {{ latestRun ? '最近一次实验' : '还没有实验' }}</small>
+            </article>
+            <article class="eval-summary-card">
+              <span>检索失败</span>
+              <strong>{{ latestRun?.retrieval_failures || 0 }}</strong>
+              <small>边界 {{ latestRun?.boundary_failures || 0 }} · 评分失败 {{ latestRun?.scoring_failures || 0 }}</small>
+            </article>
           </section>
 
-          <section v-if="recentRuns.length" class="eval-card">
-            <div class="eval-card-head">
-              <h2>最近结果</h2>
-              <button class="eval-link" @click="setMode('history')">
-                全部记录 <ChevronRight :size="14" />
-              </button>
-            </div>
-            <ul class="eval-run-list">
-              <li v-for="run in recentRuns" :key="run.id">
-                <button @click="show(run.id)">
-                  <span :class="['eval-dot', run.status]"></span>
-                  <span class="eval-run-name"
-                    ><strong>{{ formatRunName(run.experiment_name) }}</strong
-                    ><small
-                      >{{ relativeTime(run.created_at) }} · {{ run.done }}/{{
-                        run.expected
-                      }}
-                      题</small
-                    ></span
-                  >
-                  <span :class="['eval-status', run.status]">{{
-                    statusNames[run.status] || run.status
-                  }}</span>
-                  <ChevronRight :size="16" />
+          <section class="eval-card eval-experiments">
+            <div class="eval-experiments-head">
+              <div class="eval-chips" role="group" aria-label="筛选实验">
+                <button :class="{ active: historyFilter === 'all' }" @click="historyFilter = 'all'">
+                  全部
                 </button>
-              </li>
-            </ul>
+                <button :class="{ active: historyFilter === 'failed' }" @click="historyFilter = 'failed'">
+                  有失败
+                </button>
+                <button :class="{ active: historyFilter === 'succeeded' }" @click="historyFilter = 'succeeded'">
+                  已完成
+                </button>
+              </div>
+              <div class="eval-inline-actions">
+                <input v-model="runSearch" type="search" placeholder="搜索实验或数据集" />
+                <button
+                  class="eval-secondary"
+                  :disabled="compareSelection.length !== 2"
+                  @click="openCompare"
+                >
+                  对比选中（{{ compareSelection.length }}）
+                </button>
+                <button class="eval-secondary" @click="load">
+                  <RefreshCw :size="15" />刷新
+                </button>
+              </div>
+            </div>
+            <p v-if="notice" class="eval-notice" role="status">{{ notice }}</p>
+            <p v-if="!filteredRuns.length" class="eval-empty">这里还没有实验。</p>
+            <table v-else class="eval-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>实验</th>
+                  <th>数据集</th>
+                  <th>状态</th>
+                  <th>相关性</th>
+                  <th>排序</th>
+                  <th>覆盖</th>
+                  <th>失败</th>
+                  <th>时间</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="run in filteredRuns" :key="run.id" @click="show(run.id)">
+                  <td @click.stop>
+                    <input
+                      type="checkbox"
+                      :checked="compareSelection.includes(run.id)"
+                      :aria-label="`选择对比 ${formatRunName(run.experiment_name)}`"
+                      @change="toggleCompare(run.id)"
+                    />
+                  </td>
+                  <td>
+                    <strong>{{ formatRunName(run.experiment_name) }}</strong>
+                    <small>{{ run.done }}/{{ run.expected }} 题</small>
+                  </td>
+                  <td><span class="eval-mono">{{ run.dataset }}</span></td>
+                  <td>
+                    <span :class="['eval-status', run.status]">{{
+                      statusNames[run.status] || run.status
+                    }}</span>
+                  </td>
+                  <td>{{ runMetric(run, 'ContextRelevance') }}</td>
+                  <td>{{ runMetric(run, 'ContextPrecision') }}</td>
+                  <td>{{ runMetric(run, 'ContextRecall') }}</td>
+                  <td>
+                    {{
+                      (run.retrieval_failures || 0) +
+                      (run.boundary_failures || 0) +
+                      (run.scoring_failures || 0)
+                    }}
+                  </td>
+                  <td>{{ relativeTime(run.created_at) }}</td>
+                  <td class="eval-table-actions">
+                    <button
+                      v-if="terminals.has(run.status)"
+                      type="button"
+                      title="删除记录"
+                      :disabled="busy"
+                      @click.stop="deleteRunRecord(run)"
+                    >
+                      <Trash2 :size="15" />
+                    </button>
+                    <ChevronRight :size="15" />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </section>
         </template>
       </template>
@@ -804,71 +1031,6 @@ onBeforeUnmount(() => {
         :workspace="workspace"
         @published="published"
       />
-
-      <template v-if="mode === 'history'">
-        <div class="eval-history-bar">
-          <div class="eval-chips" role="group" aria-label="筛选记录">
-          <button :class="{ active: historyFilter === 'all' }" @click="historyFilter = 'all'">
-            全部
-          </button>
-          <button :class="{ active: historyFilter === 'active' }" @click="historyFilter = 'active'">
-            进行中
-          </button>
-          <button :class="{ active: historyFilter === 'failed' }" @click="historyFilter = 'failed'">
-            有失败
-          </button>
-          <button
-            :class="{ active: historyFilter === 'succeeded' }"
-            @click="historyFilter = 'succeeded'"
-          >
-            已完成
-          </button>
-          <button
-            :class="{ active: historyFilter === 'library' }"
-            @click="historyFilter = 'library'"
-          >
-            题库评估
-          </button>
-          </div>
-          <button class="eval-secondary" @click="load">
-            <RefreshCw :size="15" />刷新
-          </button>
-        </div>
-        <p v-if="notice" class="eval-notice" role="status">{{ notice }}</p>
-        <p v-if="!filteredRuns.length" class="eval-card eval-empty">这里还没有记录。</p>
-        <ul v-else class="eval-card eval-history">
-          <li v-for="run in filteredRuns" :key="run.id" class="eval-history-row">
-            <button class="eval-history-main" @click="show(run.id)">
-              <span :class="['eval-dot', run.status]"></span>
-              <span class="eval-run-name"
-                ><strong>{{ formatRunName(run.experiment_name) }}</strong
-                ><small
-                  >{{ relativeTime(run.created_at) }} · {{ run.done }}/{{ run.expected }} 题<template
-                    v-if="run.scoring_failures && run.status !== 'cancelled'"
-                  >
-                    · {{ run.scoring_failures }} 项失败</template
-                  ></small
-                ></span
-              >
-              <span :class="['eval-status', run.status]">{{
-                statusNames[run.status] || run.status
-              }}</span>
-              <ChevronRight :size="16" />
-            </button>
-            <button
-              v-if="terminals.has(run.status)"
-              class="eval-history-delete"
-              type="button"
-              :disabled="busy"
-              :aria-label="`删除记录 ${formatRunName(run.experiment_name)}`"
-              title="删除记录"
-              @click.stop="deleteRunRecord(run)"
-            >
-              <Trash2 :size="15" />
-            </button>
-          </li>
-        </ul>
-      </template>
 
       <form
         v-if="mode === 'diagnostic'"
@@ -1031,70 +1193,143 @@ onBeforeUnmount(() => {
               <small v-if="entry.metric.error_details" class="eval-error-detail">
                 {{ errorDetail(entry.metric.error_details) }}
               </small>
+              <small class="eval-advice">{{ failureAdvice(entry.metric) }}</small>
             </div>
+            <p class="eval-muted">{{ failureSummary() }}</p>
             <button class="eval-secondary" :disabled="busy" @click="retryFailed">
               仅重评失败项
             </button>
           </details>
         </section>
 
-        <section v-if="!cancelled" class="eval-card">
-          <details>
-            <summary>逐题分析</summary>
-            <label class="eval-check"
-              ><input v-model="failureOnly" type="checkbox" />只看失败题</label
-            >
-            <div v-if="!displayedRows.length" class="eval-muted">没有符合条件的题目。</div>
-            <details
-              v-for="row in displayedRows"
-              :id="'eval-case-' + row.case_id"
-              :key="row.case_id + row.profile"
-              class="eval-row"
-            >
-              <summary>
-                <span class="eval-row-id">{{ row.case_id }}</span>
-                <span class="eval-row-question">{{ row.question }}</span>
-                <span :class="['eval-status', row.retrieval_status]">{{
-                  statusNames[row.retrieval_status] || row.retrieval_status
-                }}</span>
-                <span
-                  :class="[
-                    'eval-status',
-                    scoringState(row) === '评分失败' ? 'partial' : 'succeeded',
-                  ]"
-                  >{{ scoringState(row) }}</span
-                >
-              </summary>
-              <p><strong>问题：</strong>{{ row.question }}</p>
-              <p><strong>参考答案：</strong>{{ row.reference }}</p>
-              <div v-if="row.score" class="eval-row-metrics">
-                <span
-                  v-for="m in row.score.metrics"
-                  :key="m.name"
-                  :class="['eval-pill', m.status]"
-                  >{{ metricName(m.name) }}
-                  {{
-                    m.status === 'ok' && m.value !== null
-                      ? (m.value * 100).toFixed(0)
-                      : statusNames[m.status] || m.status
-                  }}<template v-if="m.computed_by === 'id_based'"> · ID</template></span
-                >
-              </div>
-              <div v-if="row.retrieval?.items.length" class="eval-evidence">
-                <details v-for="hit in row.retrieval.items" :key="hit.chunk_id">
-                  <summary>{{ hit.title || hit.chunk_id }}</summary>
-                  <p>{{ hit.content }}</p>
-                </details>
-              </div>
-            </details>
-            <Pagination
-              :page="page"
-              :pages="pages"
-              :total="total"
-              @change="show(current.id, $event)"
-            />
-          </details>
+        <section v-if="!cancelled" class="eval-card eval-examples">
+          <div class="eval-examples-head">
+            <div class="eval-chips" role="group" aria-label="筛选题目">
+              <button :class="{ active: rowFilter === 'all' }" @click="rowFilter = 'all'">全部</button>
+              <button :class="{ active: rowFilter === 'failed' }" @click="rowFilter = 'failed'">
+                失败
+              </button>
+              <button :class="{ active: rowFilter === 'low' }" @click="rowFilter = 'low'">低分</button>
+              <button :class="{ active: rowFilter === 'empty' }" @click="rowFilter = 'empty'">
+                空结果
+              </button>
+              <button :class="{ active: rowFilter === 'boundary' }" @click="rowFilter = 'boundary'">
+                边界
+              </button>
+            </div>
+            <span class="eval-muted">{{ total }} 题 · 第 {{ page }}/{{ pages }} 页</span>
+          </div>
+          <p v-if="!displayedRows.length" class="eval-empty">没有符合条件的题目。</p>
+          <table v-else class="eval-table eval-example-table">
+            <thead>
+              <tr>
+                <th>题目</th>
+                <th>相关性</th>
+                <th>排序</th>
+                <th>覆盖</th>
+                <th>检索</th>
+                <th>耗时</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in displayedRows" :key="row.case_id + row.profile" @click="openRow(row)">
+                <td>
+                  <span class="eval-mono">{{ row.case_id }}</span>
+                  <p>{{ row.question }}</p>
+                </td>
+                <td>
+                  <span :class="['eval-score', metricTone(row, 'ContextRelevance')]">{{
+                    metricValue(row, 'ContextRelevance')
+                  }}</span>
+                </td>
+                <td>
+                  <span :class="['eval-score', metricTone(row, 'ContextPrecision')]">{{
+                    metricValue(row, 'ContextPrecision')
+                  }}</span>
+                </td>
+                <td>
+                  <span :class="['eval-score', metricTone(row, 'ContextRecall')]">{{
+                    metricValue(row, 'ContextRecall')
+                  }}</span>
+                </td>
+                <td>
+                  <span :class="['eval-status', row.retrieval_status]">{{
+                    statusNames[row.retrieval_status] || row.retrieval_status
+                  }}</span>
+                </td>
+                <td>{{ row.retrieval_latency_ms ? row.retrieval_latency_ms.toFixed(0) + ' ms' : '—' }}</td>
+                <td>
+                  <span
+                    :class="[
+                      'eval-status',
+                      scoringState(row) === '评分失败' ? 'partial' : 'succeeded',
+                    ]"
+                    >{{ scoringState(row) }}</span
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <Pagination
+            :page="page"
+            :pages="pages"
+            :total="total"
+            @change="show(current.id, $event)"
+          />
         </section>
+
+        <div v-if="detailRow" class="eval-drawer-backdrop" @click.self="closeRow">
+          <aside class="eval-drawer" aria-label="题目详情">
+            <header>
+              <div>
+                <span class="eval-eyebrow">{{ detailRow.case_id }}</span>
+                <h2>{{ detailRow.question }}</h2>
+              </div>
+              <button type="button" aria-label="关闭" @click="closeRow"><X :size="18" /></button>
+            </header>
+            <section>
+              <h3>参考答案</h3>
+              <p>{{ detailRow.reference }}</p>
+            </section>
+            <section>
+              <h3>指标</h3>
+              <div class="eval-drawer-metrics">
+                <div
+                  v-for="metric in detailRow.score?.metrics || []"
+                  :key="metric.name"
+                  :class="['eval-score', metric.status === 'ok' ? 'good' : 'bad']"
+                >
+                  <span>{{ metricName(metric.name) }}</span>
+                  <strong>{{
+                    metric.status === 'ok' && metric.value !== null
+                      ? (metric.value * 100).toFixed(0)
+                      : statusNames[metric.status] || metric.status
+                  }}</strong>
+                  <small v-if="metric.computed_by">{{ metric.computed_by }}</small>
+                  <small v-if="metric.error" class="eval-error">{{ metric.error }}</small>
+                  <small v-if="metric.error" class="eval-advice">{{ failureAdvice(metric) }}</small>
+                </div>
+              </div>
+            </section>
+            <section>
+              <h3>检索片段</h3>
+              <p v-if="!detailRow.retrieval?.items.length" class="eval-muted">没有返回片段。</p>
+              <details
+                v-for="(hit, index) in detailRow.retrieval?.items || []"
+                :key="hit.chunk_id"
+                :open="index === 0"
+                class="eval-drawer-hit"
+              >
+                <summary>
+                  <span class="eval-diag-rank">{{ index + 1 }}</span>
+                  {{ hit.title || hit.chunk_id }}
+                </summary>
+                <p>{{ hit.content }}</p>
+              </details>
+            </section>
+          </aside>
+        </div>
 
         <section v-if="canSetBaseline || report || baselineMessage" class="eval-card eval-baseline">
           <div class="eval-card-head">
@@ -1140,6 +1375,114 @@ onBeforeUnmount(() => {
         </template>
       </template>
     </AdminGate>
+    <div v-if="compareOpen" class="eval-modal-backdrop" @click.self="closeCompare">
+      <div class="eval-modal eval-compare">
+        <header>
+          <div>
+            <span class="eval-eyebrow">COMPARE</span>
+            <h2>实验对比</h2>
+          </div>
+          <button type="button" aria-label="关闭" @click="closeCompare"><X :size="18" /></button>
+        </header>
+        <table class="eval-table">
+          <thead>
+            <tr>
+              <th>指标</th>
+              <th>{{ compareRuns[0]?.experiment_name || '基线' }}</th>
+              <th>{{ compareRuns[1]?.experiment_name || '候选' }}</th>
+              <th>变化</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="metric in overviewMetrics" :key="metric.name">
+              <td>{{ metric.title }}</td>
+              <td>{{ compareValue(compareRuns[0], metric.name) }}</td>
+              <td>{{ compareValue(compareRuns[1], metric.name) }}</td>
+              <td
+                :class="{
+                  'eval-good': compareDelta(compareRuns[0], compareRuns[1], metric.name).startsWith('+'),
+                  'eval-bad': compareDelta(compareRuns[0], compareRuns[1], metric.name).startsWith('-'),
+                }"
+              >
+                {{ compareDelta(compareRuns[0], compareRuns[1], metric.name) }}
+              </td>
+            </tr>
+            <tr>
+              <td>失败项</td>
+              <td>
+                {{
+                  (compareRuns[0]?.retrieval_failures || 0) +
+                  (compareRuns[0]?.boundary_failures || 0) +
+                  (compareRuns[0]?.scoring_failures || 0)
+                }}
+              </td>
+              <td>
+                {{
+                  (compareRuns[1]?.retrieval_failures || 0) +
+                  (compareRuns[1]?.boundary_failures || 0) +
+                  (compareRuns[1]?.scoring_failures || 0)
+                }}
+              </td>
+              <td>
+                {{
+                  (compareRuns[1]?.retrieval_failures || 0) +
+                    (compareRuns[1]?.boundary_failures || 0) +
+                    (compareRuns[1]?.scoring_failures || 0) -
+                    (compareRuns[0]?.retrieval_failures || 0) -
+                    (compareRuns[0]?.boundary_failures || 0) -
+                    (compareRuns[0]?.scoring_failures || 0)
+                }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="eval-muted">
+          这是按两条实验的汇总结果做的并排对比；严格的门槛验收仍在运行详情页里做。
+        </p>
+      </div>
+    </div>
+
+    <div v-if="createOpen" class="eval-modal-backdrop" @click.self="closeCreate">
+      <form class="eval-modal" @submit.prevent="submitCreate">
+        <header>
+          <div>
+            <span class="eval-eyebrow">NEW RUN</span>
+            <h2>新建评估</h2>
+          </div>
+          <button type="button" aria-label="关闭" @click="closeCreate"><X :size="18" /></button>
+        </header>
+        <label>
+          题库
+          <select v-model="selected">
+            <option v-for="d in datasets" :key="d.name" :value="d.name">{{ datasetLabel(d) }}</option>
+          </select>
+        </label>
+        <label>
+          实验名
+          <input v-model="name" maxlength="120" placeholder="例如 prod-v12" />
+        </label>
+        <label>
+          假设
+          <textarea
+            v-model="hypothesis"
+            maxlength="1000"
+            rows="3"
+            placeholder="例如：调整 RRF 权重后，观察覆盖变化"
+          />
+        </label>
+        <p class="eval-muted">
+          {{ chosen?.cases }} 道题 · {{ chosen?.profile_summary || '1 组配置' }} ·
+          约 {{ chosen?.search_requests }} 次检索
+        </p>
+        <footer>
+          <button type="button" class="eval-secondary" @click="closeCreate">取消</button>
+          <button class="eval-primary" :disabled="busy || !selected">
+            {{ busy ? '提交中…' : '开始评估' }}
+          </button>
+        </footer>
+      </form>
+    </div>
+
     <ConfirmDialog
       :open="!!confirmDialog"
       :title="confirmDialog?.title || ''"
@@ -1985,4 +2328,397 @@ select::picker-icon {
     margin-top: 14px;
   }
 }
+
+.eval-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid #e8e8ed;
+}
+.eval-title h1 {
+  margin: 4px 0 2px;
+  font-size: 34px;
+  letter-spacing: -1px;
+  font-weight: 600;
+}
+.eval-title p {
+  margin: 0;
+  color: #6e6e73;
+}
+.eval-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.eval-toolbar-actions select {
+  padding: 9px 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: #1d1d1f;
+}
+.eval-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e8e8ed;
+  margin: 0 0 20px;
+}
+.eval-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  padding: 12px 14px;
+  color: #6e6e73;
+  font-size: 14px;
+  cursor: pointer;
+}
+.eval-tabs button.active {
+  color: #1d1d1f;
+  border-color: #0071e3;
+}
+.eval-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.eval-summary-card {
+  background: #fff;
+  border: 1px solid #e8e8ed;
+  border-radius: 16px;
+  padding: 18px;
+}
+.eval-summary-card span {
+  color: #6e6e73;
+  font-size: 12px;
+}
+.eval-summary-card strong {
+  display: block;
+  font-size: 30px;
+  margin: 8px 0 4px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.eval-summary-card small {
+  color: #86868b;
+  font-size: 11px;
+}
+.eval-experiments {
+  padding: 0;
+  overflow: hidden;
+}
+.eval-experiments-head,
+.eval-examples-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #f0f0f2;
+  flex-wrap: wrap;
+}
+.eval-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eval-inline-actions input {
+  padding: 8px 10px;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+.eval-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.eval-table th {
+  text-align: left;
+  padding: 10px 14px;
+  color: #86868b;
+  background: #fbfbfd;
+  border-bottom: 1px solid #e8e8ed;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.eval-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f2f2f4;
+  vertical-align: middle;
+}
+.eval-table tbody tr {
+  cursor: pointer;
+}
+.eval-table tbody tr:hover {
+  background: #f7f9fc;
+}
+.eval-table td strong {
+  display: block;
+  font-weight: 500;
+}
+.eval-table td small {
+  color: #86868b;
+  font-size: 11px;
+}
+.eval-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #86868b;
+}
+.eval-table-actions button {
+  border: 0;
+  background: none;
+  color: #b42318;
+  padding: 4px;
+  cursor: pointer;
+}
+.eval-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #6e6e73;
+}
+.eval-score {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 44px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.eval-score.good {
+  background: #e7f6ed;
+  color: #237346;
+}
+.eval-score.warn {
+  background: #fff4e5;
+  color: #8a5300;
+}
+.eval-score.bad {
+  background: #fff0ed;
+  color: #ad4836;
+}
+.eval-score.muted {
+  background: #f0f0f2;
+  color: #86868b;
+}
+.eval-examples {
+  padding: 0;
+  overflow: hidden;
+}
+.eval-example-table td:first-child p {
+  max-width: 520px;
+  margin: 4px 0 0;
+  color: #3a3a3c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.eval-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(2px);
+}
+.eval-drawer {
+  width: min(620px, 92vw);
+  height: 100%;
+  padding: 24px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: #fff;
+  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.12);
+}
+.eval-drawer header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.eval-drawer header h2 {
+  margin: 6px 0 0;
+  font-size: 20px;
+  line-height: 1.4;
+}
+.eval-drawer header button,
+.eval-modal header button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: #f0f0f2;
+  cursor: pointer;
+}
+.eval-drawer section h3 {
+  margin: 0 0 8px;
+  color: #86868b;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.eval-drawer section p {
+  margin: 0;
+  color: #3a3a3c;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.eval-drawer-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.eval-drawer-metrics .eval-score {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 10px;
+  text-align: left;
+}
+.eval-drawer-metrics .eval-score span {
+  font-size: 11px;
+  font-weight: 400;
+}
+.eval-drawer-metrics .eval-score strong {
+  font-size: 22px;
+  font-weight: 600;
+}
+.eval-drawer-metrics .eval-score small {
+  font-size: 10px;
+  opacity: 0.75;
+}
+.eval-error {
+  color: #b42318;
+}
+.eval-advice {
+  color: #6e6e73;
+  font-size: 11px;
+  line-height: 1.5;
+  display: block;
+  margin-top: 4px;
+}
+.eval-drawer-hit {
+  padding: 10px 12px;
+  border: 1px solid #e8e8ed;
+  border-radius: 10px;
+}
+.eval-drawer-hit summary {
+  font-size: 13px;
+  cursor: pointer;
+}
+.eval-drawer-hit p {
+  margin: 8px 0 0;
+  color: #3a3a3c;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.eval-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.3);
+  backdrop-filter: blur(4px);
+}
+.eval-modal {
+  width: min(520px, 100%);
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+  background: #fff;
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
+}
+.eval-modal header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.eval-modal h2 {
+  margin: 4px 0 0;
+  font-size: 24px;
+}
+.eval-modal label {
+  display: grid;
+  gap: 6px;
+  color: #6e6e73;
+  font-size: 12px;
+}
+.eval-modal input,
+.eval-modal select,
+.eval-modal textarea {
+  padding: 10px 12px;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+}
+.eval-modal footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.eval-compare {
+  width: min(760px, 100%);
+}
+.eval-good {
+  color: #237346;
+  font-weight: 500;
+}
+.eval-bad {
+  color: #ad4836;
+  font-weight: 500;
+}
+@media (max-width: 760px) {
+  .eval-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .eval-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .eval-toolbar-actions {
+    width: 100%;
+  }
+  .eval-toolbar-actions select {
+    flex: 1;
+  }
+  .eval-table {
+    font-size: 12px;
+  }
+  .eval-table th,
+  .eval-table td {
+    padding: 9px 10px;
+  }
+  .eval-example-table th:nth-child(6),
+  .eval-example-table td:nth-child(6) {
+    display: none;
+  }
+  .eval-drawer-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
 </style>

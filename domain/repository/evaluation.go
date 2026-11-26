@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/PycMono/FastRAG/domain/entity"
 )
@@ -13,9 +14,11 @@ type IEvalDatasetRepo interface {
 
 type IEvalRunRepo interface {
 	Create(context.Context, entity.EvalRun) error
-	Save(context.Context, entity.EvalRun) error
+	SaveMeta(context.Context, entity.EvalRun) error
+	SaveRow(context.Context, string, entity.EvalRow) error
 	Get(context.Context, string) (entity.EvalRun, error)
 	List(context.Context) ([]entity.EvalRun, error)
 	Delete(context.Context, string) error
 	Recover(context.Context) error
+	Purge(context.Context, time.Time) (int64, error)
 }

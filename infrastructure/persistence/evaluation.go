@@ -1,379 +1,471 @@
 package persistence
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"regexp"
-	"slices"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/PycMono/FastRAG/domain/entity"
+	"github.com/PycMono/FastRAG/domain/repository"
+	sqlsdk "github.com/PycMono/go-mysql-sdk"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-var evalName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
-
-// EvalFiles 由单个服务实例独占。os.Root 防止数据集路径越界。
-type EvalFiles struct {
-	Data *os.Root
-	Runs *os.Root
-	mu   sync.Mutex
+// EvalDatasetRepo 已发布题库；一个版本一行，发布后不覆盖。
+type EvalDatasetRepo struct {
+	provider sqlsdk.Provider
 }
 
-func (f *EvalFiles) Close() error {
-	return errors.Join(f.Data.Close(), f.Runs.Close())
+// NewEvalDatasetRepo 构造题库仓储。
+func NewEvalDatasetRepo(provider sqlsdk.Provider) repository.IEvalDatasetRepo {
+	return &EvalDatasetRepo{provider: provider}
 }
 
-func readEvalJSON(root *os.Root, path string, out any) error {
-	file, err := root.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	const max = 32 << 20
-	data, err := io.ReadAll(io.LimitReader(file, max+1))
-	if err != nil {
-		return err
-	}
-	if len(data) > max {
-		return fmt.Errorf("评测文件超过 32 MiB")
-	}
-
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(out); err != nil {
-		return err
-	}
-	if decoder.Decode(new(any)) != io.EOF {
-		return fmt.Errorf("评测文件包含多余 JSON")
-	}
-
-	return nil
+// EvalRunRepo 评测任务元数据与逐题结果。
+type EvalRunRepo struct {
+	provider sqlsdk.Provider
 }
 
-// EvalDatasets 从只读数据目录加载固定测试集。
-type EvalDatasets struct {
-	Files *EvalFiles
+// NewEvalRunRepo 构造任务仓储。
+func NewEvalRunRepo(provider sqlsdk.Provider) repository.IEvalRunRepo {
+	return &EvalRunRepo{provider: provider}
 }
 
-func (d *EvalDatasets) List(ctx context.Context) ([]entity.EvalDatasetInfo, error) {
-	dir, err := d.Files.Data.Open(".")
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-
-	entries, err := dir.ReadDir(-1)
+// List 返回未退休题库的列表信息，不加载完整快照。
+func (d *EvalDatasetRepo) List(ctx context.Context) ([]entity.EvalDatasetInfo, error) {
+	var records []entity.EvalDatasetRecord
+	err := d.db(ctx).
+		Select("name, version, tenant, kb_nos, cases_count, profiles_count, profile_summary, search_requests, created_ms").
+		Where("retired = ?", false).
+		Order("created_ms DESC, name ASC").
+		Find(&records).Error
 	if err != nil {
 		return nil, err
 	}
 
-	datasets := []entity.EvalDatasetInfo{}
-	for _, entry := range entries {
-		if !entry.IsDir() || !evalName.MatchString(entry.Name()) {
-			continue
+	result := make([]entity.EvalDatasetInfo, 0, len(records))
+	for _, record := range records {
+		kbNos := []string{}
+		if err := json.Unmarshal([]byte(record.KBNos), &kbNos); err != nil {
+			return nil, fmt.Errorf("题库 %s 的知识库列表损坏: %w", record.Name, err)
 		}
-		dataset, err := d.Load(ctx, entry.Name())
-		if err != nil {
-			return nil, fmt.Errorf("数据集 %s 无效: %w", entry.Name(), err)
-		}
-		info := entity.EvalDatasetInfo{
-			Name:           dataset.Name,
-			Version:        dataset.Manifest.DatasetVersion,
-			Cases:          len(dataset.Cases),
-			Profiles:       len(dataset.Profiles),
-			SearchRequests: len(dataset.Cases) * len(dataset.Profiles),
-		}
-		if len(dataset.Profiles) > 0 {
-			p := dataset.Profiles[0]
-			rerank := "精排关"
-			if p.RerankSwitch {
-				rerank = "精排开"
-			}
-			info.ProfileSummary = fmt.Sprintf(
-				"%s · 返回 %d 条 · 召回 %d 条 · %s",
-				p.Name,
-				p.Limit,
-				p.RetrieveCount,
-				rerank,
-			)
-			if len(dataset.Profiles) > 1 {
-				info.ProfileSummary += fmt.Sprintf(" · 共 %d 组配置", len(dataset.Profiles))
-			}
-		}
-		if len(dataset.Cases) > 0 {
-			info.Tenant = dataset.Cases[0].Tenant
-			info.KBNos = dataset.Cases[0].KBNos
-		}
-		datasets = append(datasets, info)
+		result = append(result, entity.EvalDatasetInfo{
+			Name:           record.Name,
+			Version:        record.Version,
+			Tenant:         record.Tenant,
+			KBNos:          kbNos,
+			Cases:          record.CasesCount,
+			Profiles:       record.ProfilesCount,
+			ProfileSummary: record.ProfileSummary,
+			SearchRequests: record.SearchRequests,
+		})
 	}
-
-	slices.SortFunc(datasets, func(a, b entity.EvalDatasetInfo) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-	return datasets, nil
+	return result, nil
 }
 
-func (d *EvalDatasets) Load(ctx context.Context, name string) (entity.EvalDataset, error) {
+// Load 读取一个未退休题库的完整快照。
+func (d *EvalDatasetRepo) Load(ctx context.Context, name string) (entity.EvalDataset, error) {
+	var record entity.EvalDatasetRecord
+	err := d.db(ctx).
+		Where("name = ? AND retired = ?", name, false).
+		First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return entity.EvalDataset{}, os.ErrNotExist
+	}
+	if err != nil {
+		return entity.EvalDataset{}, err
+	}
+
 	var dataset entity.EvalDataset
-	if !evalName.MatchString(name) {
-		return dataset, fmt.Errorf("数据集名称无效")
-	}
-	if err := ctx.Err(); err != nil {
+	dataset.Name = record.Name
+	if err := decodeJSON(record.Manifest, &dataset.Manifest); err != nil {
 		return dataset, err
 	}
-
-	dataset.Name = name
-	if err := readEvalJSON(d.Files.Data, name+"/manifest.json", &dataset.Manifest); err != nil {
+	if err := decodeJSON(record.Profiles, &dataset.Profiles); err != nil {
 		return dataset, err
 	}
-	if err := readEvalJSON(d.Files.Data, name+"/profiles.json", &dataset.Profiles); err != nil {
+	if err := decodeJSON(record.Cases, &dataset.Cases); err != nil {
 		return dataset, err
 	}
-
-	file, err := d.Files.Data.Open(name + "/cases.jsonl")
-	if err != nil {
-		return dataset, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(io.LimitReader(file, (8<<20)+1))
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	total := 0
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return dataset, err
-		}
-		total += len(scanner.Bytes()) + 1
-		if total > 8<<20 {
-			return dataset, fmt.Errorf("用例文件过大")
-		}
-		if strings.TrimSpace(scanner.Text()) == "" {
-			continue
-		}
-
-		var testCase entity.EvalCase
-		decoder := json.NewDecoder(strings.NewReader(scanner.Text()))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&testCase); err != nil {
-			return dataset, err
-		}
-		if decoder.Decode(new(any)) != io.EOF {
-			return dataset, fmt.Errorf("用例存在多余 JSON")
-		}
-		dataset.Cases = append(dataset.Cases, testCase)
-		if len(dataset.Cases) > 1000 {
-			return dataset, fmt.Errorf("用例超过 1000 条")
-		}
-	}
-
-	return dataset, scanner.Err()
+	return dataset, nil
 }
 
-// EvalRuns 以原子文件快照保存任务，终态结果不可覆盖。
-type EvalRuns struct {
-	Files *EvalFiles
-}
-
-func (r *EvalRuns) write(run entity.EvalRun, create bool) error {
-	if !evalName.MatchString(run.ID) {
-		return fmt.Errorf("run ID 无效")
-	}
-
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-
-	path := run.ID + ".json"
-	old, err := r.Files.Runs.Open(path)
-	if err == nil {
-		if create {
-			old.Close()
-			return fmt.Errorf("run 已存在")
-		}
-		var state struct {
-			Status string `json:"status"`
-		}
-		err = json.NewDecoder(old).Decode(&state)
-		old.Close()
-		if err != nil {
-			return err
-		}
-		if state.Status != "queued" && state.Status != "running" {
-			return fmt.Errorf("终态任务不可覆盖")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	} else if !create {
-		return err
-	}
-
-	data, err := json.Marshal(run)
+// Create 写入任务元数据和题库快照，不写逐题结果。
+func (r *EvalRunRepo) Create(ctx context.Context, run entity.EvalRun) error {
+	record, err := runRecord(run)
 	if err != nil {
 		return err
 	}
-	if len(data) > 32<<20 {
-		return fmt.Errorf("任务快照超过 32 MiB，请缩小数据集")
-	}
+	return r.db(ctx).Create(&record).Error
+}
 
-	tempPath := run.ID + ".tmp"
-	file, err := r.Files.Runs.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+// SaveMeta 更新任务状态、进度、失败计数和汇总。
+func (r *EvalRunRepo) SaveMeta(ctx context.Context, run entity.EvalRun) error {
+	summary, err := encodeJSON(run.Summary)
 	if err != nil {
 		return err
 	}
 
-	_, err = file.Write(data)
-	if err == nil {
-		err = file.Sync()
+	var finished *int64
+	if run.FinishedAt != nil {
+		value := run.FinishedAt.UnixMilli()
+		finished = &value
 	}
-	closeErr := file.Close()
+
+	updates := map[string]any{
+		"status":             run.Status,
+		"error":              run.Error,
+		"done":               run.Done,
+		"retrieval_failures": run.RetrievalFailures,
+		"boundary_failures":  run.BoundaryFailures,
+		"rerank_degraded":    run.RerankDegraded,
+		"scoring_failures":   run.ScoringFailures,
+		"summary":            summary,
+		"finished_ms":        finished,
+	}
+	return r.db(ctx).Where("id = ?", run.ID).Updates(updates).Error
+}
+
+// SaveRow 按 (run_id, case_id, profile) 写入或更新单题结果。
+func (r *EvalRunRepo) SaveRow(ctx context.Context, runID string, row entity.EvalRow) error {
+	payload, err := encodeJSON(row)
 	if err != nil {
 		return err
 	}
-	if closeErr != nil {
-		return closeErr
+	record := entity.EvalRunRowRecord{
+		RunID:   runID,
+		CaseID:  row.CaseID,
+		Profile: row.Profile,
+		Payload: payload,
 	}
-
-	return r.Files.Runs.Rename(tempPath, path)
+	return r.provider.UseDB(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "run_id"}, {Name: "case_id"}, {Name: "profile"}},
+			DoUpdates: clause.AssignmentColumns([]string{"payload"}),
+		}).
+		Create(&record).Error
 }
 
-func (r *EvalRuns) Create(ctx context.Context, run entity.EvalRun) error {
-	if err := ctx.Err(); err != nil {
-		return err
+// Get 读取任务元数据、快照和逐题结果。
+func (r *EvalRunRepo) Get(ctx context.Context, id string) (entity.EvalRun, error) {
+	var record entity.EvalRunRecord
+	err := r.db(ctx).Where("id = ?", id).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return entity.EvalRun{}, os.ErrNotExist
+	}
+	if err != nil {
+		return entity.EvalRun{}, err
 	}
 
-	return r.write(run, true)
-}
-
-func (r *EvalRuns) Save(ctx context.Context, run entity.EvalRun) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	return r.write(run, false)
-}
-
-func (r *EvalRuns) Get(ctx context.Context, id string) (entity.EvalRun, error) {
-	var run entity.EvalRun
-	if err := ctx.Err(); err != nil {
+	run, err := runFromRecord(record)
+	if err != nil {
 		return run, err
 	}
-	if !evalName.MatchString(id) {
-		return run, fmt.Errorf("run ID 无效")
-	}
 
-	err := readEvalJSON(r.Files.Runs, id+".json", &run)
-	return run, err
+	var rows []entity.EvalRunRowRecord
+	if err := r.provider.UseDB(ctx).
+		Model(&entity.EvalRunRowRecord{}).
+		Where("run_id = ?", id).
+		Order("id ASC").
+		Find(&rows).Error; err != nil {
+		return run, err
+	}
+	run.Rows = make([]entity.EvalRow, 0, len(rows))
+	for _, row := range rows {
+		var value entity.EvalRow
+		if err := decodeJSON(row.Payload, &value); err != nil {
+			return run, fmt.Errorf("任务 %s 的逐题结果损坏: %w", id, err)
+		}
+		run.Rows = append(run.Rows, value)
+	}
+	return run, nil
 }
 
-func (r *EvalRuns) List(ctx context.Context) ([]entity.EvalRun, error) {
-	dir, err := r.Files.Runs.Open(".")
+// List 返回未退休题库的列表信息，不加载完整快照。
+func (r *EvalRunRepo) List(ctx context.Context) ([]entity.EvalRun, error) {
+	var records []entity.EvalRunRecord
+	err := r.db(ctx).
+		Select("id, dataset_name, experiment_name, purpose, status, error, profiles, expected, done, " +
+			"retrieval_failures, boundary_failures, rerank_degraded, scoring_failures, summary, created_ms, finished_ms").
+		Order("created_ms DESC").
+		Find(&records).Error
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
 
-	entries, err := dir.ReadDir(-1)
-	if err != nil {
-		return nil, err
-	}
-
-	runs := []entity.EvalRun{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		run, err := r.Get(ctx, strings.TrimSuffix(entry.Name(), ".json"))
+	result := make([]entity.EvalRun, 0, len(records))
+	for _, record := range records {
+		run, err := runBriefFromRecord(record)
 		if err != nil {
 			return nil, err
 		}
-		run.Dataset.Cases = nil
-		runs = append(runs, run)
+		result = append(result, run)
 	}
-
-	slices.SortFunc(runs, func(a, b entity.EvalRun) int {
-		return b.CreatedAt.Compare(a.CreatedAt)
-	})
-	return runs, nil
+	return result, nil
 }
 
-func (r *EvalRuns) Delete(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
+// Delete 删除任务；逐题结果、基线和报告由外键级联删除。
+func (r *EvalRunRepo) Delete(ctx context.Context, id string) error {
+	result := r.db(ctx).Where("id = ?", id).Delete(&entity.EvalRunRecord{})
+	if result.Error != nil {
+		return result.Error
 	}
-	if !evalName.MatchString(id) {
-		return fmt.Errorf("run ID 无效")
-	}
-
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-
-	if err := r.Files.Runs.Remove(id + ".json"); err != nil {
-		return err
-	}
-	// 删除以该 run 为基线的记录。
-	if dir, err := r.Files.Runs.Open("baselines"); err == nil {
-		entries, _ := dir.ReadDir(-1)
-		dir.Close()
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			path := "baselines/" + entry.Name()
-			var baseline struct {
-				RunID string `json:"run_id"`
-			}
-			if readEvalJSON(r.Files.Runs, path, &baseline) == nil && baseline.RunID == id {
-				_ = r.Files.Runs.Remove(path)
-			}
-		}
-	}
-	// 删除引用该 run 的对比报告。
-	if dir, err := r.Files.Runs.Open("comparisons"); err == nil {
-		entries, _ := dir.ReadDir(-1)
-		dir.Close()
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			path := "comparisons/" + entry.Name()
-			var report entity.EvalComparison
-			if readEvalJSON(r.Files.Runs, path, &report) == nil &&
-				(report.RunID == id || report.BaselineID == id) {
-				_ = r.Files.Runs.Remove(path)
-			}
-		}
+	if result.RowsAffected == 0 {
+		return os.ErrNotExist
 	}
 	return nil
 }
 
-func (r *EvalRuns) Recover(ctx context.Context) error {
-	runs, err := r.List(ctx)
+// Recover 把重启前未结束的任务标记为 interrupted。
+func (r *EvalRunRepo) Recover(ctx context.Context) error {
+	now := time.Now().UTC().UnixMilli()
+	return r.db(ctx).
+		Where("status IN ?", []string{"queued", "running"}).
+		Updates(map[string]any{
+			"status":      "interrupted",
+			"error":       "服务已重启，不自动续跑",
+			"finished_ms": now,
+		}).Error
+}
+
+// Purge 删除保留期外且不是基线的任务。
+func (r *EvalRunRepo) Purge(ctx context.Context, before time.Time) (int64, error) {
+	baselines := r.provider.UseDB(ctx).
+		Model(&entity.EvalBaselineRecord{}).
+		Select("run_id")
+
+	result := r.db(ctx).
+		Where("created_ms < ? AND id NOT IN (?)", before.UnixMilli(), baselines).
+		Delete(&entity.EvalRunRecord{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
+// ── 内部实现 ──
+
+// db 返回带上下文的查询入口。
+func (d *EvalDatasetRepo) db(ctx context.Context) *gorm.DB {
+	return d.provider.UseDB(ctx).Model(&entity.EvalDatasetRecord{})
+}
+
+// publishDataset 写入一个不可变题库版本；同名版本已存在时保留旧版本。
+func publishDataset(ctx context.Context, db *gorm.DB, dataset entity.EvalDataset) error {
+	record, err := datasetRecord(dataset)
 	if err != nil {
 		return err
 	}
-
-	for _, run := range runs {
-		if run.Status != "running" && run.Status != "queued" {
-			continue
-		}
-		full, err := r.Get(ctx, run.ID)
-		if err != nil {
-			return err
-		}
-		full.Status = "interrupted"
-		full.Error = "服务已重启，不自动续跑"
-		now := time.Now().UTC()
-		full.FinishedAt = &now
-		if err := r.Save(ctx, full); err != nil {
-			return err
-		}
-	}
-	return nil
+	return db.Create(&record).Error
 }
+
+// datasetRecord 把题库快照转成表记录。
+func datasetRecord(dataset entity.EvalDataset) (entity.EvalDatasetRecord, error) {
+	manifest, err := encodeJSON(dataset.Manifest)
+	if err != nil {
+		return entity.EvalDatasetRecord{}, err
+	}
+	profiles, err := encodeJSON(dataset.Profiles)
+	if err != nil {
+		return entity.EvalDatasetRecord{}, err
+	}
+	cases, err := encodeJSON(dataset.Cases)
+	if err != nil {
+		return entity.EvalDatasetRecord{}, err
+	}
+
+	info := datasetInfo(dataset)
+	kbNos, err := encodeJSON(info.KBNos)
+	if err != nil {
+		return entity.EvalDatasetRecord{}, err
+	}
+	return entity.EvalDatasetRecord{
+		Name:           dataset.Name,
+		Version:        info.Version,
+		Tenant:         info.Tenant,
+		KBNos:          kbNos,
+		CasesCount:     info.Cases,
+		ProfilesCount:  info.Profiles,
+		ProfileSummary: info.ProfileSummary,
+		SearchRequests: info.SearchRequests,
+		Manifest:       manifest,
+		Profiles:       profiles,
+		Cases:          cases,
+		Retired:        false,
+		CreatedMS:      time.Now().UTC().UnixMilli(),
+	}, nil
+}
+
+// datasetInfo 从题库快照提取列表字段。
+func datasetInfo(dataset entity.EvalDataset) entity.EvalDatasetInfo {
+	info := entity.EvalDatasetInfo{
+		Name:           dataset.Name,
+		Version:        dataset.Manifest.DatasetVersion,
+		Cases:          len(dataset.Cases),
+		Profiles:       len(dataset.Profiles),
+		SearchRequests: len(dataset.Cases) * len(dataset.Profiles),
+	}
+	if len(dataset.Profiles) > 0 {
+		info.ProfileSummary = profileSummary(dataset.Profiles)
+	}
+	if len(dataset.Cases) > 0 {
+		info.Tenant = dataset.Cases[0].Tenant
+		info.KBNos = dataset.Cases[0].KBNos
+	}
+	return info
+}
+
+// profileSummary 生成题库检索配置的一行摘要。
+func profileSummary(profiles []entity.EvalProfile) string {
+	if len(profiles) == 0 {
+		return ""
+	}
+	profile := profiles[0]
+	rerank := "精排关"
+	if profile.RerankSwitch {
+		rerank = "精排开"
+	}
+	summary := fmt.Sprintf(
+		"%s · 返回 %d 条 · 召回 %d 条 · %s",
+		profile.Name, profile.Limit, profile.RetrieveCount, rerank,
+	)
+	if len(profiles) > 1 {
+		summary += fmt.Sprintf(" · 共 %d 组配置", len(profiles))
+	}
+	return summary
+}
+
+// db 返回带上下文的查询入口。
+func (r *EvalRunRepo) db(ctx context.Context) *gorm.DB {
+	return r.provider.UseDB(ctx).Model(&entity.EvalRunRecord{})
+}
+
+// runRecord 把任务转成表记录。
+func runRecord(run entity.EvalRun) (entity.EvalRunRecord, error) {
+	metadata, err := encodeJSON(run.Metadata)
+	if err != nil {
+		return entity.EvalRunRecord{}, err
+	}
+	snapshot, err := encodeJSON(run.Dataset)
+	if err != nil {
+		return entity.EvalRunRecord{}, err
+	}
+	profiles, err := encodeJSON(run.Dataset.Profiles)
+	if err != nil {
+		return entity.EvalRunRecord{}, err
+	}
+	summary, err := encodeJSON(run.Summary)
+	if err != nil {
+		return entity.EvalRunRecord{}, err
+	}
+
+	var finished *int64
+	if run.FinishedAt != nil {
+		value := run.FinishedAt.UnixMilli()
+		finished = &value
+	}
+
+	return entity.EvalRunRecord{
+		ID:                run.ID,
+		DatasetName:       run.Dataset.Name,
+		ExperimentName:    run.ExperimentName,
+		Hypothesis:        run.Hypothesis,
+		Purpose:           run.Purpose,
+		Status:            run.Status,
+		Error:             run.Error,
+		ConfigHash:        run.ConfigHash,
+		Metadata:          metadata,
+		DatasetSnapshot:   snapshot,
+		Profiles:          profiles,
+		Expected:          run.Expected,
+		Done:              run.Done,
+		RetrievalFailures: run.RetrievalFailures,
+		BoundaryFailures:  run.BoundaryFailures,
+		RerankDegraded:    run.RerankDegraded,
+		ScoringFailures:   run.ScoringFailures,
+		Summary:           summary,
+		CreatedMS:         run.CreatedAt.UnixMilli(),
+		FinishedMS:        finished,
+	}, nil
+}
+
+// runFromRecord 还原完整任务和快照。
+func runFromRecord(record entity.EvalRunRecord) (entity.EvalRun, error) {
+	run, err := runBriefFromRecord(record)
+	if err != nil {
+		return run, err
+	}
+
+	if err := decodeJSON(record.Metadata, &run.Metadata); err != nil {
+		return run, err
+	}
+	if err := decodeJSON(record.DatasetSnapshot, &run.Dataset); err != nil {
+		return run, err
+	}
+	run.Hypothesis = record.Hypothesis
+	run.ConfigHash = record.ConfigHash
+	return run, nil
+}
+
+// runBriefFromRecord 还原列表所需的任务字段，不加载逐题结果。
+func runBriefFromRecord(record entity.EvalRunRecord) (entity.EvalRun, error) {
+	var summary map[string]entity.EvalSummary
+	if err := decodeJSON(record.Summary, &summary); err != nil {
+		return entity.EvalRun{}, err
+	}
+	var profiles []entity.EvalProfile
+	if err := decodeJSON(record.Profiles, &profiles); err != nil {
+		return entity.EvalRun{}, err
+	}
+
+	run := entity.EvalRun{
+		ID:                record.ID,
+		ExperimentName:    record.ExperimentName,
+		Purpose:           record.Purpose,
+		Status:            record.Status,
+		Error:             record.Error,
+		CreatedAt:         fromMillis(record.CreatedMS),
+		Dataset:           entity.EvalDataset{Name: record.DatasetName, Profiles: profiles},
+		Expected:          record.Expected,
+		Done:              record.Done,
+		RetrievalFailures: record.RetrievalFailures,
+		BoundaryFailures:  record.BoundaryFailures,
+		RerankDegraded:    record.RerankDegraded,
+		ScoringFailures:   record.ScoringFailures,
+		Summary:           summary,
+	}
+	if record.FinishedMS != nil {
+		finished := fromMillis(*record.FinishedMS)
+		run.FinishedAt = &finished
+	}
+	return run, nil
+}
+
+// encodeJSON 把值编码成数据库里的 JSON 文本。
+func encodeJSON(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// decodeJSON 解析数据库里的 JSON 文本。
+func decodeJSON(data string, target any) error {
+	return json.Unmarshal([]byte(data), target)
+}
+
+// fromMillis 把毫秒时间戳转成 UTC 时间。
+func fromMillis(value int64) time.Time {
+	return time.UnixMilli(value).UTC()
+}
+
+var (
+	_ repository.IEvalDatasetRepo = (*EvalDatasetRepo)(nil)
+	_ repository.IEvalRunRepo     = (*EvalRunRepo)(nil)
+)

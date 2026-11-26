@@ -172,3 +172,39 @@ def test_real_ragas_metrics_with_fake_judge():
             await client.close()
 
     asyncio.run(run())
+
+
+def test_batch_id_metrics_do_not_need_model(client):
+    body = {
+        "judge": {
+            "base_url": "https://api.minimaxi.com/v1",
+            "model": "dummy",
+            "api_key": "x" * 24,
+        },
+        "samples": [
+            {
+                "request_id": "b1",
+                "dataset_version": "v1",
+                "annotation_version": "a1",
+                "case_id": "q1",
+                "user_input": "问题",
+                "reference": "答案",
+                "retrieved_contexts": ["证据一", "证据二"],
+                "retrieved_context_ids": ["c1", "c2"],
+                "reference_context_ids": ["c2"],
+                "metrics": ["ContextPrecision", "ContextRecall"],
+            }
+        ],
+    }
+    response = client.post(
+        "/evaluate-batch",
+        json=body,
+        headers={"Authorization": "Bearer " + "x" * 32},
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["overall_status"] == "succeeded"
+    metrics = {item["name"]: item for item in result["metrics"]}
+    assert metrics["ContextPrecision"]["computed_by"] == "id_based"
+    assert metrics["ContextRecall"]["computed_by"] == "id_based"
+    assert metrics["ContextRecall"]["value"] == 1

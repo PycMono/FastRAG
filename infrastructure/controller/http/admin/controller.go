@@ -11,20 +11,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PycMono/FastRAG/infrastructure/config"
 	"github.com/PycMono/FastRAG/infrastructure/observability"
 	"github.com/gin-gonic/gin"
 )
 
+// Controller 是管理页的 HTTP 入口：状态、配置读写和日志查询。
+// 认证由 Auth 中间件统一施加，管理接口本身不直接信任请求。
 type Controller struct {
-	config  *ConfigStore
+	config  *config.ConfigStore
 	logs    *observability.Store
 	token   string
 	started time.Time
 }
 
+// NewController 构造管理控制器；token 来自 FASTRAG_ADMIN_TOKEN。
 func NewController(logs *observability.Store) *Controller {
-	return &Controller{config: NewConfigStore("config.json"), logs: logs, token: os.Getenv("FASTRAG_ADMIN_TOKEN"), started: time.Now()}
+	return &Controller{config: config.NewConfigStore("config.json"), logs: logs, token: os.Getenv("FASTRAG_ADMIN_TOKEN"), started: time.Now()}
 }
+
+// reply 按管理接口的约定返回 JSON；HTTP 状态和业务状态保持一致。
 func reply(c *gin.Context, status int, data any, message string) {
 	code := 0
 	if status >= 400 {
@@ -32,6 +38,8 @@ func reply(c *gin.Context, status int, data any, message string) {
 	}
 	c.JSON(status, gin.H{"code": code, "msg": message, "data": data})
 }
+
+// Auth 校验 Bearer 管理令牌；未配置或令牌不符时直接中止请求。
 func (ctl *Controller) Auth(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if len(ctl.token) < 24 {
@@ -49,9 +57,13 @@ func (ctl *Controller) Auth(c *gin.Context) {
 	}
 	c.Next()
 }
+
+// Status 返回服务运行时长、日志保留策略和配置生效方式。
 func (ctl *Controller) Status(c *gin.Context) {
 	reply(c, 200, gin.H{"uptime_seconds": int(time.Since(ctl.started).Seconds()), "log_scope": "结构化应用日志（含请求访问、业务错误和生命周期）；不包含 Docker、数据库或任意 stdout/stderr 输出", "log_capacity": 2000, "log_disk_retention": "按北京时间自然月分文件，仅保留当月；跨月自动清理，页面查询最近 2000 条", "config_effect": "保存后重启生效"}, "")
 }
+
+// ReadConfig 返回脱敏后的配置快照和版本号。
 func (ctl *Controller) ReadConfig(c *gin.Context) {
 	snapshot, err := ctl.config.Read()
 	if err != nil {
@@ -60,6 +72,8 @@ func (ctl *Controller) ReadConfig(c *gin.Context) {
 	}
 	reply(c, 200, snapshot, "")
 }
+
+// SaveConfig 校验版本和结构后原子保存配置，并把新凭据加入日志脱敏。
 func (ctl *Controller) SaveConfig(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	var body struct {
@@ -72,7 +86,7 @@ func (ctl *Controller) SaveConfig(c *gin.Context) {
 	}
 	if err := ctl.config.Save(body.Version, body.Config); err != nil {
 		status := 400
-		if errors.Is(err, ErrConflict) {
+		if errors.Is(err, config.ErrConflict) {
 			status = 409
 		}
 		reply(c, status, nil, err.Error())
@@ -93,6 +107,8 @@ func (ctl *Controller) SaveConfig(c *gin.Context) {
 	}
 	reply(c, 200, snapshot, "")
 }
+
+// Logs 按级别、关键词和时间范围分页查询结构化应用日志。
 func (ctl *Controller) Logs(c *gin.Context) {
 	level := c.Query("level")
 	if level != "" && level != "info" && level != "warn" && level != "error" && level != "debug" {

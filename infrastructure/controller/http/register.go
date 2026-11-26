@@ -1,7 +1,7 @@
 package http
 
 import (
-	"github.com/PycMono/FastRAG/infrastructure/admin"
+	"github.com/PycMono/FastRAG/infrastructure/controller/http/admin"
 	docctl "github.com/PycMono/FastRAG/infrastructure/controller/http/doc"
 	evalctl "github.com/PycMono/FastRAG/infrastructure/controller/http/evaluation"
 	"github.com/PycMono/FastRAG/infrastructure/controller/http/health"
@@ -76,7 +76,7 @@ func RegisterRoutes(d RouteDeps) {
 	management.GET("/eval/runs/:id/items", d.EvalCtl.Items)
 	management.POST("/eval/runs/:id/cancel", d.EvalCtl.Cancel)
 	management.DELETE("/eval/runs/:id", d.EvalCtl.Delete)
-	management.POST("/eval/runs/:id/retry", d.EvalCtl.Retry)
+	management.POST("/eval/runs/:id/rescore", d.EvalCtl.Rescore)
 	api := d.Router.Group(v1Prefix)
 	{
 		docs := api.Group("/docs")

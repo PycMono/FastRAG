@@ -1,69 +1,55 @@
 package serviceimpl
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/PycMono/FastRAG/common/dto"
+	apperrors "github.com/PycMono/FastRAG/common/errors"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/infrastructure/config"
 )
 
-// EvalHTTP 只允许部署配置指定的地址，不接受页面传入上游 URL。
+// EvalHTTP 是评分器的 HTTP 客户端，只允许配置指定的地址。
 type EvalHTTP struct {
-	Client    *http.Client
-	SearchURL string
-	ScoreURL  string
-	Token     string
+	Client   *http.Client
+	ScoreURL string
+	Token    string
 
 	// Judge 在评分请求时读取，页面保存后生效；不缓存或持久化到运行结果。
 	Judge func() (config.EvaluationJudge, error)
 }
 
-// post 发送 JSON 请求，并限制上游响应大小。
-func (h *EvalHTTP) post(ctx context.Context, endpoint, token string, input, output any) error {
-	requestBody, err := json.Marshal(input)
+// doJSON 通过共享 OpenAI 兼容传输层发送 JSON，并限制响应大小。
+func (h *EvalHTTP) doJSON(ctx context.Context, endpoint string, input, output any) error {
+	payload, err := json.Marshal(input)
 	if err != nil {
 		return err
 	}
 
-	request, err := http.NewRequestWithContext(
+	body, status, err := postJSON(
 		ctx,
-		http.MethodPost,
+		h.Client,
 		endpoint,
-		bytes.NewReader(requestBody),
+		h.Token,
+		payload,
+		32<<20,
+		apperrors.ErrEvaluationFailed,
 	)
 	if err != nil {
 		return err
 	}
-
-	request.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	response, err := h.Client.Do(request)
-	if err != nil {
-		return fmt.Errorf("评测上游请求失败: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusTooManyRequests {
+	if status == http.StatusTooManyRequests {
 		return interfaces.ErrEvalServiceBusy
 	}
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		switch response.StatusCode {
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		switch status {
 		case 401, 403:
-			return fmt.Errorf("评分服务认证失败（HTTP %d），请检查内部服务 token", response.StatusCode)
+			return fmt.Errorf("评分服务认证失败（HTTP %d），请检查内部服务 token", status)
 		case 503:
 			return fmt.Errorf("评分服务尚未就绪或未配置评估模型（HTTP 503）")
 		case 422:
@@ -71,111 +57,101 @@ func (h *EvalHTTP) post(ctx context.Context, endpoint, token string, input, outp
 		case 504:
 			return fmt.Errorf("评分服务执行超时（HTTP 504），模型可能已计费，不自动重试")
 		default:
-			return fmt.Errorf("评测上游 HTTP %d", response.StatusCode)
+			return fmt.Errorf("评测上游 HTTP %d", status)
 		}
 	}
+	if err := json.Unmarshal(body, output); err != nil {
+		return fmt.Errorf("评分服务响应不是合法 JSON")
+	}
+	return nil
+}
 
-	const maxResponseBytes = 32 << 20
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+// Generate 调用评分模型生成候选题。
+func (h *EvalHTTP) Generate(
+	ctx context.Context,
+	source string,
+) (entity.EvalGeneratedQuestion, error) {
+	var output entity.EvalGeneratedQuestion
+	judge, err := h.Judge()
 	if err != nil {
-		return err
+		return output, err
 	}
-	if len(responseBody) > maxResponseBytes {
-		return fmt.Errorf("评测上游响应超过 32 MiB")
-	}
+	input := struct {
+		Source string                 `json:"source"`
+		Judge  config.EvaluationJudge `json:"judge"`
+	}{Source: source, Judge: judge}
 
-	return json.Unmarshal(responseBody, output)
+	err = h.doJSON(
+		ctx,
+		strings.TrimRight(h.ScoreURL, "/")+"/generate",
+		input,
+		&output,
+	)
+	return output, err
 }
 
-// Search 调用现有检索接口，保留调用方实际收到的结果顺序。
-func (h *EvalHTTP) Search(
+// ScoreBatch 调用内部批量评分器，校验响应归属和逐指标评分。
+func (h *EvalHTTP) ScoreBatch(
 	ctx context.Context,
-	testCase entity.EvalCase,
-	profile entity.EvalProfile,
-) (*entity.EvalRetrieval, error) {
-	searchRequest := dto.SearchDTO{
-		Tenant:         testCase.Tenant,
-		KBNos:          testCase.KBNos,
-		Query:          testCase.Question,
-		Limit:          profile.Limit,
-		RetrieveCount:  &profile.RetrieveCount,
-		DenseWeight:    &profile.DenseWeight,
-		RerankSwitch:   profile.RerankSwitch,
-		Diagnostics:    true,
-		EmbedModel:     profile.EmbedModel,
-		RerankModel:    profile.RerankModel,
-		MinScore:       profile.MinScore,
-		FusionMinScore: profile.FusionMinScore,
+	inputs []entity.EvalScoreInput,
+) ([]entity.EvalScoreOutput, error) {
+	if len(inputs) == 0 {
+		return []entity.EvalScoreOutput{}, nil
 	}
 
-	var envelope struct {
-		Code int                   `json:"code"`
-		Data *entity.EvalRetrieval `json:"data"`
-	}
-
-	endpoint := strings.TrimRight(h.SearchURL, "/") + "/api/v1/search"
-	if err := h.post(ctx, endpoint, "", searchRequest, &envelope); err != nil {
-		return nil, err
-	}
-
-	if envelope.Code != 0 || envelope.Data == nil {
-		return nil, fmt.Errorf("检索业务失败 code=%d", envelope.Code)
-	}
-
-	seenChunkIDs := make(map[string]bool, len(envelope.Data.Items))
-	for _, hit := range envelope.Data.Items {
-		if hit.ChunkID == "" || seenChunkIDs[hit.ChunkID] {
-			return nil, fmt.Errorf("检索结果片段 ID 缺失或重复")
-		}
-		seenChunkIDs[hit.ChunkID] = true
-	}
-
-	return envelope.Data, nil
-}
-
-// Score 调用内部评分器，校验响应归属和逐指标评分。
-func (h *EvalHTTP) Score(
-	ctx context.Context,
-	input entity.EvalScoreInput,
-) (*entity.EvalScoreOutput, error) {
-	var payload any = input
+	payload := struct {
+		Samples []entity.EvalScoreInput `json:"samples"`
+		Judge   *config.EvaluationJudge `json:"judge,omitempty"`
+	}{Samples: inputs}
 	if h.Judge != nil {
 		judge, err := h.Judge()
 		if err != nil {
 			return nil, err
 		}
-
-		payload = struct {
-			entity.EvalScoreInput
-			Judge config.EvaluationJudge `json:"judge"`
-		}{
-			EvalScoreInput: input,
-			Judge:          judge,
-		}
+		payload.Judge = &judge
 	}
 
-	var output entity.EvalScoreOutput
-	endpoint := strings.TrimRight(h.ScoreURL, "/") + "/evaluate"
-	for attempt := 0; ; attempt++ {
-		err := h.post(ctx, endpoint, h.Token, payload, &output)
-		if err == nil {
-			break
+	var response struct {
+		Results []entity.EvalScoreOutput `json:"results"`
+	}
+	endpoint := strings.TrimRight(h.ScoreURL, "/") + "/evaluate-batch"
+	if err := h.doJSON(ctx, endpoint, payload, &response); err != nil {
+		return nil, err
+	}
+	if len(response.Results) != len(inputs) {
+		return nil, fmt.Errorf("批量评分结果数量不符")
+	}
+
+	expected := make(map[string]entity.EvalScoreInput, len(inputs))
+	for _, input := range inputs {
+		if _, exists := expected[input.RequestID]; exists {
+			return nil, fmt.Errorf("评分请求 ID 重复")
 		}
-		// 只对已明确拒绝执行的忙碌响应等待；超时/网络错误不自动计费重试。
-		if !errors.Is(err, interfaces.ErrEvalServiceBusy) || attempt >= 3 {
+		expected[input.RequestID] = input
+	}
+
+	for _, output := range response.Results {
+		input, exists := expected[output.RequestID]
+		if !exists {
+			return nil, fmt.Errorf("评分结果请求 ID 未知")
+		}
+		if err := validateScoreOutput(input, output); err != nil {
 			return nil, err
 		}
-		timer := time.NewTimer(time.Duration(attempt+1) * 2 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+		delete(expected, output.RequestID)
 	}
+	if len(expected) > 0 {
+		return nil, fmt.Errorf("评分结果缺少样本")
+	}
+	return response.Results, nil
+}
 
+func validateScoreOutput(
+	input entity.EvalScoreInput,
+	output entity.EvalScoreOutput,
+) error {
 	if output.RequestID != input.RequestID || len(output.Metrics) != len(input.Metrics) {
-		return nil, fmt.Errorf("评分关联 ID 或指标数量不符")
+		return fmt.Errorf("评分关联 ID 或指标数量不符")
 	}
 
 	expectedMetrics := make(map[string]bool, len(input.Metrics))
@@ -185,7 +161,7 @@ func (h *EvalHTTP) Score(
 
 	for _, metric := range output.Metrics {
 		if !expectedMetrics[metric.Name] {
-			return nil, fmt.Errorf("评分指标未知或重复")
+			return fmt.Errorf("评分指标未知或重复")
 		}
 		delete(expectedMetrics, metric.Name)
 
@@ -195,16 +171,15 @@ func (h *EvalHTTP) Score(
 				math.IsNaN(*metric.Value) ||
 				math.IsInf(*metric.Value, 0) ||
 				*metric.Value < 0 || *metric.Value > 1 {
-				return nil, fmt.Errorf("评分值无效")
+				return fmt.Errorf("评分值无效")
 			}
 		case "error", "timeout", "not_applicable", "cancelled":
 			if metric.Value != nil {
-				return nil, fmt.Errorf("失败指标不能有评分值")
+				return fmt.Errorf("失败指标不能有评分值")
 			}
 		default:
-			return nil, fmt.Errorf("未知评分状态")
+			return fmt.Errorf("未知评分状态")
 		}
 	}
-
-	return &output, nil
+	return nil
 }

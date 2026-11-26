@@ -107,7 +107,7 @@ func (r *KnowledgeRepo) applyDelta(ctx context.Context, kbID uint64, column stri
 	// （重导入的负增量比现有值还大），计数也只会停在 0，不会掉成负数。
 	//
 	// CAST(... AS SIGNED) 目前是冗余的 —— 列本身就是有符号 BIGINT（见
-	// scripts/schema.sql）。留着是为了将来万一有人把列改成 UNSIGNED：那时少了它，
+	// deploy/schema.sql）。留着是为了将来万一有人把列改成 UNSIGNED：那时少了它，
 	// 负增量会直接报 "BIGINT UNSIGNED value is out of range"
 	err := r.db(ctx).
 		Where("id = ?", kbID).

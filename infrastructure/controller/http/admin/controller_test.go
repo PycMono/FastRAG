@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TestManagementAuthentication 验证未配置、错误令牌和正确令牌三种情况。
 func TestManagementAuthentication(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logs, err := observability.NewStore(filepath.Join(t.TempDir(), "logs.jsonl"), 10)

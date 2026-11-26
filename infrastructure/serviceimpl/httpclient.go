@@ -68,9 +68,12 @@ func postJSON(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, 0, wrapErr.Wrap(err)
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, 0, wrapErr.Wrap(fmt.Errorf("响应超过 %d 字节", maxBytes))
 	}
 	return body, resp.StatusCode, nil
 }

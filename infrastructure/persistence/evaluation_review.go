@@ -2,240 +2,326 @@ package persistence
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/PycMono/FastRAG/domain/entity"
+	"github.com/PycMono/FastRAG/domain/repository"
+	sqlsdk "github.com/PycMono/go-mysql-sdk"
+	"github.com/PycMono/go-mysql-sdk/transaction"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// EvalReviews 与任务共用受限文件根，但使用独立子目录。
-type EvalReviews struct {
-	Files *EvalFiles
+// EvalReviewRepo 题库草稿、基线、验收报告与发布入库。
+type EvalReviewRepo struct {
+	provider sqlsdk.Provider
+	tm       transaction.Manager
 }
 
-func writeReviewJSON(root *os.Root, path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	file, err := root.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	_, writeErr := file.Write(data)
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if writeErr != nil || syncErr != nil || closeErr != nil {
-		return fmt.Errorf("评测文件保存失败")
-	}
-	return root.Rename(path+".tmp", path)
+// NewEvalReviewRepo 构造题库标注仓储。
+func NewEvalReviewRepo(
+	provider sqlsdk.Provider,
+	tm transaction.Manager,
+) repository.IEvalReviewRepo {
+	return &EvalReviewRepo{provider: provider, tm: tm}
 }
 
-func (r *EvalReviews) ListDrafts(ctx context.Context) ([]entity.EvalDraft, error) {
-	if err := r.Files.Runs.MkdirAll("drafts", 0700); err != nil {
-		return nil, err
-	}
-	directory, err := r.Files.Runs.Open("drafts")
-	if err != nil {
-		return nil, err
-	}
-	defer directory.Close()
-	entries, err := directory.ReadDir(-1)
-	if err != nil {
+// ListDrafts 返回全部草稿，按创建时间倒序。
+func (r *EvalReviewRepo) ListDrafts(ctx context.Context) ([]entity.EvalDraft, error) {
+	var records []entity.EvalDraftRecord
+	if err := r.db(ctx).
+		Model(&entity.EvalDraftRecord{}).
+		Order("created_ms DESC").
+		Find(&records).Error; err != nil {
 		return nil, err
 	}
 
-	drafts := []entity.EvalDraft{}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		draft, err := r.GetDraft(ctx, strings.TrimSuffix(entry.Name(), ".json"))
+	result := make([]entity.EvalDraft, 0, len(records))
+	for _, record := range records {
+		draft, err := draftFromRecord(record)
 		if err != nil {
 			return nil, err
 		}
-		drafts = append(drafts, draft)
+		result = append(result, draft)
 	}
-	return drafts, nil
+	return result, nil
 }
 
-func (r *EvalReviews) GetDraft(ctx context.Context, id string) (entity.EvalDraft, error) {
-	var draft entity.EvalDraft
-	if !evalName.MatchString(id) {
-		return draft, fmt.Errorf("草稿 ID 无效")
+// GetDraft 读取单份草稿。
+func (r *EvalReviewRepo) GetDraft(ctx context.Context, id string) (entity.EvalDraft, error) {
+	var record entity.EvalDraftRecord
+	err := r.db(ctx).Where("id = ?", id).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return entity.EvalDraft{}, os.ErrNotExist
 	}
-	err := readEvalJSON(r.Files.Runs, "drafts/"+id+".json", &draft)
-	return draft, err
+	if err != nil {
+		return entity.EvalDraft{}, err
+	}
+	return draftFromRecord(record)
 }
 
-func (r *EvalReviews) SaveDraft(ctx context.Context, draft entity.EvalDraft, expected int) error {
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-	if !evalName.MatchString(draft.ID) || ctx.Err() != nil {
-		return fmt.Errorf("草稿输入无效")
-	}
-	if err := r.Files.Runs.MkdirAll("drafts", 0700); err != nil {
+// SaveDraft 按版本号插入或更新草稿，版本不符时返回冲突。
+func (r *EvalReviewRepo) SaveDraft(ctx context.Context, draft entity.EvalDraft, expected int) error {
+	items, err := encodeJSON(draft.Items)
+	if err != nil {
 		return err
 	}
-	previous, err := r.GetDraft(ctx, draft.ID)
-	if err == nil && previous.Version != expected {
+
+	if expected == 0 {
+		record := entity.EvalDraftRecord{
+			ID:              draft.ID,
+			Tenant:          draft.Tenant,
+			KBNo:            draft.KBNo,
+			Version:         1,
+			AutoGenerate:    draft.AutoGenerate,
+			GenerationState: draft.GenerationState,
+			GenerationError: draft.GenerationError,
+			Items:           items,
+			CreatedMS:       time.Now().UTC().UnixMilli(),
+		}
+		return r.db(ctx).Create(&record).Error
+	}
+
+	result := r.db(ctx).
+		Model(&entity.EvalDraftRecord{}).
+		Where("id = ? AND version = ?", draft.ID, expected).
+		Updates(map[string]any{
+			"auto_generate":    draft.AutoGenerate,
+			"generation_state": draft.GenerationState,
+			"generation_error": draft.GenerationError,
+			"items":            items,
+			"version":          expected + 1,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("草稿已修改，请重新加载")
 	}
-	if err != nil && (!os.IsNotExist(err) || expected != 0) {
-		return err
-	}
-	draft.Version = expected + 1
-	return writeReviewJSON(r.Files.Runs, "drafts/"+draft.ID+".json", draft)
+	return nil
 }
 
-func (r *EvalReviews) DeleteDraft(ctx context.Context, id string) error {
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-	if !evalName.MatchString(id) || ctx.Err() != nil {
-		return fmt.Errorf("草稿 ID 无效")
+// DeleteDraft 删除未发布草稿。
+func (r *EvalReviewRepo) DeleteDraft(ctx context.Context, id string) error {
+	result := r.db(ctx).
+		Model(&entity.EvalDraftRecord{}).
+		Where("id = ?", id).
+		Delete(&entity.EvalDraftRecord{})
+	if result.Error != nil {
+		return result.Error
 	}
-	return r.Files.Runs.Remove("drafts/" + id + ".json")
+	if result.RowsAffected == 0 {
+		return os.ErrNotExist
+	}
+	return nil
 }
 
-func (r *EvalReviews) Publish(ctx context.Context, dataset entity.EvalDataset) error {
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-	if !evalName.MatchString(dataset.Name) {
-		return fmt.Errorf("数据集名称无效")
+// Publish 写入一个不可变题库版本。
+func (r *EvalReviewRepo) Publish(ctx context.Context, dataset entity.EvalDataset) error {
+	return publishDataset(ctx, r.db(ctx), dataset)
+}
+
+// SetBaseline 为题库设置或替换基线任务。
+func (r *EvalReviewRepo) SetBaseline(ctx context.Context, dataset, runID string) error {
+	record := entity.EvalBaselineRecord{
+		DatasetName: dataset,
+		RunID:       runID,
+		CreatedMS:   time.Now().UTC().UnixMilli(),
 	}
-	// 目录名唯一，已发布版本永不覆盖。
-	staging := ".publishing-" + dataset.Name
-	if err := r.Files.Data.Mkdir(staging, 0700); err != nil {
-		return err
+	return r.db(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "dataset_name"}},
+			DoUpdates: clause.AssignmentColumns([]string{"run_id", "created_ms"}),
+		}).
+		Create(&record).Error
+}
+
+// Baseline 读取题库的基线任务 ID。
+func (r *EvalReviewRepo) Baseline(ctx context.Context, dataset string) (string, error) {
+	var record entity.EvalBaselineRecord
+	err := r.db(ctx).Where("dataset_name = ?", dataset).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", os.ErrNotExist
 	}
-	for name, value := range map[string]any{
-		"manifest.json": dataset.Manifest,
-		"profiles.json": dataset.Profiles,
-	} {
-		if err := writeReviewJSON(r.Files.Data, staging+"/"+name, value); err != nil {
-			return err
-		}
+	if err != nil {
+		return "", err
 	}
-	file, err := r.Files.Data.OpenFile(staging+"/cases.jsonl", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	return record.RunID, nil
+}
+
+// SaveComparison 写入一份验收报告。
+func (r *EvalReviewRepo) SaveComparison(ctx context.Context, report entity.EvalComparison) error {
+	payload, err := encodeJSON(report)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	for _, testCase := range dataset.Cases {
-		if err := encoder.Encode(testCase); err != nil {
+	record := entity.EvalComparisonRecord{
+		RunID:      report.RunID,
+		BaselineID: report.BaselineID,
+		Verdict:    report.Verdict,
+		Payload:    payload,
+		CreatedMS:  time.Now().UTC().UnixMilli(),
+	}
+	return r.db(ctx).Create(&record).Error
+}
+
+// InvalidateDocument 删除关联草稿题、退休关联题库，不篡改历史任务。
+func (r *EvalReviewRepo) InvalidateDocument(
+	ctx context.Context,
+	tenant, kbNo, docID string,
+) error {
+	return r.tm.Transaction(ctx, func(txCtx context.Context) error {
+		if err := r.invalidateDrafts(txCtx, tenant, kbNo, docID); err != nil {
 			return err
 		}
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	return r.Files.Data.Rename(staging, dataset.Name)
+		return r.retireDatasets(txCtx, tenant, kbNo, docID)
+	})
 }
 
-func (r *EvalReviews) SetBaseline(ctx context.Context, dataset, runID string) error {
-	if !evalName.MatchString(dataset) || !evalName.MatchString(runID) {
-		return fmt.Errorf("基线标识无效")
-	}
-	r.Files.mu.Lock()
-	defer r.Files.mu.Unlock()
-	if err := r.Files.Runs.MkdirAll("baselines", 0700); err != nil {
-		return err
-	}
-	return writeReviewJSON(r.Files.Runs, "baselines/"+dataset+".json", map[string]string{"run_id": runID})
+// ── 内部实现 ──
+
+// db 返回带上下文的查询入口。
+func (r *EvalReviewRepo) db(ctx context.Context) *gorm.DB {
+	return r.provider.UseDB(ctx)
 }
 
-func (r *EvalReviews) Baseline(ctx context.Context, dataset string) (string, error) {
-	if !evalName.MatchString(dataset) {
-		return "", fmt.Errorf("数据集名称无效")
-	}
-	var value struct {
-		RunID string `json:"run_id"`
-	}
-	err := readEvalJSON(r.Files.Runs, "baselines/"+dataset+".json", &value)
-	return value.RunID, err
-}
-
-func (r *EvalReviews) SaveComparison(ctx context.Context, report entity.EvalComparison) error {
-	if err := r.Files.Runs.MkdirAll("comparisons", 0700); err != nil {
+// invalidateDrafts 删除文档关联的草稿题，保留其他文档。
+func (r *EvalReviewRepo) invalidateDrafts(
+	ctx context.Context,
+	tenant, kbNo, docID string,
+) error {
+	var records []entity.EvalDraftRecord
+	if err := r.db(ctx).
+		Where("tenant = ? AND kb_no = ?", tenant, kbNo).
+		Find(&records).Error; err != nil {
 		return err
 	}
-	path := "comparisons/" + report.RunID + "-" + report.CreatedAt.Format("20060102-150405.000000000") + ".json"
-	return writeReviewJSON(r.Files.Runs, path, report)
-}
 
-// InvalidateDocument 删除未发布草稿，归档已发布版本，不篡改历史 run。
-func (r *EvalReviews) InvalidateDocument(ctx context.Context, tenant, kbNo, docID string) error {
-	drafts, err := r.ListDrafts(ctx)
-	if err != nil {
-		return err
-	}
-	for _, draft := range drafts {
-		if draft.Tenant != tenant || draft.KBNo != kbNo {
-			continue
+	for _, record := range records {
+		var items []entity.EvalCandidate
+		if err := decodeJSON(record.Items, &items); err != nil {
+			return err
 		}
+
+		remaining := make([]entity.EvalCandidate, 0, len(items))
 		matched := false
-		remaining := make([]entity.EvalCandidate, 0, len(draft.Items))
-		for _, item := range draft.Items {
+		for _, item := range items {
 			if docID == "" || item.DocID == docID {
 				matched = true
-			} else {
-				remaining = append(remaining, item)
+				continue
 			}
+			remaining = append(remaining, item)
 		}
-		if matched {
-			if len(remaining) == 0 {
-				if err := r.Files.Runs.Remove("drafts/" + draft.ID + ".json"); err != nil {
-					return err
-				}
-			} else {
-				draft.Items = remaining
-				if err := r.SaveDraft(ctx, draft, draft.Version); err != nil {
-					return err
-				}
+		if !matched {
+			continue
+		}
+
+		if len(remaining) == 0 {
+			if err := r.db(ctx).
+				Where("id = ?", record.ID).
+				Delete(&entity.EvalDraftRecord{}).Error; err != nil {
+				return err
 			}
+			continue
 		}
-	}
-	datasets := &EvalDatasets{Files: r.Files}
-	list, err := datasets.List(ctx)
-	if err != nil {
-		return err
-	}
-	if err := r.Files.Data.MkdirAll(".retired", 0700); err != nil {
-		return err
-	}
-	for _, info := range list {
-		dataset, err := datasets.Load(ctx, info.Name)
+
+		encoded, err := encodeJSON(remaining)
 		if err != nil {
 			return err
 		}
-		matched := false
-		for _, testCase := range dataset.Cases {
-			if testCase.Tenant != tenant {
-				continue
-			}
-			inScope := false
-			for _, name := range testCase.KBNos {
-				if name == kbNo {
-					inScope = true
-				}
-			}
-			if !inScope {
-				continue
-			}
-			for _, source := range testCase.ReferenceSources {
-				if docID == "" || source.DocID == docID {
-					matched = true
-				}
-			}
-		}
-		if matched {
-			if err := r.Files.Data.Rename(info.Name, ".retired/"+info.Name); err != nil {
-				return err
-			}
+		if err := r.db(ctx).
+			Model(&entity.EvalDraftRecord{}).
+			Where("id = ? AND version = ?", record.ID, record.Version).
+			Updates(map[string]any{
+				"items":   encoded,
+				"version": record.Version + 1,
+			}).Error; err != nil {
+			return err
 		}
 	}
 	return nil
 }
+
+// retireDatasets 退休引用了该文档的题库版本。
+func (r *EvalReviewRepo) retireDatasets(
+	ctx context.Context,
+	tenant, kbNo, docID string,
+) error {
+	var records []entity.EvalDatasetRecord
+	if err := r.db(ctx).
+		Select("name, cases").
+		Where("retired = ?", false).
+		Find(&records).Error; err != nil {
+		return err
+	}
+
+	for _, record := range records {
+		var cases []entity.EvalCase
+		if err := decodeJSON(record.Cases, &cases); err != nil {
+			return err
+		}
+		if !datasetContains(cases, tenant, kbNo, docID) {
+			continue
+		}
+		if err := r.db(ctx).
+			Model(&entity.EvalDatasetRecord{}).
+			Where("name = ?", record.Name).
+			Update("retired", true).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// datasetContains 判断题库是否引用了指定租户、知识库和文档。
+func datasetContains(
+	cases []entity.EvalCase,
+	tenant, kbNo, docID string,
+) bool {
+	for _, testCase := range cases {
+		if testCase.Tenant != tenant || !containsString(testCase.KBNos, kbNo) {
+			continue
+		}
+		for _, source := range testCase.ReferenceSources {
+			if docID == "" || source.DocID == docID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsString 判断字符串切片是否包含目标值。
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// draftFromRecord 把草稿表记录还原成领域对象。
+func draftFromRecord(record entity.EvalDraftRecord) (entity.EvalDraft, error) {
+	var items []entity.EvalCandidate
+	if err := decodeJSON(record.Items, &items); err != nil {
+		return entity.EvalDraft{}, fmt.Errorf("草稿 %s 的题目数据损坏: %w", record.ID, err)
+	}
+	return entity.EvalDraft{
+		AutoGenerate:    record.AutoGenerate,
+		GenerationState: record.GenerationState,
+		GenerationError: record.GenerationError,
+		ID:              record.ID,
+		Version:         record.Version,
+		Tenant:          record.Tenant,
+		KBNo:            record.KBNo,
+		CreatedAt:       fromMillis(record.CreatedMS),
+		Items:           items,
+	}, nil
+}
+
+var _ repository.IEvalReviewRepo = (*EvalReviewRepo)(nil)

@@ -1,9 +1,12 @@
 # FastRAG
 
-知识库检索服务 — Go 洋葱架构后端骨架。
+知识库检索与检索质量评测服务 — Go 洋葱架构后端骨架。
 
 参考 `micro-framework` 模板构建。Go 后端与 Vue 3 + TypeScript 知识库工作台位于同一仓库。
 前端构建产物通过 `go:embed` 内嵌到二进制，挂在根路径；生产环境只部署一个 Go 服务，无需 Node.js 或 CDN。
+
+除文档导入与混合检索外，仓库还内置离线检索评测：题库生成与人工复核、Ragas 指标评分、
+失败项重评、基线回归对比和单题诊断。评测默认关闭，需要单独的 Python 评分服务，不影响正常检索。
 
 ## 架构介绍
 
@@ -16,7 +19,8 @@ frontend/               // Vue 3 工作台源码与前端构建配置
 cmd/server              // 服务启动入口
 application/service     // 应用服务层：编排领域服务，处理用例，DTO→Entity→VO 转换
 ├── ingest              // 文档导入 / 删除
-└── search              // 混合检索
+├── search              // 混合检索
+└── evaluation          // 评测任务、题库标注、单题诊断
 domain
 ├── entity              // 领域模型（聚合根、实体；带 gorm tag 的即表模型）
 ├── factory             // 实体的命名构造：保证 CreateTs 漏填不了
@@ -26,9 +30,11 @@ domain
 └── register.go         // 领域层 fx 注册
 infrastructure
 ├── config              // 配置加载
+├── evaluation.go       // 评测服务装配（任务执行器、评分客户端、后台 worker）
 ├── controller/http     // HTTP 请求入口、路由绑定（北向网关）
 │   ├── doc             // 导入 / 删除
 │   ├── search          // 检索
+│   ├── evaluation      // 评测任务、题库、记录与单题诊断
 │   ├── health          // /health、/ready 探针
 │   └── web             // Vue 工作台入口与内嵌静态资源
 ├── driver              // 第三方 SDK 适配（es / gingext / mysql / redis）
@@ -43,14 +49,18 @@ common
 └── utils               // 通用小工具（泛型去重、SHA-256 指纹）
 ```
 
+评测数据保存在 MySQL 的 `eval_*` 表：已发布题库、草稿、任务、逐题结果、基线与对比报告都在库里；
+ES 只承载检索切片，不存评测数据。任务保留天数由 `evaluation.retention_days` 控制，
+超期任务每天自动清理，基线任务不会被清掉。
+
 **领域实体直接就是持久化模型**：`domain/entity/` 下的 `knowledge.go` /
 `knowledge_doc.go` 上挂着 `gorm:"column:..."` 和 `TableName()`，没有再单设 `po` / `mapper` 两层。
 `chunk.go` / `collection.go` 不带 tag：它们不是表。
 
-两张表里**只有 `knowledge_doc` 的 DDL 归本服务**（`scripts/schema.sql`）；
+两张表里**只有 `knowledge_doc` 的 DDL 归本服务**（`deploy/schema.sql`）；
 `knowledge` 由外部系统预置（§1.2），列定义归建库方——实体上的 tag 只是**读**它时的映射，
 改 tag 不会去动那张表。本服务对它只写三列：`doc_count` / `chunk_count` / `update_ts`。
-所以只有 `knowledge_doc` 的 tag 与 `scripts/schema.sql` 是"同一份列定义的两个写法、
+所以只有 `knowledge_doc` 的 tag 与 `deploy/schema.sql` 是"同一份列定义的两个写法、
 改一边就要改另一边"；不一致都不会报错，只会静默查不到数据。
 
 两张表的关系是**一个来源 URL 建一个库，一个库下挂多篇文档**：库级的 `source_url` 记在
@@ -67,7 +77,7 @@ common
 | `application/` | `gin`、`infrastructure/driver/...`、`infrastructure/controller` |
 | `common/` | `domain/...`、`application/...`、`infrastructure/...` |
 
-这三条靠 code review 守，仓库里没有自动化检查（早期有过一个 `scripts/lint-architecture.sh`，已删除）。
+这三条靠 code review 守，仓库里没有自动化检查（早期有过一个架构 lint 脚本，已删除）。
 
 表中的 `...` 包含该层根包本身：例如 `application/` 的红线既匹配 `infrastructure/driver`、
 `infrastructure/controller` 这两个层根包，也匹配它们的子包；`domain/`、`common/` 的红线同样
@@ -113,6 +123,28 @@ make run
 `config.json` 的 `snowflake_node_id` 是每个实例必须唯一的 0–1023 整数。该键**缺省时取值为 0**，
 而 0 是合法节点号，因此多实例共用一份「没写这个键」的配置会生成重复 ID——部署多副本时务必显式配置。
 
+### 启用检索评测（可选）
+
+评测默认关闭，不影响检索。它需要一个独立的 Python 评分服务：
+
+```bash
+cd deploy/ragas
+cp .env.example .env        # 填 EVAL_SERVICE_TOKEN（至少 24 位随机串）
+docker compose up -d --build
+```
+
+再在 `config.json` 的 `evaluation` 块打开 `enabled`，填写裁判模型（也可以在配置页「检索评测 / MiniMax」分组里改），
+启动 FastRAG 时设置同一个 token：
+
+```bash
+export FASTRAG_EVAL_TOKEN='与 deploy/ragas/.env 的 EVAL_SERVICE_TOKEN 一致'
+go run ./cmd/server
+```
+
+开启评测但 `FASTRAG_EVAL_TOKEN` 少于 24 位时，服务拒绝启动。评分服务只绑定回环地址；
+Go 与它不在同一台机器时用 VPN/隧道连接，不要暴露到公网。详细说明见
+[检索评测](evaluation/README.md)。
+
 ## 常用命令
 
 ```bash
@@ -138,7 +170,7 @@ make clean        # 清理构建产物
 cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接信息
 ```
 
-它装着本机连接信息与凭据（数据库密码、上游 `api_key`），已在 `.gitignore` 里，**不入库**；
+它装着本机连接信息与凭据（数据库密码、上游 `api_key`、评测裁判 API Key），已在 `.gitignore` 里，**不入库**；
 `config.example.json` 与它结构完全一致，只是把密码和 `api_key` 留空，可以安全进仓库。
 
 两点要知道：
@@ -156,14 +188,31 @@ cp config.example.json config.json   # 再按本机环境改 MySQL / ES 连接�
 | `mysql` | 业务库连接（文档行、KB 计数） | 库表要先 `make init-db` |
 | `redis` | 可选 | `addr` 为空即不启用 |
 | `snowflake_node_id` | 雪花 ID 节点号 `[0,1023]` | 多实例必须各不相同；缺省 = 0，会生成重复 ID |
-| `es` | ES 地址与索引名 | 只含「怎么连」；索引要先 `make es-index`。建索引的 dim / 分词器等**不在这里**，在 `scripts/create-es-index.sh` |
+| `es` | ES 地址与索引名 | 只含「怎么连」；索引要先 `make es-index`。建索引的 dim / 分词器等**不在这里**，在 `deploy/create-es-index.sh` |
 | `embedding` / `rerank` | 模型服务商注册表 | 结构见下一节「模型配置」 |
 | `search` | 混合检索的默认参数 | `dense_weight` / `rank_constant` 等，可被单次请求覆盖 |
 | `parser` | 文档解析后端注册表 | `POST /api/v1/docs/parse` 用；结构与 `embedding` 同类，见下 |
+| `evaluation` | 离线检索评测 | 默认关闭；开启需 `FASTRAG_EVAL_TOKEN` 与独立评分服务 |
 | `security` | `trust_request_tenant` 启动闸门 | 见「租户与鉴权」 |
 
 `security` 不置 `trust_request_tenant=true`，服务**拒绝启动**（§6.1）；
 `search` 各键与 `dense_weight` 的取值语义见「API 示例」里的检索说明。
+
+### 评测配置
+
+`evaluation` 块控制题库、任务和评分服务。常用字段：
+
+| 键 | 说明 |
+|---|---|
+| `enabled` | 总开关。关闭时 `/api/admin/eval/*` 返回 `10601`，检索不受影响 |
+| `retention_days` | 任务保留天数，默认 30；超期任务每天清理，基线任务保留 |
+| `judge` | 裁判模型（`base_url` / `model` / `api_key`）。Go 随评分请求下发，不写入任务快照 |
+| `scorer_base_url` | Python 评分服务地址，默认 `http://127.0.0.1:18080` |
+| `request_timeout_seconds` / `run_timeout_seconds` | 单次评分请求 / 整个任务超时，默认 240 / 3600 秒 |
+| `auto_generate` / `auto_sample_count` | 导入文档后是否自动准备候选题、每篇抽多少 |
+
+这些字段也可以在配置页修改。裁判模型的地址、名称和 API Key 下次评分时生效；
+保留天数、超时等其余字段需要人工重启。
 
 ## 模型配置
 
@@ -288,6 +337,7 @@ Docling 能等，腾讯要卡小）：
 | `10301`–`10302` | 检索失败 / rerank 服务失败 |
 | `10401` | 解析失败：解析上游超时 / 返回非 200 / 返回体不可解析 |
 | `10501` | 文档不存在：`doc_id` 查无此行，**或**该行不属于这个 `tenant`（两者同一个码） |
+| `10601`–`10602` | 评测未开启 / 评测操作失败 |
 
 `10101`–`10106` 里，知识库的 CRUD 错误码已基本无主：CRUD 全在外部系统里（§1.2），
 本服务不提供对应接口。**唯一还在用的是 `10101`（库不存在）**——`FindByNo` 找不到库、
@@ -329,13 +379,15 @@ Docling 能等，腾讯要卡小）：
 - **文档管理**：服务端分页，查看原文、检索切片，确认删除。
 - **导入文档**：Markdown/TXT 文件上传、粘贴正文、URL 解析导入，高级参数默认折叠。
 - **检索测试**：混合检索、模型精排、模型与权重设置、结果分页、原文溯源。
+- **检索评测**：新建题库（抽样、后台出题、人工核对、发布）、运行评估、指标与失败详情、失败项重评、基线回归对比、单题诊断。
 - **统一工作区**：设置租户与已有知识库编号，保存在当前浏览器，切换后清空旧结果。
 - **产品首页**：大标题与功能展示，顶部导航直达各项工具，支持移动端。
 - **配置管理**：分组或完整 JSON 编辑、模型新增/删除、凭据脱敏、版本冲突检测；保存后人工重启生效。
 - **运行日志**：应用日志按级别、关键词和时间查询，展示错误详情，支持自动刷新。
 
-配置和日志管理默认关闭；启动前设置至少 24 字符的 `FASTRAG_ADMIN_TOKEN`，在页面输入同一令牌后访问。
+配置、日志和评测管理默认关闭；启动前设置至少 24 字符的 `FASTRAG_ADMIN_TOKEN`，在页面输入同一令牌后访问。
 令牌仅保存于页面内存。日志按北京时间自然月保存在 `logs/service-YYYY-MM.jsonl`，仅保留当月并在跨月后自动清理，页面查询最近 2000 条结构化应用日志，不包含 Docker、数据库或任意控制台输出。
+评测还要求 `FASTRAG_EVAL_TOKEN` 与 Python 评分服务的 `EVAL_SERVICE_TOKEN` 一致。
 配置保存及管理接口的完整说明见 [管理功能说明](frontend/README.md#首页配置与运行日志)。
 
 检索支持 query 直达链接，例如 <http://localhost:8080/?q=呼吸衰竭的病因和临床表现>。
@@ -349,6 +401,78 @@ make backend-build # 仅构建 Go，使用仓库中已有的前端产物
 ```
 
 前端修改后需重新构建并重启 Go 服务。开发、部署和测试说明见 [frontend/README.md](frontend/README.md)。
+
+## 检索评测
+
+评测只回答一个问题：**给定问题和参考答案，检索有没有把需要的原文片段找出来、排对**。
+它不评最终回答的生成质量，也不需要把生成模型接进评测链路。
+
+### 题库
+
+- 已发布题库不可变，一个版本一行，包含 manifest、profiles 和 cases 三份快照。
+- 两类来源：`md-original` 使用原始 Markdown 证据（没有 ES chunk ID）；新题库从当前知识库抽样（有 chunk ID）。
+- 新建题库按**每篇 md 最多 50 段、总数最多 100 段**按篇均衡抽样，只抽原文，不调用模型。
+- 「后台生成」逐题调用模型生成问题和参考答案，**关闭页面也会继续**；进度自动刷新，可以暂停/继续；单题失败最多重试 3 次，坏题跳过，不拖停整批。
+- 只有人工标记通过的题会进入题库；至少 3 题才能发布。发布时核验原文哈希，版本不可覆盖。
+
+### 运行与指标
+
+选题库、实验名和假设后，按题库里固化的检索 profile（返回条数、召回数、语义权重、精排开关）
+逐题调用进程内检索服务（与线上同一条检索链路）。任务单飞，可取消、有任务超时；元数据写入 `eval_run`，
+逐题结果写入 `eval_run_row`。空检索和边界题按策略判定，不调用模型；检索失败和评分失败分开统计。
+
+| 指标 | 含义 | 计算方式 |
+|---|---|---|
+| 上下文相关性 | 返回片段与问题是否相关 | 模型判断 |
+| 证据排序质量 | 片段中有多少真正支撑参考答案 | 有参考 chunk ID 时走确定性 ID 指标；否则模型逐片段并发判断 |
+| 必要信息覆盖 | 参考答案的信息有多少被检索覆盖 | 有参考 chunk ID 时走确定性 ID 指标；否则模型判断 |
+
+不调用模型的诊断还包括：Recall@5、Precision@5、MRR@5、Success@5、nDCG@5、边界违规、
+检索失败率、空结果率、重复率、平均返回条数/字符数、检索 P50/P95、评分 P95、评分覆盖率。
+
+评分失败会标为该项失败，页面不会把它显示成 0 分；可以只重评失败项。
+评分按批调用 Ragas `evaluate()`（每批 3 题），裁判输出上限 8192 tokens，单指标超时 120 秒。
+
+### 验收与单题诊断
+
+- 完整成功的已复核任务可以设为基线；
+- 新任务与基线按显式门槛比较：覆盖下降、排序下降、延迟倍率；
+- 题集、检索配置或裁判版本变化时判 `insufficient`，不硬比较；
+- 报告保留逐题证据、退步题和关键题回归。
+
+单题诊断不需要建题库：对单个问题做即时检索，查看实际生效配置、各阶段候选与耗时、
+关键词/向量排名、RRF 融合分、精排分和片段原文。它用于定位「为什么这题没搜到」，不是统计评测。
+
+### 存储与接口
+
+评测数据全部在 MySQL：`eval_dataset`、`eval_draft`、`eval_run`、`eval_run_row`、
+`eval_baseline`、`eval_comparison`。DDL 在 `deploy/schema.sql`，先 `make init-db`。
+`retention_days` 到期后每天清理非基线任务，逐题结果和验收报告随任务级联删除。
+
+评测管理接口都在 `/api/admin/eval/*`，需要 `FASTRAG_ADMIN_TOKEN`；
+Go 调用 Python 评分服务使用 `FASTRAG_EVAL_TOKEN`。
+
+| 接口 | 用途 |
+|---|---|
+| `GET /api/admin/eval/datasets` | 列出已发布题库 |
+| `GET/POST /api/admin/eval/runs` | 列出 / 创建评估任务 |
+| `GET /api/admin/eval/runs/:id` | 任务详情 |
+| `GET /api/admin/eval/runs/:id/items` | 分页查看逐题结果 |
+| `POST /api/admin/eval/runs/:id/cancel` | 取消任务 |
+| `POST /api/admin/eval/runs/:id/rescore` | 仅重评失败指标 |
+| `DELETE /api/admin/eval/runs/:id` | 删除任务记录 |
+| `POST /api/admin/eval/runs/:id/baseline` | 设为基线 |
+| `POST /api/admin/eval/runs/:id/compare` | 与基线对比 |
+| `POST /api/admin/eval/diagnose` | 单题诊断 |
+| `GET/POST /api/admin/eval/drafts` | 列出 / 新建题库草稿 |
+| `POST /api/admin/eval/drafts/:id/generate` | 生成单题 |
+| `POST /api/admin/eval/drafts/:id/generate-all` | 后台生成全部未完成题 |
+| `POST /api/admin/eval/drafts/:id/generate-stop` | 暂停后台生成 |
+| `PUT /api/admin/eval/drafts/:id` | 保存人工复核 |
+| `DELETE /api/admin/eval/drafts/:id` | 删除草稿 |
+| `POST /api/admin/eval/drafts/:id/publish` | 发布为不可变题库 |
+
+完整的数据格式、评测口径和部署说明见 [evaluation/README.md](evaluation/README.md)。
 
 ## API 示例
 
@@ -443,7 +567,7 @@ open http://localhost:8080/
    Controller `infrastructure/controller/http/order/controller.go`；
    前者在 `infrastructure/persistence/register.go` 里注册，后者在
    `infrastructure/controller/http/register.go` 里注册
-5. **建表**：DDL 写进 `scripts/schema.sql`，然后 `make init-db`（服务不建表）
+5. **建表**：DDL 写进 `deploy/schema.sql`，然后 `make init-db`（服务不建表）
 6. **路由**：在 `infrastructure/controller/http/register.go` 的 `api` Group 下挂载
 
 定包的原则只有一条：**一个类型该住哪，看它在哪个包的函数签名里被需要**。

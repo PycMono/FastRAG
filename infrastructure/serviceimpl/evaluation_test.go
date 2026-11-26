@@ -12,9 +12,10 @@ import (
 
 func TestEvalHTTPValidatesScoringEnvelope(t *testing.T) {
 	for _, body := range []string{
-		`{"request_id":"wrong","metrics":[]}`,
-		`{"request_id":"r1","metrics":[{"name":"ContextRecall","status":"ok","value":2}]}`,
-		`{"request_id":"r1","metrics":[{"name":"ContextRecall","status":"error","value":0}]}`,
+		`{"results":[]}`,
+		`{"results":[{"request_id":"wrong","metrics":[]}]}`,
+		`{"results":[{"request_id":"r1","metrics":[{"name":"ContextRecall","status":"ok","value":2}]}]}`,
+		`{"results":[{"request_id":"r1","metrics":[{"name":"ContextRecall","status":"error","value":0}]}]}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,24 +35,9 @@ func TestEvalHTTPValidatesScoringEnvelope(t *testing.T) {
 				RequestID: "r1",
 				Metrics:   []string{"ContextRecall"},
 			}
-			if _, err := client.Score(context.Background(), input); err == nil {
+			if _, err := client.ScoreBatch(context.Background(), []entity.EvalScoreInput{input}); err == nil {
 				t.Fatal("invalid score accepted")
 			}
 		})
-	}
-}
-
-func TestEvalHTTPSearchChecksBusinessCode(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"code":500,"data":null}`)
-	}))
-	defer srv.Close()
-
-	client := &EvalHTTP{
-		Client:    srv.Client(),
-		SearchURL: srv.URL,
-	}
-	if _, err := client.Search(context.Background(), entity.EvalCase{}, entity.EvalProfile{}); err == nil {
-		t.Fatal("business error accepted")
 	}
 }

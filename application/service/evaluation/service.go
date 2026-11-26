@@ -1,35 +1,40 @@
 // Package evaluation 编排离线检索评测，不参与正常检索链路。
+//
+// 文件分工：
+//
+//	service.go     任务主体与查询接口：启动/停止、读取/取消、校验与汇总
+//	task.go        任务创建、逐题执行与任务接口
+//	rescore.go     失败指标重评（rescore），不是网络或代码重试
+//	drafts.go      题库草稿、后台出题、人工复核
+//	publish.go     题库发布、选题与来源校验
+//	acceptance.go  基线、配对对比与门槛报告
+//	generation.go  文档导入联动与后台出题 worker
+//	diagnostics.go 检索工程指标
 package evaluation
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	apperrors "github.com/PycMono/FastRAG/common/errors"
+	"github.com/PycMono/FastRAG/common/vo"
 	"github.com/PycMono/FastRAG/domain/entity"
 	"github.com/PycMono/FastRAG/domain/interfaces"
 	"github.com/PycMono/FastRAG/domain/repository"
 	logsdk "github.com/PycMono/go-logger-sdk"
 )
 
-var (
-	ErrDisabled = apperrors.ErrEvaluationDisabled
-	ErrBusy     = apperrors.ErrEvaluationBusy
-	ErrInvalid  = apperrors.ErrEvaluationInvalid
-)
-
 type Options struct {
 	Enabled    bool
 	RunTimeout time.Duration
+	Retention  time.Duration
 	Metadata   map[string]any
 }
 
@@ -80,7 +85,11 @@ func (s *Service) Start(ctx context.Context) error {
 	if !s.opts.Enabled {
 		return nil
 	}
-	return s.runs.Recover(ctx)
+	if err := s.runs.Recover(ctx); err != nil {
+		return err
+	}
+	s.startRetention()
+	return nil
 }
 
 // Stop 停止调度并等待当前任务退出。
@@ -104,6 +113,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 }
 
+// Datasets 返回已发布题库列表。
 func (s *Service) Datasets(ctx context.Context) ([]entity.EvalDatasetInfo, error) {
 	if !s.opts.Enabled {
 		return nil, ErrDisabled
@@ -111,6 +121,7 @@ func (s *Service) Datasets(ctx context.Context) ([]entity.EvalDatasetInfo, error
 	return s.datasets.List(ctx)
 }
 
+// List 返回任务列表，不加载逐题结果。
 func (s *Service) List(ctx context.Context) ([]entity.EvalRun, error) {
 	if !s.opts.Enabled {
 		return nil, ErrDisabled
@@ -118,217 +129,12 @@ func (s *Service) List(ctx context.Context) ([]entity.EvalRun, error) {
 	return s.runs.List(ctx)
 }
 
+// Get 读取单个任务及其逐题结果。
 func (s *Service) Get(ctx context.Context, id string) (entity.EvalRun, error) {
 	if !s.opts.Enabled {
 		return entity.EvalRun{}, ErrDisabled
 	}
 	return s.runs.Get(ctx, id)
-}
-
-func validate(dataset entity.EvalDataset) error {
-	invalid := func(message string) error {
-		return fmt.Errorf("%w: %s", ErrInvalid, message)
-	}
-
-	if dataset.Manifest.DatasetVersion == "" ||
-		dataset.Manifest.AnnotationVersion == "" ||
-		dataset.Manifest.CorpusSnapshot == "" ||
-		dataset.Manifest.CorpusHash == "" ||
-		len(dataset.Manifest.RetrievalSettings) == 0 {
-		return invalid("manifest 不完整")
-	}
-	if len(dataset.Cases) == 0 || len(dataset.Cases) > 1000 ||
-		len(dataset.Profiles) == 0 || len(dataset.Profiles) > 8 {
-		return invalid("用例或配置数量不合法")
-	}
-
-	seenCaseIDs := make(map[string]bool, len(dataset.Cases))
-	for _, testCase := range dataset.Cases {
-		if testCase.ID == "" || len(testCase.ID) > 128 || seenCaseIDs[testCase.ID] ||
-			strings.TrimSpace(testCase.Question) == "" || utf8.RuneCountInString(testCase.Question) > 1000 ||
-			testCase.Tenant == "" || utf8.RuneCountInString(testCase.Tenant) > 64 ||
-			len(testCase.KBNos) == 0 || len(testCase.KBNos) > 10 {
-			return invalid("用例字段或 ID 不合法")
-		}
-		for _, kbNo := range testCase.KBNos {
-			if strings.TrimSpace(kbNo) == "" || utf8.RuneCountInString(kbNo) > 64 {
-				return invalid("知识库编号不合法")
-			}
-		}
-		seenCaseIDs[testCase.ID] = true
-
-		if testCase.Split != "dev" {
-			return invalid("试点仅允许 dev，不运行保留集")
-		}
-		if testCase.Answerable && (strings.TrimSpace(testCase.Reference) == "" || len(testCase.ReferenceSources) == 0) {
-			return invalid("缺少参考答案或出处")
-		}
-		for _, source := range testCase.ReferenceSources {
-			if source.DocID == "" {
-				return invalid("参考出处缺少文档 ID")
-			}
-		}
-
-		if testCase.ExpectedRetrieval != "" && testCase.ExpectedRetrieval != "empty" {
-			return invalid("试点边界预期仅支持 empty")
-		}
-		if !testCase.Answerable && testCase.NoAnswerReason == "" && testCase.ExpectedRetrieval == "" {
-			return invalid("缺少无答案依据或边界预期")
-		}
-	}
-
-	seenProfileNames := make(map[string]bool, len(dataset.Profiles))
-	for _, profile := range dataset.Profiles {
-		if profile.Name == "" || len(profile.Name) > 64 || seenProfileNames[profile.Name] ||
-			profile.Limit < 1 || profile.Limit > 100 ||
-			profile.RetrieveCount < 1 || profile.RetrieveCount > 200 ||
-			profile.DenseWeight < 0 || profile.DenseWeight > 1 ||
-			profile.MinScore < 0 || profile.FusionMinScore < 0 {
-			return invalid("检索配置不合法")
-		}
-		seenProfileNames[profile.Name] = true
-	}
-
-	return nil
-}
-
-// Create 固定数据集快照后启动后台任务，不阻塞 HTTP 请求。
-func (s *Service) Create(ctx context.Context, dataset, name, hypothesis string) (string, error) {
-	if !s.opts.Enabled {
-		return "", ErrDisabled
-	}
-	testDataset, err := s.datasets.Load(ctx, dataset)
-	if err != nil {
-		return "", fmt.Errorf("%w: 数据集不可用", ErrInvalid)
-	}
-	return s.createRun(ctx, testDataset, name, hypothesis, "regression")
-}
-
-// Diagnose 查询当前工作区的真实语料，无参考时仅判断相关性。
-func (s *Service) Diagnose(
-	ctx context.Context,
-	testCase entity.EvalCase,
-) (string, error) {
-	testCase.ID = "single"
-	testCase.Split = "dev"
-	testCase.Answerable = false
-	testCase.NoAnswerReason = "单题探索，尚未建立正式参考标注"
-
-	dataset := entity.EvalDataset{
-		Name: "workspace-diagnostic",
-		Manifest: entity.EvalManifest{
-			DatasetVersion:    "adhoc",
-			AnnotationVersion: "unreviewed",
-			CorpusSnapshot:    "live-es",
-			CorpusHash:        "unverified",
-			RetrievalSettings: map[string]any{
-				"scope": "live-workspace", "limit": 10, "retrieve_count": 20,
-				"dense_weight": 0.5, "rerank_switch": true,
-			},
-		},
-		Cases: []entity.EvalCase{testCase},
-		Profiles: []entity.EvalProfile{{
-			Name: "hybrid", Limit: 10, RetrieveCount: 20,
-			DenseWeight: 0.5, RerankSwitch: true,
-		}},
-	}
-	return s.createRun(ctx, dataset, "当前知识库单题诊断", "探索性检查，不作为发布基线", "diagnostic")
-}
-
-func (s *Service) createRun(
-	ctx context.Context,
-	testDataset entity.EvalDataset,
-	name, hypothesis, purpose string,
-) (string, error) {
-	if !s.opts.Enabled {
-		return "", ErrDisabled
-	}
-	if strings.TrimSpace(name) == "" || utf8.RuneCountInString(name) > 120 || utf8.RuneCountInString(hypothesis) > 1000 {
-		return "", ErrInvalid
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return "", ErrDisabled
-	}
-	if s.storageFailed {
-		return "", fmt.Errorf("评测存储异常，请修复后重启服务")
-	}
-	if s.active != "" {
-		return "", ErrBusy
-	}
-
-	if err := validate(testDataset); err != nil {
-		return "", err
-	}
-
-	var nonce [8]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", err
-	}
-	id := time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(nonce[:])
-
-	configBytes, err := json.Marshal(struct {
-		Profiles []entity.EvalProfile
-		Settings map[string]any
-	}{
-		Profiles: testDataset.Profiles,
-		Settings: testDataset.Manifest.RetrievalSettings,
-	})
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.Sum256(configBytes)
-
-	datasetBytes, err := json.Marshal(testDataset)
-	if err != nil {
-		return "", err
-	}
-	datasetHash := sha256.Sum256(datasetBytes)
-
-	metadata := make(map[string]any, len(s.opts.Metadata)+1)
-	for key, value := range s.opts.Metadata {
-		metadata[key] = value
-	}
-	metadata["dataset_hash"] = hex.EncodeToString(datasetHash[:])
-
-	run := entity.EvalRun{
-		ID:             id,
-		ExperimentName: name,
-		Hypothesis:     hypothesis,
-		Purpose:        purpose,
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC(),
-		Dataset:        testDataset,
-		ConfigHash:     hex.EncodeToString(hash[:]),
-		Metadata:       metadata,
-		Expected:       len(testDataset.Cases) * len(testDataset.Profiles),
-		Summary:        map[string]entity.EvalSummary{},
-	}
-	if err = s.runs.Create(ctx, run); err != nil {
-		return "", err
-	}
-
-	work, cancel := context.WithTimeout(s.root, s.opts.RunTimeout)
-	s.active = id
-	s.cancel = cancel
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		defer cancel()
-		defer func() {
-			s.mu.Lock()
-			s.active = ""
-			s.cancel = nil
-			s.mu.Unlock()
-		}()
-
-		s.execute(work, run)
-	}()
-
-	return id, nil
 }
 
 // Delete 删除一条已结束的评估记录；运行中的任务必须先取消。
@@ -339,6 +145,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if !evaluationIDPattern.MatchString(id) {
 		return ErrInvalid
 	}
+
 	s.mu.Lock()
 	active := s.active == id
 	s.mu.Unlock()
@@ -363,217 +170,6 @@ func (s *Service) Cancel(id string) error {
 
 	s.cancel()
 	return nil
-}
-
-func (s *Service) execute(ctx context.Context, run entity.EvalRun) {
-	persist := func() error {
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		err := s.runs.Save(saveCtx, run)
-		if err != nil {
-			logsdk.Error(saveCtx, "评测结果保存失败，停止后续调用", logsdk.Err(err))
-			s.mu.Lock()
-			s.storageFailed = true
-			s.mu.Unlock()
-		}
-		return err
-	}
-
-	run.Status = "running"
-	if persist() != nil {
-		return
-	}
-
-	failed := false
-outer:
-	for _, profile := range run.Dataset.Profiles {
-		for _, testCase := range run.Dataset.Cases {
-			if ctx.Err() != nil {
-				break outer
-			}
-
-			row := s.evaluate(ctx, run, testCase, profile)
-			run.Rows = append(run.Rows, row)
-			run.Done++
-
-			if row.RetrievalStatus == "error" || row.RetrievalStatus == "timeout" {
-				run.RetrievalFailures++
-				failed = true
-			}
-			if row.BoundaryViolation {
-				run.BoundaryFailures++
-				failed = true
-			}
-			if row.Retrieval != nil && row.Retrieval.Meta["degraded"] == true {
-				run.RerankDegraded++
-			}
-			if row.Score != nil {
-				for _, metric := range row.Score.Metrics {
-					if metric.Status == "error" || metric.Status == "timeout" || metric.Status == "cancelled" {
-						failed = true
-					}
-				}
-			}
-
-			run.Summary = Summarize(run.Rows)
-			if persist() != nil {
-				return
-			}
-		}
-	}
-
-	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		run.Status = "timed_out"
-	case ctx.Err() != nil:
-		run.Status = "cancelled"
-	case failed:
-		run.Status = "partial"
-	default:
-		run.Status = "succeeded"
-	}
-
-	now := time.Now().UTC()
-	run.FinishedAt = &now
-	_ = persist()
-}
-
-func (s *Service) evaluate(
-	ctx context.Context,
-	run entity.EvalRun,
-	testCase entity.EvalCase,
-	profile entity.EvalProfile,
-) entity.EvalRow {
-	row := entity.EvalRow{
-		CaseID:          testCase.ID,
-		Question:        testCase.Question,
-		Reference:       testCase.Reference,
-		Profile:         profile.Name,
-		Category:        testCase.Category,
-		Split:           testCase.Split,
-		RetrievalStatus: "ok",
-	}
-
-	started := time.Now()
-	result, err := s.search.Search(ctx, testCase, profile)
-	row.RetrievalLatencyMS = elapsedMS(started)
-	if err != nil {
-		row.RetrievalStatus = errorStatus(ctx, err)
-		row.RetrievalError = "检索调用失败，请检查检索服务与配置"
-		return row
-	}
-
-	row.Retrieval = result
-	if len(result.Items) == 0 {
-		row.RetrievalStatus = "empty"
-	}
-
-	for _, hit := range result.Items {
-		for _, id := range testCase.ForbiddenChunkIDs {
-			if hit.ChunkID == id {
-				row.BoundaryViolation = true
-			}
-		}
-		for _, id := range testCase.ForbiddenDocIDs {
-			if hit.DocID == id {
-				row.BoundaryViolation = true
-			}
-		}
-	}
-	if testCase.ExpectedRetrieval == "empty" && len(result.Items) > 0 {
-		row.BoundaryViolation = true
-	}
-	if testCase.ExpectedRetrieval != "" ||
-		len(testCase.ForbiddenChunkIDs) > 0 ||
-		len(testCase.ForbiddenDocIDs) > 0 {
-		return row
-	}
-
-	input := entity.EvalScoreInput{
-		RequestID:           run.ID + "-" + profile.Name + "-" + testCase.ID + "-a1",
-		DatasetVersion:      run.Dataset.Manifest.DatasetVersion,
-		AnnotationVersion:   run.Dataset.Manifest.AnnotationVersion,
-		CaseID:              testCase.ID,
-		UserInput:           testCase.Question,
-		Reference:           testCase.Reference,
-		RetrievedContexts:   []string{},
-		RetrievedContextIDs: []string{},
-		ReferenceContextIDs: testCase.ReferenceContextIDs,
-		Metrics:             []string{"ContextRelevance"},
-	}
-	if testCase.Answerable {
-		input.Metrics = append(input.Metrics, "ContextPrecision", "ContextRecall")
-	}
-	for _, hit := range result.Items {
-		input.RetrievedContexts = append(input.RetrievedContexts, hit.Content)
-		input.RetrievedContextIDs = append(input.RetrievedContextIDs, hit.ChunkID)
-	}
-	row.Input = &input
-
-	// 空结果是被测系统表现，不花费模型调用，也不要求评分服务在线。
-	if len(result.Items) == 0 {
-		output := &entity.EvalScoreOutput{
-			RequestID:     input.RequestID,
-			OverallStatus: "succeeded",
-		}
-		for _, name := range input.Metrics {
-			metric := entity.EvalMetric{
-				Name:       name,
-				Status:     "not_applicable",
-				ComputedBy: "policy",
-				Error:      "空检索结果",
-			}
-			if name == "ContextRecall" {
-				zero := 0.0
-				metric.Status = "ok"
-				metric.Value = &zero
-				metric.Error = ""
-			}
-			output.Metrics = append(output.Metrics, metric)
-		}
-		row.Score = output
-		return row
-	}
-
-	started = time.Now()
-	score, err := s.scorer.Score(ctx, input)
-	row.ScoringLatencyMS = elapsedMS(started)
-	if err != nil {
-		score = &entity.EvalScoreOutput{
-			RequestID:     input.RequestID,
-			OverallStatus: "partial",
-		}
-		message := err.Error()
-		if errors.Is(err, interfaces.ErrEvalServiceBusy) {
-			message = "评分服务忙，尚未执行模型评分，请稍后重新运行"
-		}
-		for _, name := range input.Metrics {
-			score.Metrics = append(score.Metrics, entity.EvalMetric{
-				Name:       name,
-				Status:     errorStatus(ctx, err),
-				Error:      message,
-				ComputedBy: "transport",
-			})
-		}
-	}
-
-	row.Score = score
-	return row
-}
-
-func elapsedMS(start time.Time) float64 {
-	return float64(time.Since(start).Microseconds()) / 1000
-}
-
-func errorStatus(ctx context.Context, err error) string {
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return "cancelled"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	return "error"
 }
 
 // Summarize 均值只统计有效评分；失败仍保留在覆盖率分母中。
@@ -616,4 +212,347 @@ func Summarize(rows []entity.EvalRow) map[string]entity.EvalSummary {
 	}
 
 	return summaries
+}
+
+// ListDatasets 是题库列表的接口投影。
+func (s *Service) ListDatasets(ctx context.Context) ([]vo.EvalDatasetInfoVO, error) {
+	datasets, err := s.Datasets(ctx)
+	if err != nil {
+		return nil, responseError(err)
+	}
+
+	result := make([]vo.EvalDatasetInfoVO, 0, len(datasets))
+	for _, dataset := range datasets {
+		result = append(result, vo.EvalDatasetInfoVO{
+			Name:           dataset.Name,
+			Version:        dataset.Version,
+			Tenant:         dataset.Tenant,
+			KBNos:          dataset.KBNos,
+			Cases:          dataset.Cases,
+			Profiles:       dataset.Profiles,
+			ProfileSummary: dataset.ProfileSummary,
+			SearchRequests: dataset.SearchRequests,
+		})
+	}
+	return result, nil
+}
+
+// ListRuns 是任务列表的接口投影，不加载逐题结果。
+func (s *Service) ListRuns(ctx context.Context) ([]vo.EvalRunVO, error) {
+	runs, err := s.List(ctx)
+	if err != nil {
+		return nil, responseError(err)
+	}
+
+	limit := min(len(runs), 100)
+	result := make([]vo.EvalRunVO, 0, limit)
+	for _, run := range runs[:limit] {
+		result = append(result, runVO(run, true))
+	}
+	return result, nil
+}
+
+// RunDetail 返回任务详情和逐题诊断。
+func (s *Service) RunDetail(ctx context.Context, id string) (*vo.EvalRunVO, error) {
+	if !evaluationIDPattern.MatchString(id) {
+		return nil, apperrors.ErrInvalidParam
+	}
+
+	run, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, responseError(err)
+	}
+	result := runVO(run, false)
+	return &result, nil
+}
+
+// DeleteRun 删除任务，并校验任务 ID。
+func (s *Service) DeleteRun(ctx context.Context, id string) error {
+	if !evaluationIDPattern.MatchString(id) {
+		return apperrors.ErrInvalidParam
+	}
+	return responseError(s.Delete(ctx, id))
+}
+
+// CancelRun 取消任务，并校验任务 ID。
+func (s *Service) CancelRun(id string) error {
+	if !evaluationIDPattern.MatchString(id) {
+		return apperrors.ErrInvalidParam
+	}
+	return responseError(s.Cancel(id))
+}
+
+// ── 内部实现 ──
+
+// 应用层只返回这几类错误，HTTP 边界再统一映射成业务码。
+var (
+	ErrDisabled = apperrors.ErrEvaluationDisabled
+	ErrBusy     = apperrors.ErrEvaluationBusy
+	ErrInvalid  = apperrors.ErrEvaluationInvalid
+)
+
+// 评测任务、草稿和数据集共用同一套安全标识。
+var evaluationIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+// startRetention 每天清理一次过期任务；保留期为 0 时不启动。
+func (s *Service) startRetention() {
+	if s.opts.Retention <= 0 {
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.purgeOnce()
+
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.root.Done():
+				return
+			case <-ticker.C:
+				s.purgeOnce()
+			}
+		}
+	}()
+}
+
+// purgeOnce 删除超过保留期的任务；基线任务保留，报告随任务级联删除。
+func (s *Service) purgeOnce() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	before := time.Now().UTC().Add(-s.opts.Retention)
+	deleted, err := s.runs.Purge(ctx, before)
+	if err != nil {
+		logsdk.Error(ctx, "清理过期评测任务失败", logsdk.Err(err))
+		return
+	}
+	if deleted > 0 {
+		logsdk.Info(ctx, "已清理过期评测任务", logsdk.Any("deleted", deleted))
+	}
+}
+
+// validate 是发布和运行前的最后一道数据结构检查。
+// 这里只校验本服务能判断的约束，不访问 MySQL / ES。
+func validate(dataset entity.EvalDataset) error {
+	invalid := func(message string) error {
+		return fmt.Errorf("%w: %s", ErrInvalid, message)
+	}
+
+	manifest := dataset.Manifest
+	if manifest.DatasetVersion == "" ||
+		manifest.AnnotationVersion == "" ||
+		manifest.CorpusSnapshot == "" ||
+		manifest.CorpusHash == "" ||
+		len(manifest.RetrievalSettings) == 0 {
+		return invalid("manifest 不完整")
+	}
+	if len(dataset.Cases) == 0 || len(dataset.Cases) > 1000 ||
+		len(dataset.Profiles) == 0 || len(dataset.Profiles) > 8 {
+		return invalid("用例或配置数量不合法")
+	}
+
+	seenCases := make(map[string]bool, len(dataset.Cases))
+	for _, testCase := range dataset.Cases {
+		if testCase.ID == "" || len(testCase.ID) > 128 || seenCases[testCase.ID] {
+			return invalid("用例字段或 ID 不合法")
+		}
+		if strings.TrimSpace(testCase.Question) == "" ||
+			utf8.RuneCountInString(testCase.Question) > 1000 {
+			return invalid("用例字段或 ID 不合法")
+		}
+		if testCase.Tenant == "" || utf8.RuneCountInString(testCase.Tenant) > 64 {
+			return invalid("用例字段或 ID 不合法")
+		}
+		if len(testCase.KBNos) == 0 || len(testCase.KBNos) > 10 {
+			return invalid("用例字段或 ID 不合法")
+		}
+		for _, kbNo := range testCase.KBNos {
+			if strings.TrimSpace(kbNo) == "" || utf8.RuneCountInString(kbNo) > 64 {
+				return invalid("知识库编号不合法")
+			}
+		}
+		seenCases[testCase.ID] = true
+
+		if testCase.Split != "dev" {
+			return invalid("试点仅允许 dev，不运行保留集")
+		}
+		if testCase.Answerable {
+			if strings.TrimSpace(testCase.Reference) == "" || len(testCase.ReferenceSources) == 0 {
+				return invalid("缺少参考答案或出处")
+			}
+			for _, source := range testCase.ReferenceSources {
+				if source.DocID == "" {
+					return invalid("参考出处缺少文档 ID")
+				}
+			}
+		}
+		if testCase.ExpectedRetrieval != "" && testCase.ExpectedRetrieval != "empty" {
+			return invalid("试点边界预期仅支持 empty")
+		}
+		if !testCase.Answerable && testCase.NoAnswerReason == "" && testCase.ExpectedRetrieval == "" {
+			return invalid("缺少无答案依据或边界预期")
+		}
+	}
+
+	seenProfiles := make(map[string]bool, len(dataset.Profiles))
+	for _, profile := range dataset.Profiles {
+		if profile.Name == "" || len(profile.Name) > 64 || seenProfiles[profile.Name] {
+			return invalid("检索配置不合法")
+		}
+		if profile.Limit < 1 || profile.Limit > 100 ||
+			profile.RetrieveCount < 1 || profile.RetrieveCount > 200 ||
+			profile.DenseWeight < 0 || profile.DenseWeight > 1 ||
+			profile.MinScore < 0 || profile.FusionMinScore < 0 {
+			return invalid("检索配置不合法")
+		}
+		seenProfiles[profile.Name] = true
+	}
+	return nil
+}
+
+// responseError 把仓储错误转换成统一的评测业务错误。
+func responseError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var coded apperrors.CodeError
+	if errors.As(err, &coded) {
+		return err
+	}
+	if os.IsNotExist(err) {
+		return apperrors.ErrEvaluationNotFound.Wrap(err)
+	}
+	return apperrors.ErrEvaluationFailed.Wrap(err)
+}
+
+// elapsedMS 把耗时换算成毫秒。
+func elapsedMS(start time.Time) float64 {
+	return float64(time.Since(start).Microseconds()) / 1000
+}
+
+// errorStatus 把上下文和错误归类成 cancelled/timeout/error。
+func errorStatus(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "error"
+}
+
+// rescorableMetric 只把评分环节的失败视为可重评；检索失败要重跑任务。
+func rescorableMetric(metric entity.EvalMetric) bool {
+	return metric.Status == "error" || metric.Status == "timeout" || metric.Status == "cancelled"
+}
+
+// taskStatus 根据取消状态和失败标记生成任务终态。
+func taskStatus(ctx context.Context, failed bool) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "timed_out"
+	case ctx.Err() != nil:
+		return "cancelled"
+	case failed:
+		return "partial"
+	default:
+		return "succeeded"
+	}
+}
+
+// runVO 把任务投影成接口结构；brief 为列表模式，跳过逐题诊断。
+func runVO(run entity.EvalRun, brief bool) vo.EvalRunVO {
+	profileSummary := ""
+	if len(run.Dataset.Profiles) > 0 {
+		profile := run.Dataset.Profiles[0]
+		rerank := "精排关"
+		if profile.RerankSwitch {
+			rerank = "精排开"
+		}
+		profileSummary = fmt.Sprintf(
+			"%s · 返回 %d 条 · 召回 %d 条 · %s",
+			profile.Name,
+			profile.Limit,
+			profile.RetrieveCount,
+			rerank,
+		)
+		if len(run.Dataset.Profiles) > 1 {
+			profileSummary += fmt.Sprintf(" · 共 %d 组配置", len(run.Dataset.Profiles))
+		}
+	}
+
+	summary := make(map[string]vo.EvalSummaryVO, len(run.Summary))
+	for key, value := range run.Summary {
+		summary[key] = vo.EvalSummaryVO{
+			Mean:          value.Mean,
+			OK:            value.OK,
+			Errors:        value.Errors,
+			NotApplicable: value.NotApplicable,
+			Coverage:      value.Coverage,
+		}
+	}
+
+	result := vo.EvalRunVO{
+		Diagnostics:       map[string]vo.EvalDiagnosticsVO{},
+		FailureReasons:    []string{},
+		ScoringFailures:   run.ScoringFailures,
+		ID:                run.ID,
+		Dataset:           run.Dataset.Name,
+		ProfileSummary:    profileSummary,
+		ExperimentName:    run.ExperimentName,
+		Purpose:           run.Purpose,
+		Status:            run.Status,
+		Error:             run.Error,
+		CreatedAt:         run.CreatedAt,
+		FinishedAt:        run.FinishedAt,
+		Expected:          run.Expected,
+		Done:              run.Done,
+		RetrievalFailures: run.RetrievalFailures,
+		BoundaryFailures:  run.BoundaryFailures,
+		RerankDegraded:    run.RerankDegraded,
+		Summary:           summary,
+	}
+	if brief {
+		return result
+	}
+	result.Diagnostics = retrievalDiagnostics(run)
+	result.FailureReasons = failureReasons(run)
+	return result
+}
+
+// failureReasons 汇总并去重任务中的检索和评分失败原因。
+func failureReasons(run entity.EvalRun) []string {
+	seen := map[string]bool{}
+	reasons := []string{}
+	add := func(reason string) {
+		if reason == "" || seen[reason] {
+			return
+		}
+		seen[reason] = true
+		reasons = append(reasons, reason)
+	}
+
+	add(run.Error)
+	for _, row := range run.Rows {
+		add(row.RetrievalError)
+		if row.Score == nil {
+			continue
+		}
+		for _, metric := range row.Score.Metrics {
+			if !rescorableMetric(metric) {
+				continue
+			}
+			reason := metric.Error
+			if reason == "评分调用失败，请检查评分服务与配置" ||
+				reason == "judge failed or incompatible API" {
+				reason = "历史评分失败：当时未保存具体错误原因，需结合对应时间的服务日志定位"
+			}
+			add(reason)
+		}
+	}
+	return reasons
 }

@@ -1,4 +1,4 @@
-package admin
+package config
 
 import (
 	"crypto/sha256"
@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	appconfig "github.com/PycMono/FastRAG/infrastructure/config"
 )
 
 const Masked = "••••••••"
@@ -98,7 +96,7 @@ func (s *ConfigStore) Save(expected string, obj map[string]any) error {
 	if err != nil {
 		return errors.New("配置不能序列化")
 	}
-	if err = appconfig.ValidateJSON(data); err != nil {
+	if err = ValidateJSON(data); err != nil {
 		return fmt.Errorf("配置校验失败：%w", err)
 	}
 	// Last check also detects external edits during validation. Operators should not

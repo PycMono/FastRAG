@@ -1,4 +1,4 @@
-package admin
+package config
 
 import (
 	"encoding/json"

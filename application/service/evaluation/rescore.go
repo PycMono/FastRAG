@@ -1,3 +1,6 @@
+// 本文件是失败指标重评（rescore）：复用原任务的检索输入，只重新调用评分模型，
+// 不重新检索、不覆盖旧任务；它和网络或代码重试无关。任务执行见 task.go。
+
 package evaluation
 
 import (
@@ -12,8 +15,8 @@ import (
 	"github.com/PycMono/FastRAG/domain/entity"
 )
 
-// RetryScores 新建尝试，复用原始检索输入；不覆盖旧任务，也不重新检索。
-func (s *Service) RetryScores(ctx context.Context, id string) (*vo.EvalCreatedVO, error) {
+// RescoreFailedMetrics 新建尝试，复用原始检索输入；不覆盖旧任务，也不重新检索。
+func (s *Service) RescoreFailedMetrics(ctx context.Context, id string) (*vo.EvalCreatedVO, error) {
 	if !s.opts.Enabled {
 		return nil, ErrDisabled
 	}
@@ -51,7 +54,7 @@ func (s *Service) RetryScores(ctx context.Context, id string) (*vo.EvalCreatedVO
 			continue
 		}
 		for _, metric := range row.Score.Metrics {
-			if retryableMetric(metric) {
+			if rescorableMetric(metric) {
 				eligible++
 			}
 		}
@@ -64,7 +67,11 @@ func (s *Service) RetryScores(ctx context.Context, id string) (*vo.EvalCreatedVO
 		return nil, err
 	}
 	run.ID = time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(nonce[:])
-	run.Metadata = map[string]any{"retry_of": id, "dataset_hash": run.Metadata["dataset_hash"], "score_attempt": "new-judge-config"}
+	run.Metadata = map[string]any{
+		"retry_of":      id,
+		"dataset_hash":  run.Metadata["dataset_hash"],
+		"score_attempt": "new-judge-config",
+	}
 	run.ExperimentName = "失败项重评 · " + time.Now().UTC().Format("01-02 15:04")
 	run.Status, run.Error = "queued", ""
 	run.CreatedAt, run.FinishedAt = time.Now().UTC(), nil
@@ -79,29 +86,20 @@ func (s *Service) RetryScores(ctx context.Context, id string) (*vo.EvalCreatedVO
 		defer s.wg.Done()
 		defer cancel()
 		defer func() { s.mu.Lock(); s.active = ""; s.cancel = nil; s.mu.Unlock() }()
-		s.retryScores(work, run)
+		s.rescoreRows(work, run)
 	}()
 	return &vo.EvalCreatedVO{RunID: run.ID}, nil
 }
 
-func retryableMetric(metric entity.EvalMetric) bool {
-	return metric.Status == "error" || metric.Status == "timeout" || metric.Status == "cancelled"
-}
+// ── 内部实现 ──
 
-func (s *Service) retryScores(ctx context.Context, run entity.EvalRun) {
-	persist := func() bool {
-		if err := s.runs.Save(context.Background(), run); err != nil {
-			s.mu.Lock()
-			s.storageFailed = true
-			s.mu.Unlock()
-			return false
-		}
-		return true
-	}
+// rescoreRows 复用原任务检索输入，逐题重评失败指标并保存。
+func (s *Service) rescoreRows(ctx context.Context, run entity.EvalRun) {
 	run.Status = "running"
-	if !persist() {
+	if s.saveMeta(run) != nil {
 		return
 	}
+
 	for index := range run.Rows {
 		if ctx.Err() != nil {
 			break
@@ -120,18 +118,29 @@ func (s *Service) retryScores(ctx context.Context, run entity.EvalRun) {
 			input.RequestID = run.ID + "-" + row.CaseID + "-retry"
 			input.Metrics = []string{}
 			for _, metric := range row.Score.Metrics {
-				if retryableMetric(metric) {
+				if rescorableMetric(metric) {
 					input.Metrics = append(input.Metrics, metric.Name)
 				}
 			}
 			if len(input.Metrics) > 0 {
 				started := time.Now()
-				output, err := s.scorer.Score(ctx, input)
+				outputs, err := s.scorer.ScoreBatch(
+					ctx,
+					[]entity.EvalScoreInput{input},
+				)
+				var output *entity.EvalScoreOutput
+				if err == nil {
+					if len(outputs) != 1 {
+						err = fmt.Errorf("批量评分结果数量不符")
+					} else {
+						output = &outputs[0]
+					}
+				}
 				row.ScoringLatencyMS = elapsedMS(started)
 				if err != nil {
 					for position := range row.Score.Metrics {
 						metric := &row.Score.Metrics[position]
-						if retryableMetric(*metric) {
+						if rescorableMetric(*metric) {
 							metric.Status = errorStatus(ctx, err)
 							metric.Error = err.Error()
 						}
@@ -151,29 +160,27 @@ func (s *Service) retryScores(ctx context.Context, run entity.EvalRun) {
 		}
 		run.Done++
 		run.Summary = Summarize(run.Rows)
-		if !persist() {
+		run.ScoringFailures = scoringFailureCount(run.Rows)
+		if s.saveRow(run.ID, *row) != nil || s.saveMeta(run) != nil {
 			return
 		}
 	}
-	run.Status = "succeeded"
+
+	failed := false
 	for _, row := range run.Rows {
 		if row.RetrievalStatus == "error" || row.RetrievalStatus == "timeout" {
-			run.Status = "partial"
+			failed = true
 		}
 		if row.Score != nil {
 			for _, metric := range row.Score.Metrics {
-				if retryableMetric(metric) {
-					run.Status = "partial"
+				if rescorableMetric(metric) {
+					failed = true
 				}
 			}
 		}
 	}
-	if ctx.Err() == context.DeadlineExceeded {
-		run.Status = "timed_out"
-	} else if ctx.Err() != nil {
-		run.Status = "cancelled"
-	}
+	run.Status = taskStatus(ctx, failed)
 	now := time.Now().UTC()
 	run.FinishedAt = &now
-	_ = persist()
+	_ = s.saveMeta(run)
 }

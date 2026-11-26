@@ -1,3 +1,6 @@
+// 本文件是题库草稿的后台出题：文档导入/删除联动与每 5 秒扫描一次的 worker。
+// 草稿接口见 drafts.go，发布接口见 publish.go。
+
 package evaluation
 
 import (
@@ -13,7 +16,7 @@ import (
 )
 
 // Imported 只持久化候选来源。模型由单个后台 worker 执行，不阻塞导入。
-func (s *ReviewService) Imported(ctx context.Context, tenant, kbNo, docID, name, content string) error {
+func (s *DatasetService) Imported(ctx context.Context, tenant, kbNo, docID, name, content string) error {
 	if !s.tasks.opts.Enabled {
 		return nil
 	}
@@ -67,7 +70,8 @@ func (s *ReviewService) Imported(ctx context.Context, tenant, kbNo, docID, name,
 	return s.repo.SaveDraft(ctx, draft, 0)
 }
 
-func (s *ReviewService) Removed(ctx context.Context, tenant, kbNo, docID string) error {
+// Removed 在文档或知识库删除后清理关联草稿和题库。
+func (s *DatasetService) Removed(ctx context.Context, tenant, kbNo, docID string) error {
 	if !s.tasks.opts.Enabled {
 		return nil
 	}
@@ -76,7 +80,8 @@ func (s *ReviewService) Removed(ctx context.Context, tenant, kbNo, docID string)
 	return s.repo.InvalidateDocument(ctx, tenant, kbNo, docID)
 }
 
-func (s *ReviewService) Start(ctx context.Context) error {
+// Start 启动后台出题 worker。
+func (s *DatasetService) Start(ctx context.Context) error {
 	if !s.tasks.opts.Enabled {
 		return nil
 	}
@@ -99,7 +104,8 @@ func (s *ReviewService) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *ReviewService) Stop(ctx context.Context) error {
+// Stop 停止后台出题 worker 并等待退出。
+func (s *DatasetService) Stop(ctx context.Context) error {
 	if s.workerCancel == nil {
 		return nil
 	}
@@ -112,7 +118,10 @@ func (s *ReviewService) Stop(ctx context.Context) error {
 	}
 }
 
-func (s *ReviewService) generatePending(ctx context.Context) {
+// ── 内部实现 ──
+
+// generatePending 扫描所有待生成草稿，每份推进一题。
+func (s *DatasetService) generatePending(ctx context.Context) {
 	drafts, err := s.repo.ListDrafts(ctx)
 	if err != nil {
 		logsdk.Error(ctx, "读取自动评测草稿失败", logsdk.Err(err))
@@ -133,9 +142,9 @@ func (s *ReviewService) generatePending(ctx context.Context) {
 const maxGenerationAttempts = 3
 
 // generateOne 每个周期每份草稿只生成一题：多份草稿轮流推进，暂停也不会等待整批结束。
-func (s *ReviewService) generateOne(ctx context.Context, id string) {
+func (s *DatasetService) generateOne(ctx context.Context, id string) {
 	draft, err := s.repo.GetDraft(ctx, id)
-	if err != nil || draft.GenerationState != "pending" || s.author == nil {
+	if err != nil || draft.GenerationState != "pending" || s.generator == nil {
 		return
 	}
 	target := ""
@@ -164,7 +173,7 @@ func (s *ReviewService) generateOne(ctx context.Context, id string) {
 		if candidate.ID != target {
 			continue
 		}
-		generated, err := s.author.Generate(ctx, generationSource(*candidate))
+		generated, err := s.generator.Generate(ctx, generationSource(*candidate))
 		if err != nil {
 			logsdk.Error(ctx, "后台出题失败，稍后重试",
 				logsdk.Any("draft", id), logsdk.Any("case", target), logsdk.Err(err))

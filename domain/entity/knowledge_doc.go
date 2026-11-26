@@ -3,7 +3,7 @@ package entity
 // KnowledgeDoc 文档聚合根。
 //
 // **本结构体直接就是 GORM 的持久化模型**（同 Knowledge）：gorm tag 写在实体上，
-// 没有独立的 po / mapper 两层。这里的 tag 与 scripts/schema.sql 是同一份列定义的
+// 没有独立的 po / mapper 两层。这里的 tag 与 deploy/schema.sql 是同一份列定义的
 // 两个写法——改一边就要改另一边。
 //
 // 切片不入 MySQL（D3），所以这个聚合只承载「文档级」状态：

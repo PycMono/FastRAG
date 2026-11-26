@@ -31,14 +31,60 @@ make init-db     # 建 MySQL 库表，可重复执行（DDL 全是 IF NOT EXISTS
 make es-index    # 建 ES 索引（已存在则只校验 mapping，不改动）
 ```
 
-建表语句的**单一事实源**是 `scripts/schema.sql`，索引定义的单一事实源是
-`scripts/create-es-index.sh`。**两者都由人先建好，服务不建**（设计文档 §9.4）——
-运行期的连接账号因此也不需要 DDL 权限。改结构只改 `scripts/` 下这两处。
+建表语句的**单一事实源**是 `deploy/schema.sql`，索引定义的单一事实源是
+`deploy/create-es-index.sh`。**两者都由人先建好，服务不建**（设计文档 §9.4）——
+运行期的连接账号因此也不需要 DDL 权限。改结构只改 `deploy/` 下这两处。
 
-> ⚠️ 别直接 `mysql -uroot -p < scripts/schema.sql`：容器里的 mysql 客户端
+> ⚠️ 别直接 `mysql -uroot -p < deploy/schema.sql`：容器里的 mysql 客户端
 > 默认字符集是 latin1，中文会被**双向编码错**存进库（`租户` 存成 `ç§Ÿæˆ·`），
 > 而且列和连接字符串都查不出问题。`make init-db` 带上了
 > `--default-character-set=utf8mb4`，用它。
+
+## 远端发布
+
+统一入口是 `deploy/deploy.sh`，直接执行就发布全部代码和基础组件：
+
+```bash
+./deploy/deploy.sh              # bootstrap：基础组件 + MySQL + ES + 前端 + Go + Python
+./deploy/deploy.sh bootstrap    # 同上
+./deploy/deploy.sh db           # 只应用 deploy/schema.sql
+./deploy/deploy.sh es           # 只创建/校验 ES 索引
+./deploy/deploy.sh app          # 只构建前端 + Go 并重启 app
+./deploy/deploy.sh evaluator    # 只上传并重建 Ragas 评分服务
+```
+
+`bootstrap` 在远端缺什么补什么：
+
+- 建目录、上传 compose / Dockerfile / Ragas 服务；
+- 首次生成 `.admin.env`（MySQL 密码、管理 token、评测 token）；
+- 首次从示例生成 `config.json`，默认 bge-m3、关闭精排、关闭评测；
+- 构建 ES IK 镜像，启动 MySQL / ES；
+- 建表、建索引、重建 Ragas、构建并重启 app。
+
+管理 token 只写入远端 `.admin.env`，脚本不打印；查看方式：
+
+```bash
+ssh home-old-pub "grep FASTRAG_ADMIN_TOKEN /home/duomi/fastrag/.admin.env"
+```
+
+前提是远端有 SSH 和 Docker Compose。页面能直接打开；检索要真正可用，还需要
+远端有可访问的 embedding/rerank 模型服务（默认配置指向本机 Ollama 的 bge-m3）。
+
+默认目标是 `home-old-pub:/home/duomi/fastrag`，可用环境变量覆盖：
+
+```bash
+FASTRAG_DEPLOY_HOST=home-old-pub
+FASTRAG_DEPLOY_DIR=/home/duomi/fastrag
+FASTRAG_DEPLOY_DB_CONTAINER=fastrag-mysql
+FASTRAG_DEPLOY_ES_URL=http://127.0.0.1:9200
+FASTRAG_DEPLOY_EVAL_IMAGE=fastrag/ragas-evaluator:20261125
+FASTRAG_DEPLOY_HEALTH_URL=http://192.168.50.159:8088/health
+```
+
+`deploy/schema.sql` 和 `deploy/create-es-index.sh` 仍然是**单一事实源**，
+deploy 脚本只负责把它们送到远端执行，不复制内容，避免两份定义漂移。
+本地开发继续用 `make init-db` / `make es-index`，远端发布用 `make deploy-db` / `make deploy-es`。
+
 
 ---
 
@@ -79,7 +125,7 @@ curl -s localhost:9200 | grep -E '"number"|"build_flavor"'
 ### ③ 建索引
 
 ```bash
-make es-index              # 或 bash scripts/create-es-index.sh
+make es-index              # 或 bash deploy/create-es-index.sh
 ```
 
 索引定义的**权威版本**就是这条 curl（mapping 里字段取值的理由也写在它上面的注释里）。
@@ -180,7 +226,7 @@ ES_VERSION=9.6.0 docker compose up -d --build
 |---|---|
 | `docker-compose.yml` | ES + Kibana（含可选的独立 MySQL/Redis 注释块） |
 | `deploy/es/Dockerfile` | 基于官方 ES 镜像，装 analysis-ik 插件 |
-| `../scripts/schema.sql` | 业务库 DDL，单一事实源（本服务只建 `knowledge_doc`；`knowledge` 由外部系统预置）。执行见 `make init-db` |
-| `../scripts/create-es-index.sh` | ES 索引 mapping / settings，单一事实源（设计文档 §4.2、§9）。执行见 `make es-index` |
+| `schema.sql` | 业务库 DDL，单一事实源（本服务只建 `knowledge_doc`；`knowledge` 由外部系统预置）。执行见 `make init-db` |
+| `create-es-index.sh` | ES 索引 mapping / settings，单一事实源（设计文档 §4.2、§9）。执行见 `make es-index` |
 | `../common/constants/field.go` | 查询/写入用的字段名常量（mapping 的另一半） |
 | `../docs/superpowers/specs/2026-10-08-fastrag-design.md` | 设计文档 |

@@ -41,7 +41,7 @@ type SecurityConfig struct {
 // ESConfig Elasticsearch 配置（json key 就是 "es"，字段名跟着 key 走）。
 //
 // 只有「怎么连 + 读写哪个索引」——**不含索引怎么建**。
-// 维度 / 分词器 / 分片 / 副本 / 刷新间隔都搬去了 scripts/create-es-index.sh（§9.4）：
+// 维度 / 分词器 / 分片 / 副本 / 刷新间隔都搬去了 deploy/create-es-index.sh（§9.4）：
 // 那些是建索引时的事实，运行期一次都不用，配置里留着只会让人以为改它能生效。
 type ESConfig struct {
 	Addrs    []string `json:"addrs"` // 必须带 scheme，如 http://127.0.0.1:9200

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TestDisabledAndInvalidID 验证评测关闭和非法 ID 都返回业务错误。
 func TestDisabledAndInvalidID(t *testing.T) {
 	router := gin.New()
 	controller := NewController(app.NewService(nil, nil, nil, nil, app.Options{}), nil)
@@ -38,6 +39,7 @@ func TestDisabledAndInvalidID(t *testing.T) {
 	}
 }
 
+// TestSDKRecordsBusinessErrors 验证业务错误会进入 ginsdk 的日志/追踪链路。
 func TestSDKRecordsBusinessErrors(t *testing.T) {
 	router := gin.New()
 	controller := NewController(app.NewService(nil, nil, nil, nil, app.Options{}), nil)

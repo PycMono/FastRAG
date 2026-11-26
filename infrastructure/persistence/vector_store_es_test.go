@@ -130,7 +130,7 @@ func TestSummarizeQueryVec(t *testing.T) {
 }
 
 // IndexName 是配置留空时的兜底索引名。它必须与
-// scripts/create-es-index.sh 里的 INDEX 默认值一致 —— 两边不一致的话，
+// deploy/create-es-index.sh 里的 INDEX 默认值一致 —— 两边不一致的话，
 // 服务会去读写一个脚本从没建过的索引。
 func TestIndexName_SingleIndex(t *testing.T) {
 	if constants.IndexName != "fastrag" {

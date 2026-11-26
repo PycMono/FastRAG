@@ -1,7 +1,7 @@
 // 本文件定义 ES 的字段名常量与索引名 —— 查询体与写入体的共同词汇表。
 //
 // ⚠️ 索引**不由本服务创建**（设计文档 §9.4）。mapping / settings 的权威版本在
-// scripts/create-es-index.sh，本文件只是它的另一半：脚本定「字段长什么样」，
+// deploy/create-es-index.sh，本文件只是它的另一半：脚本定「字段长什么样」，
 // 这里定「代码里怎么称呼它们」。
 //
 //	改了一边的字段名，就要改另一边。两边对不上不会报错，
@@ -34,5 +34,5 @@ const (
 const IndexName = "fastrag"
 
 // 索引名、维度、分词器、分片/副本、刷新间隔都曾经是这里的 IndexSpec ——
-// 已全部搬到 scripts/create-es-index.sh。运行期不再需要它们：
+// 已全部搬到 deploy/create-es-index.sh。运行期不再需要它们：
 // 服务只读写索引，不建索引。

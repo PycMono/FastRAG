@@ -1,0 +1,55 @@
+# FastRAG 单机部署：MySQL + ES(IK) + Go 应用。
+# 通过 deploy/deploy.sh bootstrap 上传到远端项目根目录，由 deploy.sh 管理。
+name: fastrag
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: fastrag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: fastrag
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    mem_limit: 256m
+
+  es:
+    image: fastrag-es:9.5.5
+    container_name: fastrag-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - cluster.name=fastrag-home
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - ./data/es:/usr/share/elasticsearch/data
+    mem_limit: 1800m
+
+  fastrag:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastrag
+    image: fastrag-app:latest
+    container_name: fastrag-app
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./runtime:/app/runtime
+      - ./logs:/app/runtime/logs
+    working_dir: /app/runtime
+    user: "1000:1000"
+    env_file:
+      - .admin.env
+    mem_limit: 256m
